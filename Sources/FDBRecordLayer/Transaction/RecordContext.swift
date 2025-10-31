@@ -6,11 +6,18 @@ import Synchronization
 ///
 /// RecordContext wraps a FoundationDB transaction and manages its lifecycle.
 /// It ensures proper cleanup and prevents use after commit/cancel.
+///
+/// **Metadata Storage:**
+/// RecordContext can store arbitrary metadata for use by index maintainers.
+/// This is used by Version Index to store expected versions for optimistic locking.
 public final class RecordContext: Sendable {
     // MARK: - Properties
 
     private let transaction: any TransactionProtocol
     private let isClosed: Mutex<Bool>
+
+    /// Metadata storage for context-specific data
+    private let metadata: Mutex<[String: Any]>
 
     /// Whether this context has been closed (committed or cancelled)
     public var closed: Bool {
@@ -24,6 +31,7 @@ public final class RecordContext: Sendable {
     public init(transaction: any TransactionProtocol) {
         self.transaction = transaction
         self.isClosed = Mutex(false)
+        self.metadata = Mutex([:])
     }
 
     /// Create a new context with a new transaction
@@ -68,6 +76,35 @@ public final class RecordContext: Sendable {
     /// - Warning: The transaction should only be used within the scope of this context
     public func getTransaction() -> any TransactionProtocol {
         return transaction
+    }
+
+    // MARK: - Metadata Management
+
+    /// Set metadata value for a key
+    /// - Parameters:
+    ///   - value: The value to store
+    ///   - key: The key to store the value under
+    public func setMetadata<T>(_ value: T, forKey key: String) {
+        metadata.withLock { dict in
+            dict[key] = value
+        }
+    }
+
+    /// Get metadata value for a key
+    /// - Parameter key: The key to retrieve
+    /// - Returns: The value if it exists, nil otherwise
+    public func getMetadata<T>(forKey key: String) -> T? {
+        return metadata.withLock { dict in
+            dict[key] as? T
+        }
+    }
+
+    /// Remove metadata value for a key
+    /// - Parameter key: The key to remove
+    public func removeMetadata(forKey key: String) {
+        metadata.withLock { dict in
+            dict.removeValue(forKey: key)
+        }
     }
 
     // MARK: - Deinitialization

@@ -702,7 +702,7 @@ A: Yes! All APIs use async/await for modern Swift concurrency.
 
 ### Q: Can I migrate from the RDF Layer?
 
-A: Yes, see the [Migration Guide](MIGRATION.md) for detailed instructions.
+A: Yes, see the [Migration Guide](docs/MIGRATION.md) for detailed instructions.
 
 ### Q: What about iOS/watchOS/tvOS support?
 

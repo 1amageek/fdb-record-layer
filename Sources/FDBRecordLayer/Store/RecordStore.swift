@@ -56,7 +56,21 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     /// If the record already exists (same primary key), it will be updated.
     /// All indexes are automatically maintained.
     public func save(_ record: Record, context: RecordContext) async throws {
-        logger.debug("Saving record")
+        try await save(record, expectedVersion: nil, context: context)
+    }
+
+    /// Save a record with optimistic concurrency control
+    ///
+    /// If the record already exists (same primary key), it will be updated.
+    /// All indexes are automatically maintained.
+    ///
+    /// - Parameters:
+    ///   - record: The record to save
+    ///   - expectedVersion: The expected version for optimistic locking (nil for first save)
+    ///   - context: Transaction context
+    /// - Throws: RecordLayerError.versionMismatch if version doesn't match
+    public func save(_ record: Record, expectedVersion: Version?, context: RecordContext) async throws {
+        logger.debug("Saving record with version check")
 
         let transaction = context.getTransaction()
 
@@ -75,6 +89,15 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         // Extract primary key
         let primaryKeyValues = recordType.primaryKey.evaluate(record: recordDict)
         let primaryKey = TupleHelpers.toTuple(primaryKeyValues)
+
+        // Check version if expectedVersion is provided
+        if let expectedVersion = expectedVersion {
+            try await checkVersionForRecord(
+                primaryKey: primaryKey,
+                expectedVersion: expectedVersion,
+                context: context
+            )
+        }
 
         // Load existing record for index updates
         let existingRecord = try await load(primaryKey: primaryKey, context: context)
@@ -113,6 +136,33 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         let record = try serializer.deserialize(bytes)
         logger.debug("Record loaded successfully")
         return record
+    }
+
+    /// Load a record with its current version
+    ///
+    /// - Parameters:
+    ///   - primaryKey: The primary key of the record
+    ///   - context: Transaction context
+    /// - Returns: Tuple of (record, version), or nil if record not found
+    public func loadWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (Record, Version)? {
+        logger.debug("Loading record with version")
+
+        // Load the record
+        guard let record = try await load(primaryKey: primaryKey, context: context) else {
+            logger.debug("Record not found")
+            return nil
+        }
+
+        // Get version from version index
+        let version = try await getVersionForRecord(primaryKey: primaryKey, context: context)
+
+        guard let version = version else {
+            logger.debug("Version not found for record")
+            return nil
+        }
+
+        logger.debug("Record with version loaded successfully")
+        return (record, version)
     }
 
     /// Delete a record by primary key
@@ -179,6 +229,62 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         }
     }
 
+    /// Check version for optimistic concurrency control
+    private func checkVersionForRecord(
+        primaryKey: Tuple,
+        expectedVersion: Version,
+        context: RecordContext
+    ) async throws {
+        // LIMITATION: Uses first version index found, ignoring record type
+        //
+        // In production, this should:
+        // 1. Accept recordType parameter
+        // 2. Filter indexes by recordTypes field
+        // 3. Throw error if multiple version indexes match
+        // 4. Support per-record-type version indexes
+        let versionIndex = metaData.indexes.values.first { $0.type == .version }
+
+        guard let versionIndex = versionIndex else {
+            throw RecordLayerError.internalError("No version index configured for optimistic locking")
+        }
+
+        // Create version maintainer and check version
+        let maintainer = createIndexMaintainer(for: versionIndex)
+        guard let versionMaintainer = maintainer as? VersionIndexMaintainer else {
+            throw RecordLayerError.internalError("Version index maintainer not found")
+        }
+
+        try await versionMaintainer.checkVersion(
+            primaryKey: primaryKey,
+            expectedVersion: expectedVersion,
+            transaction: context.getTransaction()
+        )
+    }
+
+    /// Get current version for a record
+    private func getVersionForRecord(
+        primaryKey: Tuple,
+        context: RecordContext
+    ) async throws -> Version? {
+        // LIMITATION: Uses first version index found, ignoring record type
+        let versionIndex = metaData.indexes.values.first { $0.type == .version }
+
+        guard let versionIndex = versionIndex else {
+            return nil
+        }
+
+        // Create version maintainer and get current version
+        let maintainer = createIndexMaintainer(for: versionIndex)
+        guard let versionMaintainer = maintainer as? VersionIndexMaintainer else {
+            return nil
+        }
+
+        return try await versionMaintainer.getCurrentVersion(
+            primaryKey: primaryKey,
+            transaction: context.getTransaction()
+        )
+    }
+
     private func updateIndexesForRecord(
         oldRecord: Record?,
         newRecord: Record?,
@@ -233,8 +339,24 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
                 index: index,
                 subspace: indexSubspace
             )
-        case .rank, .version, .permuted:
-            fatalError("Index type \(index.type) not yet implemented")
+        case .version:
+            return VersionIndexMaintainer(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+        case .permuted:
+            return try! PermutedIndexMaintainer(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+        case .rank:
+            return RankIndexMaintainer(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
         }
     }
 }

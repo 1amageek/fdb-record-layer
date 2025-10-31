@@ -64,14 +64,39 @@ public struct IndexOptions: Sendable {
     /// Whether this index can be used in equality predicates
     public var allowedInEquality: Bool
 
+    /// Base index name (for permuted indexes)
+    public var baseIndexName: String?
+
+    /// Permutation indices (for permuted indexes)
+    public var permutationIndices: [Int]?
+
+    /// Rank order (for rank indexes) - "asc" or "desc"
+    public var rankOrderString: String?
+
+    /// Bucket size (for rank indexes)
+    public var bucketSize: Int?
+
+    /// Tie-breaker field (for rank indexes)
+    public var tieBreaker: String?
+
     public init(
         unique: Bool = false,
         replaceOnDuplicate: Bool = false,
-        allowedInEquality: Bool = true
+        allowedInEquality: Bool = true,
+        baseIndexName: String? = nil,
+        permutationIndices: [Int]? = nil,
+        rankOrderString: String? = nil,
+        bucketSize: Int? = nil,
+        tieBreaker: String? = nil
     ) {
         self.unique = unique
         self.replaceOnDuplicate = replaceOnDuplicate
         self.allowedInEquality = allowedInEquality
+        self.baseIndexName = baseIndexName
+        self.permutationIndices = permutationIndices
+        self.rankOrderString = rankOrderString
+        self.bucketSize = bucketSize
+        self.tieBreaker = tieBreaker
     }
 }
 

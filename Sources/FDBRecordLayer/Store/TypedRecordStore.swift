@@ -60,24 +60,47 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     /// If the record already exists (same primary key), it will be updated.
     /// All indexes are automatically maintained.
     public func save(_ record: Record, context: RecordContext) async throws {
-        logger.debug("Saving record")
+        try await save(record, expectedVersion: nil, context: context)
+    }
+
+    /// Save a record with optimistic concurrency control
+    ///
+    /// If the record already exists (same primary key), it will be updated.
+    /// All indexes are automatically maintained.
+    ///
+    /// - Parameters:
+    ///   - record: The record to save
+    ///   - expectedVersion: The expected version for optimistic locking (nil for first save)
+    ///   - context: Transaction context
+    /// - Throws: RecordLayerError.versionMismatch if version doesn't match
+    public func save(_ record: Record, expectedVersion: Version?, context: RecordContext) async throws {
+        logger.debug("Saving record with version check")
 
         let transaction = context.getTransaction()
 
         // 1. Extract primary key
         let primaryKey = recordType.extractPrimaryKey(from: record, accessor: accessor)
 
-        // 2. Load existing record for index updates
+        // 2. Check version if expectedVersion is provided
+        if let expectedVersion = expectedVersion {
+            try await checkVersionForRecord(
+                primaryKey: primaryKey,
+                expectedVersion: expectedVersion,
+                context: context
+            )
+        }
+
+        // 3. Load existing record for index updates
         let existingRecord = try await load(primaryKey: primaryKey, context: context)
 
-        // 3. Serialize new record
+        // 4. Serialize new record
         let serialized = try serializer.serialize(record)
 
-        // 4. Save record
+        // 5. Save record
         let recordKey = recordSubspace.pack(primaryKey)
         transaction.setValue(serialized, for: recordKey)
 
-        // 5. Update indexes
+        // 6. Update indexes
         try await updateIndexesForRecord(
             oldRecord: existingRecord,
             newRecord: record,
@@ -103,6 +126,33 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         let record = try serializer.deserialize(bytes)
         logger.debug("Record loaded successfully")
         return record
+    }
+
+    /// Load a record with its current version
+    ///
+    /// - Parameters:
+    ///   - primaryKey: The primary key of the record
+    ///   - context: Transaction context
+    /// - Returns: Tuple of (record, version), or nil if record not found
+    public func loadWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (Record, Version)? {
+        logger.debug("Loading record with version")
+
+        // Load the record
+        guard let record = try await load(primaryKey: primaryKey, context: context) else {
+            logger.debug("Record not found")
+            return nil
+        }
+
+        // Get version from version index
+        let version = try await getVersionForRecord(primaryKey: primaryKey, context: context)
+
+        guard let version = version else {
+            logger.debug("Version not found for record")
+            return nil
+        }
+
+        logger.debug("Record with version loaded successfully")
+        return (record, version)
     }
 
     /// Delete a record by primary key
@@ -245,6 +295,67 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         }
     }
 
+    /// Check version for optimistic concurrency control
+    private func checkVersionForRecord(
+        primaryKey: Tuple,
+        expectedVersion: Version,
+        context: RecordContext
+    ) async throws {
+        // Find version index
+        let versionIndex = indexes.first { $0.type == .version }
+
+        guard let versionIndex = versionIndex else {
+            throw RecordLayerError.internalError("No version index configured for optimistic locking")
+        }
+
+        // Get current version and check
+        let currentVersion = try await getVersionForRecord(primaryKey: primaryKey, context: context)
+
+        guard let current = currentVersion else {
+            throw RecordLayerError.versionNotFound(version: expectedVersion)
+        }
+
+        guard current == expectedVersion else {
+            throw RecordLayerError.versionMismatch(
+                expected: expectedVersion,
+                actual: current
+            )
+        }
+    }
+
+    /// Get current version for a record
+    private func getVersionForRecord(
+        primaryKey: Tuple,
+        context: RecordContext
+    ) async throws -> Version? {
+        // Find version index
+        guard let versionIndex = indexes.first(where: { $0.type == .version }) else {
+            return nil
+        }
+
+        let transaction = context.getTransaction()
+        let indexSubspace = self.indexSubspace.subspace(versionIndex.subspaceTupleKey)
+
+        // Query version index for latest version of this primary key
+        let beginKey = indexSubspace.pack(primaryKey)
+        let endKey = beginKey + [0xFF]
+
+        let result = try await transaction.getRangeNative(
+            beginKey: beginKey,
+            endKey: endKey,
+            limit: 1,
+            snapshot: true
+        )
+
+        guard let (key, _) = result.records.last else {
+            return nil
+        }
+
+        // Extract version from key (last 12 bytes)
+        let versionBytes = Array(key.suffix(12))
+        return Version(bytes: versionBytes)
+    }
+
     private func updateIndexesForRecord(
         oldRecord: Record?,
         newRecord: Record?,
@@ -381,8 +492,99 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
                 transaction.atomicOp(key: sumKey, param: valueBytes, mutationType: .add)
             }
 
-        case .rank, .version, .permuted:
-            fatalError("Index type \(index.type) not yet implemented")
+        case .version:
+            // Version index doesn't need custom update/scan logic in TypedRecordStore
+            // It uses timestamps as placeholders for now
+            updateFunc = { oldRecord, newRecord, primaryKey, transaction in
+                if newRecord != nil {
+                    // Create version entry with timestamp
+                    let timestamp = Date().timeIntervalSince1970
+                    let timestampBytes = withUnsafeBytes(of: timestamp) { Array($0) }
+                    var keyWithTimestamp = indexSubspace.pack(primaryKey)
+                    keyWithTimestamp.append(contentsOf: timestampBytes)
+                    transaction.setValue(FDB.Bytes(), for: keyWithTimestamp)
+                }
+            }
+
+            scanFunc = { record, primaryKey, transaction in
+                // Create version entry with timestamp
+                let timestamp = Date().timeIntervalSince1970
+                let timestampBytes = withUnsafeBytes(of: timestamp) { Array($0) }
+                var keyWithTimestamp = indexSubspace.pack(primaryKey)
+                keyWithTimestamp.append(contentsOf: timestampBytes)
+                transaction.setValue(FDB.Bytes(), for: keyWithTimestamp)
+            }
+
+        case .permuted:
+            // Permuted index: Apply permutation to index values
+            updateFunc = { oldRecord, newRecord, primaryKey, transaction in
+                if let oldRecord = oldRecord {
+                    let values = index.rootExpression.evaluate(record: oldRecord, accessor: accessor)
+                    if let permutation = index.options.permutation {
+                        let permuted = try permutation.apply(values)
+                        let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                        let allElements = permuted + primaryKeyElements
+                        let tuple = TupleHelpers.toTuple(allElements)
+                        let oldKey = indexSubspace.pack(tuple)
+                        transaction.clear(key: oldKey)
+                    }
+                }
+
+                if let newRecord = newRecord {
+                    let values = index.rootExpression.evaluate(record: newRecord, accessor: accessor)
+                    if let permutation = index.options.permutation {
+                        let permuted = try permutation.apply(values)
+                        let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                        let allElements = permuted + primaryKeyElements
+                        let tuple = TupleHelpers.toTuple(allElements)
+                        let newKey = indexSubspace.pack(tuple)
+                        transaction.setValue(FDB.Bytes(), for: newKey)
+                    }
+                }
+            }
+
+            scanFunc = { record, primaryKey, transaction in
+                let values = index.rootExpression.evaluate(record: record, accessor: accessor)
+                if let permutation = index.options.permutation {
+                    let permuted = try permutation.apply(values)
+                    let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                    let allElements = permuted + primaryKeyElements
+                    let tuple = TupleHelpers.toTuple(allElements)
+                    let indexKey = indexSubspace.pack(tuple)
+                    transaction.setValue(FDB.Bytes(), for: indexKey)
+                }
+            }
+
+        case .rank:
+            // Rank index: Store score entries with grouping
+            updateFunc = { oldRecord, newRecord, primaryKey, transaction in
+                if let oldRecord = oldRecord {
+                    let values = index.rootExpression.evaluate(record: oldRecord, accessor: accessor)
+                    let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                    let allElements = values + primaryKeyElements
+                    let tuple = TupleHelpers.toTuple(allElements)
+                    let oldKey = indexSubspace.pack(tuple)
+                    transaction.clear(key: oldKey)
+                }
+
+                if let newRecord = newRecord {
+                    let values = index.rootExpression.evaluate(record: newRecord, accessor: accessor)
+                    let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                    let allElements = values + primaryKeyElements
+                    let tuple = TupleHelpers.toTuple(allElements)
+                    let newKey = indexSubspace.pack(tuple)
+                    transaction.setValue(FDB.Bytes(), for: newKey)
+                }
+            }
+
+            scanFunc = { record, primaryKey, transaction in
+                let values = index.rootExpression.evaluate(record: record, accessor: accessor)
+                let primaryKeyElements = try Tuple.decode(from: primaryKey.encode())
+                let allElements = values + primaryKeyElements
+                let tuple = TupleHelpers.toTuple(allElements)
+                let indexKey = indexSubspace.pack(tuple)
+                transaction.setValue(FDB.Bytes(), for: indexKey)
+            }
         }
 
         // Create a simple maintainer from the closures

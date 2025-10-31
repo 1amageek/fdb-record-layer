@@ -19,6 +19,18 @@ public enum RecordLayerError: Error, Sendable {
     case missingUnionDescriptor
     case noValidPlan
     case internalError(String)
+
+    // Version Index errors
+    case versionMismatch(expected: String, actual: String)
+    case versionNotFound(version: String)
+    case invalidVersion(String)
+
+    // Permuted Index errors
+    case invalidPermutation(String)
+
+    // Rank Index errors
+    case invalidRank(String)
+    case rankOutOfBounds(rank: Int, total: Int)
 }
 
 extension RecordLayerError: LocalizedError {
@@ -52,6 +64,24 @@ extension RecordLayerError: LocalizedError {
             return "No valid query plan could be generated"
         case .internalError(let message):
             return "Internal error: \(message)"
+
+        // Version Index errors
+        case .versionMismatch(let expected, let actual):
+            return "Version mismatch: expected \(expected), got \(actual)"
+        case .versionNotFound(let version):
+            return "Version not found: \(version)"
+        case .invalidVersion(let message):
+            return "Invalid version: \(message)"
+
+        // Permuted Index errors
+        case .invalidPermutation(let message):
+            return "Invalid permutation: \(message)"
+
+        // Rank Index errors
+        case .invalidRank(let message):
+            return "Invalid rank: \(message)"
+        case .rankOutOfBounds(let rank, let total):
+            return "Rank \(rank) is out of bounds (total: \(total))"
         }
     }
 }
