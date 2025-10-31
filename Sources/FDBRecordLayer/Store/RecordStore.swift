@@ -92,7 +92,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
             newRecord: record,
             recordType: recordType,
             recordDict: recordDict,
-            transaction: transaction
+            context: context
         )
 
         logger.debug("Record saved successfully")
@@ -147,7 +147,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
             newRecord: nil,
             recordType: recordType,
             recordDict: recordDict,
-            transaction: transaction
+            context: context
         )
 
         logger.debug("Record deleted successfully")
@@ -164,16 +164,42 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
 
     // MARK: - Internal Methods
 
+    /// Filter indexes to only those that should be maintained
+    ///
+    /// - Parameter context: Transaction context for consistent state reading
+    /// - Returns: List of maintainable indexes
+    private func filterMaintainableIndexes(context: RecordContext) async throws -> [Index] {
+        let allIndexes = Array(metaData.indexes.values)
+        let indexNames = allIndexes.map { $0.name }
+        let states = try await indexStateManager.states(of: indexNames, context: context)
+
+        return allIndexes.filter { index in
+            guard let state = states[index.name] else { return false }
+            return state.shouldMaintain
+        }
+    }
+
     private func updateIndexesForRecord(
         oldRecord: Record?,
         newRecord: Record?,
         recordType: RecordType,
         recordDict: [String: Any],
-        transaction: any TransactionProtocol
+        context: RecordContext
     ) async throws {
-        let indexes = metaData.getIndexesForRecordType(recordType.name)
+        let transaction = context.getTransaction()
 
-        for index in indexes {
+        // Only update indexes that should be maintained (checking state)
+        let maintainableIndexes = try await filterMaintainableIndexes(context: context)
+
+        // Filter to indexes for this record type
+        let relevantIndexes = maintainableIndexes.filter { index in
+            if let recordTypes = index.recordTypes {
+                return recordTypes.contains(recordType.name)
+            }
+            return true  // Universal index
+        }
+
+        for index in relevantIndexes {
             let maintainer = createIndexMaintainer(for: index)
 
             let oldDict = oldRecord as? [String: Any]

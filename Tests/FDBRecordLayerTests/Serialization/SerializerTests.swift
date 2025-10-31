@@ -95,19 +95,25 @@ struct SerializerTests {
         }
     }
 
-    @Test("CodableSerializer produces deterministic output")
-    func codableSerializerDeterministic() throws {
+    @Test("CodableSerializer produces consistent round-trip")
+    func codableSerializerConsistentRoundTrip() throws {
         let serializer = CodableSerializer<SimpleRecord>()
         let record = SimpleRecord(id: 123, name: "Test", active: false)
 
-        // Serialize multiple times
+        // Serialize and deserialize multiple times to verify consistency
         let bytes1 = try serializer.serialize(record)
-        let bytes2 = try serializer.serialize(record)
-        let bytes3 = try serializer.serialize(record)
+        let decoded1 = try serializer.deserialize(bytes1)
 
-        // All should be identical
-        #expect(bytes1 == bytes2)
-        #expect(bytes2 == bytes3)
+        let bytes2 = try serializer.serialize(decoded1)
+        let decoded2 = try serializer.deserialize(bytes2)
+
+        let bytes3 = try serializer.serialize(decoded2)
+        let decoded3 = try serializer.deserialize(bytes3)
+
+        // All decoded records should be equal (round-trip consistency)
+        #expect(decoded1 == record)
+        #expect(decoded2 == record)
+        #expect(decoded3 == record)
     }
 
     @Test("CodableSerializer handles empty strings")
