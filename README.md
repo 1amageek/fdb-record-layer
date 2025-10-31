@@ -640,7 +640,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- 📚 [Documentation](ARCHITECTURE.md)
+- 📚 [Documentation](docs/ARCHITECTURE.md)
 - 🐛 [Issue Tracker](https://github.com/yourusername/fdb-record-layer/issues)
 - 💬 [Discussions](https://github.com/yourusername/fdb-record-layer/discussions)
 
