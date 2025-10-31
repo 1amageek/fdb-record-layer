@@ -59,7 +59,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     ///
     /// If the record already exists (same primary key), it will be updated.
     /// All indexes are automatically maintained.
-    public func saveRecord(_ record: Record, context: RecordContext) async throws {
+    public func save(_ record: Record, context: RecordContext) async throws {
         logger.debug("Saving record")
 
         let transaction = context.getTransaction()
@@ -68,7 +68,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         let primaryKey = recordType.extractPrimaryKey(from: record, accessor: accessor)
 
         // 2. Load existing record for index updates
-        let existingRecord = try await loadRecord(primaryKey: primaryKey, context: context)
+        let existingRecord = try await load(primaryKey: primaryKey, context: context)
 
         // 3. Serialize new record
         let serialized = try serializer.serialize(record)
@@ -89,7 +89,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     }
 
     /// Load a record by primary key
-    public func loadRecord(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
+    public func load(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
         logger.debug("Loading record with primary key")
 
         let transaction = context.getTransaction()
@@ -106,13 +106,13 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     }
 
     /// Delete a record by primary key
-    public func deleteRecord(primaryKey: Tuple, context: RecordContext) async throws {
+    public func delete(primaryKey: Tuple, context: RecordContext) async throws {
         logger.debug("Deleting record with primary key")
 
         let transaction = context.getTransaction()
 
         // 1. Load existing record for index updates
-        guard let existingRecord = try await loadRecord(primaryKey: primaryKey, context: context) else {
+        guard let existingRecord = try await load(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found, nothing to delete")
             return
         }
@@ -158,8 +158,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     }
 
     /// Execute a query and collect all results into an array
-    public func queryRecords(
-        _ query: TypedRecordQuery<Record>,
+    public func records(
+        matching query: TypedRecordQuery<Record>,
         context: RecordContext
     ) async throws -> [Record] {
         let cursor = try await executeQuery(query, context: context)
@@ -173,8 +173,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     }
 
     /// Execute a query and return the first result
-    public func queryFirstRecord(
-        _ query: TypedRecordQuery<Record>,
+    public func firstRecord(
+        matching query: TypedRecordQuery<Record>,
         context: RecordContext
     ) async throws -> Record? {
         // Add limit to the query if not already present
@@ -192,8 +192,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     }
 
     /// Count records matching a query
-    public func countRecords(
-        _ query: TypedRecordQuery<Record>,
+    public func count(
+        matching query: TypedRecordQuery<Record>,
         context: RecordContext
     ) async throws -> Int {
         let cursor = try await executeQuery(query, context: context)
@@ -211,8 +211,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     /// Get index state
     ///
     /// Delegates to IndexStateManager for consistent state management
-    public func getIndexState(_ indexName: String, context: RecordContext) async throws -> IndexState {
-        return try await indexStateManager.getState(indexName: indexName, context: context)
+    public func indexState(of indexName: String, context: RecordContext) async throws -> IndexState {
+        return try await indexStateManager.state(of: indexName, context: context)
     }
 
     // MARK: - Internal Methods
@@ -223,7 +223,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     /// - Returns: List of readable indexes
     private func filterReadableIndexes(context: RecordContext) async throws -> [TypedIndex<Record>] {
         let indexNames = indexes.map { $0.name }
-        let states = try await indexStateManager.getStates(indexNames: indexNames, context: context)
+        let states = try await indexStateManager.states(of: indexNames, context: context)
 
         return indexes.filter { index in
             guard let state = states[index.name] else { return false }
@@ -237,7 +237,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     /// - Returns: List of maintainable indexes
     private func filterMaintainableIndexes(context: RecordContext) async throws -> [TypedIndex<Record>] {
         let indexNames = indexes.map { $0.name }
-        let states = try await indexStateManager.getStates(indexNames: indexNames, context: context)
+        let states = try await indexStateManager.states(of: indexNames, context: context)
 
         return indexes.filter { index in
             guard let state = states[index.name] else { return false }

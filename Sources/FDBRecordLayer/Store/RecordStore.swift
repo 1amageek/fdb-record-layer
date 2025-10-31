@@ -55,7 +55,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     ///
     /// If the record already exists (same primary key), it will be updated.
     /// All indexes are automatically maintained.
-    public func saveRecord(_ record: Record, context: RecordContext) async throws {
+    public func save(_ record: Record, context: RecordContext) async throws {
         logger.debug("Saving record")
 
         let transaction = context.getTransaction()
@@ -77,7 +77,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         let primaryKey = TupleHelpers.toTuple(primaryKeyValues)
 
         // Load existing record for index updates
-        let existingRecord = try await loadRecord(primaryKey: primaryKey, context: context)
+        let existingRecord = try await load(primaryKey: primaryKey, context: context)
 
         // Serialize new record
         let serialized = try serializer.serialize(record)
@@ -99,7 +99,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     }
 
     /// Load a record by primary key
-    public func loadRecord(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
+    public func load(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
         logger.debug("Loading record with primary key")
 
         let transaction = context.getTransaction()
@@ -116,13 +116,13 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     }
 
     /// Delete a record by primary key
-    public func deleteRecord(primaryKey: Tuple, context: RecordContext) async throws {
+    public func delete(primaryKey: Tuple, context: RecordContext) async throws {
         logger.debug("Deleting record with primary key")
 
         let transaction = context.getTransaction()
 
         // Load existing record for index updates
-        guard let existingRecord = try await loadRecord(primaryKey: primaryKey, context: context) else {
+        guard let existingRecord = try await load(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found, nothing to delete")
             return
         }
@@ -158,8 +158,8 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     /// Get index state
     ///
     /// Delegates to IndexStateManager for consistent state management
-    public func getIndexState(_ indexName: String, context: RecordContext) async throws -> IndexState {
-        return try await indexStateManager.getState(indexName: indexName, context: context)
+    public func indexState(of indexName: String, context: RecordContext) async throws -> IndexState {
+        return try await indexStateManager.state(of: indexName, context: context)
     }
 
     // MARK: - Internal Methods
