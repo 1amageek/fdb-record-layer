@@ -16,6 +16,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     private let serializer: any RecordSerializer<Record>
     private let accessor: any FieldAccessor<Record>
     private let logger: Logger
+    private let indexStateManager: IndexStateManager
 
     // Subspaces
     private let recordSubspace: Subspace
@@ -40,6 +41,11 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         self.serializer = serializer
         self.accessor = accessor
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
+        self.indexStateManager = IndexStateManager(
+            database: database,
+            subspace: subspace,
+            logger: logger
+        )
 
         // Initialize subspaces
         self.recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
@@ -76,7 +82,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
             oldRecord: existingRecord,
             newRecord: record,
             primaryKey: primaryKey,
-            transaction: transaction
+            context: context
         )
 
         logger.debug("Record saved successfully")
@@ -120,7 +126,7 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
             oldRecord: existingRecord,
             newRecord: nil,
             primaryKey: primaryKey,
-            transaction: transaction
+            context: context
         )
 
         logger.debug("Record deleted successfully")
@@ -133,8 +139,11 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         _ query: TypedRecordQuery<Record>,
         context: RecordContext
     ) async throws -> AnyTypedRecordCursor<Record> {
-        // Create a query planner
-        let planner = TypedRecordQueryPlanner(recordType: recordType, indexes: indexes)
+        // Filter to only readable indexes (using the same transaction context)
+        let readableIndexes = try await filterReadableIndexes(context: context)
+
+        // Create a query planner with only readable indexes
+        let planner = TypedRecordQueryPlanner(recordType: recordType, indexes: readableIndexes)
 
         // Generate an execution plan
         let plan = try planner.plan(query)
@@ -200,38 +209,54 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
     // MARK: - Index Management
 
     /// Get index state
+    ///
+    /// Delegates to IndexStateManager for consistent state management
     public func getIndexState(_ indexName: String, context: RecordContext) async throws -> IndexState {
-        let transaction = context.getTransaction()
-        let stateKey = indexStateSubspace.pack(Tuple(indexName))
-
-        guard let bytes = try await transaction.getValue(for: stateKey),
-              let stateValue = bytes.first else {
-            return .building
-        }
-
-        guard let state = IndexState(rawValue: stateValue) else {
-            throw RecordLayerError.invalidIndexState(stateValue)
-        }
-
-        return state
-    }
-
-    /// Set index state
-    public func setIndexState(_ indexName: String, state: IndexState, context: RecordContext) {
-        let transaction = context.getTransaction()
-        let stateKey = indexStateSubspace.pack(Tuple(indexName))
-        transaction.setValue([state.rawValue], for: stateKey)
+        return try await indexStateManager.getState(indexName: indexName, context: context)
     }
 
     // MARK: - Internal Methods
+
+    /// Filter indexes to only those that are readable
+    ///
+    /// - Parameter context: Transaction context for consistent state reading
+    /// - Returns: List of readable indexes
+    private func filterReadableIndexes(context: RecordContext) async throws -> [TypedIndex<Record>] {
+        let indexNames = indexes.map { $0.name }
+        let states = try await indexStateManager.getStates(indexNames: indexNames, context: context)
+
+        return indexes.filter { index in
+            guard let state = states[index.name] else { return false }
+            return state.isReadable
+        }
+    }
+
+    /// Filter indexes to only those that should be maintained
+    ///
+    /// - Parameter context: Transaction context for consistent state reading
+    /// - Returns: List of maintainable indexes
+    private func filterMaintainableIndexes(context: RecordContext) async throws -> [TypedIndex<Record>] {
+        let indexNames = indexes.map { $0.name }
+        let states = try await indexStateManager.getStates(indexNames: indexNames, context: context)
+
+        return indexes.filter { index in
+            guard let state = states[index.name] else { return false }
+            return state.shouldMaintain
+        }
+    }
 
     private func updateIndexesForRecord(
         oldRecord: Record?,
         newRecord: Record?,
         primaryKey: Tuple,
-        transaction: any TransactionProtocol
+        context: RecordContext
     ) async throws {
-        for index in indexes {
+        let transaction = context.getTransaction()
+
+        // Only update indexes that should be maintained (using the same transaction context)
+        let maintainableIndexes = try await filterMaintainableIndexes(context: context)
+
+        for index in maintainableIndexes {
             let maintainer = createIndexMaintainer(for: index)
 
             try await maintainer.updateIndex(

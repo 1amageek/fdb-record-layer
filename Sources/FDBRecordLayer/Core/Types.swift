@@ -53,6 +53,27 @@ extension RecordLayerError: LocalizedError {
     }
 }
 
+// MARK: - Convenience Errors
+
+extension RecordLayerError {
+    /// Invalid state transition error
+    public static func invalidStateTransition(
+        from: IndexState,
+        to: IndexState,
+        index: String,
+        reason: String = ""
+    ) -> RecordLayerError {
+        let message = "Invalid state transition for index '\(index)': \(from) → \(to)"
+        let fullMessage = reason.isEmpty ? message : "\(message). \(reason)"
+        return .internalError(fullMessage)
+    }
+
+    /// Invalid indexing policy error
+    public static func invalidIndexingPolicy(_ message: String) -> RecordLayerError {
+        return .internalError("Invalid indexing policy: \(message)")
+    }
+}
+
 // MARK: - Keyspace Identifiers
 
 /// Record Store keyspace identifiers
@@ -69,12 +90,68 @@ public enum RecordStoreKeyspace: Int64, Sendable {
 
 // MARK: - Index State
 
-/// State of an index
-public enum IndexState: UInt8, Sendable {
-    case readable = 0       // Ready for read and write
-    case disabled = 1       // Disabled
-    case writeOnly = 2      // Building, writes allowed
-    case building = 3       // Building, writes not recommended
+/// Index lifecycle states
+///
+/// State transition diagram:
+/// ```
+///     ┌──────────┐
+///     │ DISABLED │ ◄─────────────┐
+///     └─────┬────┘               │
+///           │ enableIndex()      │
+///           ▼                    │ disableIndex()
+///     ┌──────────┐               │
+///     │WRITE_ONLY│               │
+///     └─────┬────┘               │
+///           │ markReadable()     │
+///           ▼                    │
+///     ┌──────────┐               │
+///     │ READABLE │ ──────────────┘
+///     └──────────┘
+/// ```
+public enum IndexState: UInt8, Sendable, CustomStringConvertible {
+    /// Index is fully operational and can be used by queries
+    case readable = 0
+
+    /// Index is disabled
+    /// - Not maintained on writes
+    /// - Not used by queries
+    case disabled = 1
+
+    /// Index is being built or rebuilt
+    /// - Maintained on writes
+    /// - Not yet usable for queries
+    case writeOnly = 2
+
+    // MARK: - Helper Properties
+
+    /// Returns true if this index can be used by queries
+    public var isReadable: Bool {
+        return self == .readable
+    }
+
+    /// Returns true if this index should be maintained on writes
+    public var shouldMaintain: Bool {
+        switch self {
+        case .readable, .writeOnly:
+            return true
+        case .disabled:
+            return false
+        }
+    }
+
+    // MARK: - CustomStringConvertible
+
+    /// String representation for debugging and logging
+    public var description: String {
+        switch self {
+        case .readable:
+            return "readable"
+        case .disabled:
+            return "disabled"
+        case .writeOnly:
+            return "writeOnly"
+        }
+    }
 }
 
 // MARK: - Index Type

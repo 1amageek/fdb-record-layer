@@ -39,11 +39,4 @@ public protocol RecordStoreProtocol: Sendable {
     ///   - context: The transaction context
     /// - Returns: The index state
     func getIndexState(_ indexName: String, context: RecordContext) async throws -> IndexState
-
-    /// Set index state
-    /// - Parameters:
-    ///   - indexName: The index name
-    ///   - state: The new state
-    ///   - context: The transaction context
-    func setIndexState(_ indexName: String, state: IndexState, context: RecordContext)
 }

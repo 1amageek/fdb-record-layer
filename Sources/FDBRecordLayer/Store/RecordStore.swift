@@ -14,6 +14,7 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
     public let metaData: RecordMetaData
     private let serializer: any RecordSerializer<Record>
     private let logger: Logger
+    private let indexStateManager: IndexStateManager
 
     // Subspaces
     private let recordSubspace: Subspace
@@ -35,6 +36,11 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         self.metaData = metaData
         self.serializer = serializer
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
+        self.indexStateManager = IndexStateManager(
+            database: database,
+            subspace: subspace,
+            logger: logger
+        )
 
         // Initialize subspaces
         self.recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
@@ -149,27 +155,11 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
 
     // MARK: - Index Management
 
+    /// Get index state
+    ///
+    /// Delegates to IndexStateManager for consistent state management
     public func getIndexState(_ indexName: String, context: RecordContext) async throws -> IndexState {
-        let transaction = context.getTransaction()
-        let stateKey = indexStateSubspace.pack(Tuple(indexName))
-
-        guard let bytes = try await transaction.getValue(for: stateKey),
-              let stateValue = bytes.first else {
-            // Default to building if not set
-            return .building
-        }
-
-        guard let state = IndexState(rawValue: stateValue) else {
-            throw RecordLayerError.invalidIndexState(stateValue)
-        }
-
-        return state
-    }
-
-    public func setIndexState(_ indexName: String, state: IndexState, context: RecordContext) {
-        let transaction = context.getTransaction()
-        let stateKey = indexStateSubspace.pack(Tuple(indexName))
-        transaction.setValue([state.rawValue], for: stateKey)
+        return try await indexStateManager.getState(indexName: indexName, context: context)
     }
 
     // MARK: - Internal Methods

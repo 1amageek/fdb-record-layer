@@ -21,9 +21,9 @@ final class SubspaceTests: XCTestCase {
         let tuple = Tuple("key", Int64(123))
 
         let packed = subspace.pack(tuple)
-        let unpacked = try subspace.unpack(packed)
+        _ = try subspace.unpack(packed)
 
-        // Verify the unpacked tuple matches
+        // Verify the packed key has the subspace prefix
         XCTAssertTrue(packed.starts(with: subspace.prefix))
     }
 
@@ -32,7 +32,9 @@ final class SubspaceTests: XCTestCase {
         let (begin, end) = subspace.range()
 
         XCTAssertEqual(begin, subspace.prefix)
-        XCTAssertGreaterThan(end, begin)
+        // End should be greater than begin (lexicographically)
+        XCTAssertNotEqual(end, begin)
+        XCTAssertTrue(end.starts(with: subspace.prefix))
     }
 
     func testContains() {

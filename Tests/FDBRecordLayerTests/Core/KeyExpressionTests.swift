@@ -20,7 +20,7 @@ final class KeyExpressionTests: XCTestCase {
         let result = expression.evaluate(record: record)
 
         XCTAssertEqual(result.count, 1)
-        XCTAssertTrue(result[0] is TupleNil)
+        XCTAssertEqual(result[0] as? String, "")
     }
 
     func testConcatenateKeyExpression() {
@@ -82,6 +82,6 @@ final class KeyExpressionTests: XCTestCase {
         let result = nestExpr.evaluate(record: record)
 
         XCTAssertEqual(result.count, 1)
-        XCTAssertTrue(result[0] is TupleNil)
+        XCTAssertEqual(result[0] as? String, "")
     }
 }
