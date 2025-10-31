@@ -459,6 +459,7 @@ For detailed architecture information, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - [Architecture Guide](ARCHITECTURE.md) - Detailed design and implementation
 - [Project Structure](PROJECT_STRUCTURE.md) - File organization and conventions
 - [Migration Guide](MIGRATION.md) - Migrating from RDF Layer
+- [Query Optimizer](docs/QUERY_OPTIMIZER.md) - Cost-based query optimization guide
 - [Getting Started](Documentation/GettingStarted.md) - Tutorial and examples
 - [Metadata Guide](Documentation/Metadata.md) - Schema definition
 - [Index Guide](Documentation/Indexes.md) - Index types and usage
