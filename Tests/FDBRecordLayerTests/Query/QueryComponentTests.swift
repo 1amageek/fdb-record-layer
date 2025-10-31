@@ -1,8 +1,10 @@
-import XCTest
+import Testing
 @testable import FDBRecordLayer
 
-final class QueryComponentTests: XCTestCase {
-    func testFieldQueryComponentEquals() {
+@Suite("QueryComponent Tests")
+struct QueryComponentTests {
+    @Test("Field query component with equals comparison matches correctly")
+    func fieldQueryComponentEquals() {
         let component = FieldQueryComponent(
             fieldName: "name",
             comparison: .equals,
@@ -12,11 +14,12 @@ final class QueryComponentTests: XCTestCase {
         let match: [String: Any] = ["name": "Alice", "age": 30]
         let noMatch: [String: Any] = ["name": "Bob", "age": 25]
 
-        XCTAssertTrue(component.matches(record: match))
-        XCTAssertFalse(component.matches(record: noMatch))
+        #expect(component.matches(record: match))
+        #expect(!component.matches(record: noMatch))
     }
 
-    func testFieldQueryComponentLessThan() {
+    @Test("Field query component with lessThan comparison matches correctly")
+    func fieldQueryComponentLessThan() {
         let component = FieldQueryComponent(
             fieldName: "age",
             comparison: .lessThan,
@@ -26,11 +29,12 @@ final class QueryComponentTests: XCTestCase {
         let match: [String: Any] = ["name": "Alice", "age": Int64(25)]
         let noMatch: [String: Any] = ["name": "Bob", "age": Int64(35)]
 
-        XCTAssertTrue(component.matches(record: match))
-        XCTAssertFalse(component.matches(record: noMatch))
+        #expect(component.matches(record: match))
+        #expect(!component.matches(record: noMatch))
     }
 
-    func testFieldQueryComponentStartsWith() {
+    @Test("Field query component with startsWith comparison matches correctly")
+    func fieldQueryComponentStartsWith() {
         let component = FieldQueryComponent(
             fieldName: "email",
             comparison: .startsWith,
@@ -40,11 +44,12 @@ final class QueryComponentTests: XCTestCase {
         let match: [String: Any] = ["email": "alice@example.com"]
         let noMatch: [String: Any] = ["email": "bob@example.com"]
 
-        XCTAssertTrue(component.matches(record: match))
-        XCTAssertFalse(component.matches(record: noMatch))
+        #expect(component.matches(record: match))
+        #expect(!component.matches(record: noMatch))
     }
 
-    func testAndQueryComponent() {
+    @Test("AND query component matches only when all children match")
+    func andQueryComponent() {
         let comp1 = FieldQueryComponent(fieldName: "age", comparison: .greaterThan, value: Int64(18))
         let comp2 = FieldQueryComponent(fieldName: "age", comparison: .lessThan, value: Int64(65))
         let andComp = AndQueryComponent(children: [comp1, comp2])
@@ -53,12 +58,13 @@ final class QueryComponentTests: XCTestCase {
         let noMatch1: [String: Any] = ["age": Int64(10)]
         let noMatch2: [String: Any] = ["age": Int64(70)]
 
-        XCTAssertTrue(andComp.matches(record: match))
-        XCTAssertFalse(andComp.matches(record: noMatch1))
-        XCTAssertFalse(andComp.matches(record: noMatch2))
+        #expect(andComp.matches(record: match))
+        #expect(!andComp.matches(record: noMatch1))
+        #expect(!andComp.matches(record: noMatch2))
     }
 
-    func testOrQueryComponent() {
+    @Test("OR query component matches when any child matches")
+    func orQueryComponent() {
         let comp1 = FieldQueryComponent(fieldName: "city", comparison: .equals, value: "NYC")
         let comp2 = FieldQueryComponent(fieldName: "city", comparison: .equals, value: "SF")
         let orComp = OrQueryComponent(children: [comp1, comp2])
@@ -67,19 +73,20 @@ final class QueryComponentTests: XCTestCase {
         let match2: [String: Any] = ["city": "SF"]
         let noMatch: [String: Any] = ["city": "LA"]
 
-        XCTAssertTrue(orComp.matches(record: match1))
-        XCTAssertTrue(orComp.matches(record: match2))
-        XCTAssertFalse(orComp.matches(record: noMatch))
+        #expect(orComp.matches(record: match1))
+        #expect(orComp.matches(record: match2))
+        #expect(!orComp.matches(record: noMatch))
     }
 
-    func testNotQueryComponent() {
+    @Test("NOT query component negates child result")
+    func notQueryComponent() {
         let inner = FieldQueryComponent(fieldName: "active", comparison: .equals, value: true)
         let notComp = NotQueryComponent(child: inner)
 
         let match: [String: Any] = ["active": false]
         let noMatch: [String: Any] = ["active": true]
 
-        XCTAssertTrue(notComp.matches(record: match))
-        XCTAssertFalse(notComp.matches(record: noMatch))
+        #expect(notComp.matches(record: match))
+        #expect(!notComp.matches(record: noMatch))
     }
 }

@@ -1,29 +1,33 @@
-import XCTest
+import Testing
 @testable import FDBRecordLayer
 
-final class KeyExpressionTests: XCTestCase {
-    func testFieldKeyExpression() {
+@Suite("KeyExpression Tests")
+struct KeyExpressionTests {
+    @Test("FieldKeyExpression evaluates existing field")
+    func fieldKeyExpression() {
         let expression = FieldKeyExpression(fieldName: "name")
         let record: [String: Any] = ["name": "Alice", "age": 30]
 
         let result = expression.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0] as? String, "Alice")
-        XCTAssertEqual(expression.columnCount, 1)
+        #expect(result.count == 1)
+        #expect(result[0] as? String == "Alice")
+        #expect(expression.columnCount == 1)
     }
 
-    func testFieldKeyExpressionMissingField() {
+    @Test("FieldKeyExpression returns empty string for missing field")
+    func fieldKeyExpressionMissingField() {
         let expression = FieldKeyExpression(fieldName: "email")
         let record: [String: Any] = ["name": "Alice"]
 
         let result = expression.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0] as? String, "")
+        #expect(result.count == 1)
+        #expect(result[0] as? String == "")
     }
 
-    func testConcatenateKeyExpression() {
+    @Test("ConcatenateKeyExpression combines multiple fields")
+    func concatenateKeyExpression() {
         let expr1 = FieldKeyExpression(fieldName: "firstName")
         let expr2 = FieldKeyExpression(fieldName: "lastName")
         let concat = ConcatenateKeyExpression(children: [expr1, expr2])
@@ -32,33 +36,36 @@ final class KeyExpressionTests: XCTestCase {
 
         let result = concat.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0] as? String, "Alice")
-        XCTAssertEqual(result[1] as? String, "Smith")
-        XCTAssertEqual(concat.columnCount, 2)
+        #expect(result.count == 2)
+        #expect(result[0] as? String == "Alice")
+        #expect(result[1] as? String == "Smith")
+        #expect(concat.columnCount == 2)
     }
 
-    func testLiteralKeyExpression() {
+    @Test("LiteralKeyExpression returns constant value")
+    func literalKeyExpression() {
         let expression = LiteralKeyExpression(value: "constant")
         let record: [String: Any] = [:]
 
         let result = expression.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0] as? String, "constant")
+        #expect(result.count == 1)
+        #expect(result[0] as? String == "constant")
     }
 
-    func testEmptyKeyExpression() {
+    @Test("EmptyKeyExpression returns empty array")
+    func emptyKeyExpression() {
         let expression = EmptyKeyExpression()
         let record: [String: Any] = ["name": "Alice"]
 
         let result = expression.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 0)
-        XCTAssertEqual(expression.columnCount, 0)
+        #expect(result.count == 0)
+        #expect(expression.columnCount == 0)
     }
 
-    func testNestExpression() {
+    @Test("NestExpression evaluates nested field")
+    func nestExpression() {
         let childExpr = FieldKeyExpression(fieldName: "street")
         let nestExpr = NestExpression(parentField: "address", child: childExpr)
 
@@ -69,11 +76,12 @@ final class KeyExpressionTests: XCTestCase {
 
         let result = nestExpr.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0] as? String, "Main St")
+        #expect(result.count == 1)
+        #expect(result[0] as? String == "Main St")
     }
 
-    func testNestExpressionMissingParent() {
+    @Test("NestExpression returns empty string for missing parent field")
+    func nestExpressionMissingParent() {
         let childExpr = FieldKeyExpression(fieldName: "street")
         let nestExpr = NestExpression(parentField: "address", child: childExpr)
 
@@ -81,7 +89,7 @@ final class KeyExpressionTests: XCTestCase {
 
         let result = nestExpr.evaluate(record: record)
 
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0] as? String, "")
+        #expect(result.count == 1)
+        #expect(result[0] as? String == "")
     }
 }

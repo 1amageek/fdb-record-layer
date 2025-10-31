@@ -39,7 +39,19 @@ let package = Package(
         .testTarget(
             name: "FDBRecordLayerTests",
             dependencies: ["FDBRecordLayer"],
-            path: "Tests/FDBRecordLayerTests"
+            path: "Tests/FDBRecordLayerTests",
+            swiftSettings: [
+                .enableUpcomingFeature("BareSlashRegexLiterals"),
+                .enableUpcomingFeature("ConciseMagicFile"),
+                .enableUpcomingFeature("ExistentialAny"),
+                .enableUpcomingFeature("ForwardTrailingClosures"),
+                .enableUpcomingFeature("ImplicitOpenExistentials")
+                // Note: StrictConcurrency is NOT enabled for tests to allow flexible initialization patterns
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
         ),
     ],
     swiftLanguageModes: [.v5]

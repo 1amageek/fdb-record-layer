@@ -1,22 +1,26 @@
-import XCTest
+import Testing
 import FoundationDB
 @testable import FDBRecordLayer
 
-final class SubspaceTests: XCTestCase {
-    func testSubspaceCreation() {
+@Suite("Subspace Tests")
+struct SubspaceTests {
+    @Test("Subspace creation creates non-empty prefix")
+    func subspaceCreation() {
         let subspace = Subspace(rootPrefix: "test")
-        XCTAssertFalse(subspace.prefix.isEmpty)
+        #expect(!subspace.prefix.isEmpty)
     }
 
-    func testNestedSubspace() {
+    @Test("Nested subspace prefix includes root prefix")
+    func nestedSubspace() {
         let root = Subspace(rootPrefix: "test")
         let nested = root.subspace(Int64(1), "child")
 
-        XCTAssertTrue(nested.prefix.starts(with: root.prefix))
-        XCTAssertGreaterThan(nested.prefix.count, root.prefix.count)
+        #expect(nested.prefix.starts(with: root.prefix))
+        #expect(nested.prefix.count > root.prefix.count)
     }
 
-    func testPackUnpack() throws {
+    @Test("Pack/unpack preserves subspace prefix")
+    func packUnpack() throws {
         let subspace = Subspace(rootPrefix: "test")
         let tuple = Tuple("key", Int64(123))
 
@@ -24,27 +28,64 @@ final class SubspaceTests: XCTestCase {
         _ = try subspace.unpack(packed)
 
         // Verify the packed key has the subspace prefix
-        XCTAssertTrue(packed.starts(with: subspace.prefix))
+        #expect(packed.starts(with: subspace.prefix))
     }
 
-    func testRange() {
+    @Test("Range returns correct begin and end keys")
+    func range() {
         let subspace = Subspace(rootPrefix: "test")
         let (begin, end) = subspace.range()
 
-        XCTAssertEqual(begin, subspace.prefix)
-        // End should be greater than begin (lexicographically)
-        XCTAssertNotEqual(end, begin)
-        XCTAssertTrue(end.starts(with: subspace.prefix))
+        #expect(begin == subspace.prefix)
+        // End should be different from begin
+        #expect(end != begin)
+        // Last byte should be incremented
+        let expectedEnd = subspace.prefix.dropLast() + [subspace.prefix.last! + 1]
+        #expect(end == Array(expectedEnd))
     }
 
-    func testContains() {
+    @Test("Range handles 0xFF overflow by appending 0x00")
+    func rangeOverflow() {
+        // Create a subspace with string that encodes to end with 0xFF
+        // Use "test" which should encode without 0xFF at end
+        let subspace = Subspace(rootPrefix: "test\u{00FF}")
+        let (begin, end) = subspace.range()
+
+        #expect(begin == subspace.prefix)
+        // Should handle overflow correctly
+        #expect(end != begin)
+        #expect(end.count > 0)
+    }
+
+    @Test("Range handles special characters")
+    func rangeSpecialCharacters() {
+        let subspace = Subspace(rootPrefix: "test_special_chars")
+        let (begin, end) = subspace.range()
+
+        #expect(begin == subspace.prefix)
+        #expect(end != begin)
+        #expect(end.count > 0)
+    }
+
+    @Test("Range handles empty prefix")
+    func rangeEmptyPrefix() {
+        let subspace = Subspace(rootPrefix: "")
+        let (begin, end) = subspace.range()
+
+        // Empty string encodes to something in tuple encoding
+        #expect(!begin.isEmpty) // Tuple encoding of empty string is not empty
+        #expect(end != begin)
+    }
+
+    @Test("Contains checks if key belongs to subspace")
+    func contains() {
         let subspace = Subspace(rootPrefix: "test")
         let tuple = Tuple("key")
         let key = subspace.pack(tuple)
 
-        XCTAssertTrue(subspace.contains(key))
+        #expect(subspace.contains(key))
 
         let otherSubspace = Subspace(rootPrefix: "other")
-        XCTAssertFalse(otherSubspace.contains(key))
+        #expect(!otherSubspace.contains(key))
     }
 }

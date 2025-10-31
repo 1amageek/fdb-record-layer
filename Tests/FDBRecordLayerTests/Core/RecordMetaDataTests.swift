@@ -1,8 +1,10 @@
-import XCTest
+import Testing
 @testable import FDBRecordLayer
 
-final class RecordMetaDataTests: XCTestCase {
-    func testMetaDataBuilder() throws {
+@Suite("RecordMetaData Tests")
+struct RecordMetaDataTests {
+    @Test("MetaData builder creates metadata with version, record types and indexes")
+    func metaDataBuilder() throws {
         let primaryKey = FieldKeyExpression(fieldName: "id")
 
         let userType = RecordType(
@@ -22,18 +24,19 @@ final class RecordMetaDataTests: XCTestCase {
             .addIndex(emailIndex)
             .build()
 
-        XCTAssertEqual(metaData.version, 1)
-        XCTAssertEqual(metaData.recordTypes.count, 1)
-        XCTAssertEqual(metaData.indexes.count, 1)
+        #expect(metaData.version == 1)
+        #expect(metaData.recordTypes.count == 1)
+        #expect(metaData.indexes.count == 1)
 
         let retrievedType = try metaData.getRecordType("User")
-        XCTAssertEqual(retrievedType.name, "User")
+        #expect(retrievedType.name == "User")
 
         let retrievedIndex = try metaData.getIndex("user_by_email")
-        XCTAssertEqual(retrievedIndex.name, "user_by_email")
+        #expect(retrievedIndex.name == "user_by_email")
     }
 
-    func testGetIndexesForRecordType() throws {
+    @Test("Get indexes for record type returns record-specific and universal indexes")
+    func getIndexesForRecordType() throws {
         let userType = RecordType(
             name: "User",
             primaryKey: FieldKeyExpression(fieldName: "id")
@@ -61,20 +64,21 @@ final class RecordMetaDataTests: XCTestCase {
 
         let indexes = metaData.getIndexesForRecordType("User")
 
-        XCTAssertEqual(indexes.count, 2)
-        XCTAssertTrue(indexes.contains { $0.name == "user_by_email" })
-        XCTAssertTrue(indexes.contains { $0.name == "universal" })
+        #expect(indexes.count == 2)
+        #expect(indexes.contains { $0.name == "user_by_email" })
+        #expect(indexes.contains { $0.name == "universal" })
     }
 
-    func testDuplicateRecordTypeError() {
+    @Test("Duplicate record type throws error")
+    func duplicateRecordTypeError() {
         let type1 = RecordType(name: "User", primaryKey: FieldKeyExpression(fieldName: "id"))
         let type2 = RecordType(name: "User", primaryKey: FieldKeyExpression(fieldName: "id"))
 
-        XCTAssertThrowsError(
+        #expect(throws: (any Error).self) {
             try RecordMetaDataBuilder()
                 .addRecordType(type1)
                 .addRecordType(type2)
                 .build()
-        )
+        }
     }
 }
