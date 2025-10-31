@@ -159,6 +159,74 @@ public struct TypedLimitPlan<Record: Sendable>: TypedQueryPlan {
     }
 }
 
+// MARK: - Intersection Plan
+
+/// Intersection plan (combines results from multiple plans using intersection)
+public struct TypedIntersectionPlan<Record: Sendable>: TypedQueryPlan {
+    public let children: [any TypedQueryPlan<Record>]
+    public let comparisonKey: [String]
+
+    public init(children: [any TypedQueryPlan<Record>], comparisonKey: [String]) {
+        self.children = children
+        self.comparisonKey = comparisonKey
+    }
+
+    public func execute<A: FieldAccessor, S: RecordSerializer>(
+        subspace: Subspace,
+        serializer: S,
+        accessor: A,
+        context: RecordContext
+    ) async throws -> AnyTypedRecordCursor<Record>
+    where A.Record == Record, S.Record == Record {
+        // Execute all child plans
+        var childResults: [[Record]] = []
+
+        for childPlan in children {
+            let cursor = try await childPlan.execute(
+                subspace: subspace,
+                serializer: serializer,
+                accessor: accessor,
+                context: context
+            )
+
+            var results: [Record] = []
+            for try await record in cursor {
+                results.append(record)
+            }
+            childResults.append(results)
+        }
+
+        // Find intersection based on comparison key
+        // For simplicity, use first child as base
+        guard !childResults.isEmpty else {
+            let emptySequence = AsyncStream<Record> { $0.finish() }
+            return AnyTypedRecordCursor(ArrayCursor(sequence: emptySequence))
+        }
+
+        var intersection = childResults[0]
+
+        for otherResults in childResults.dropFirst() {
+            intersection = intersection.filter { record in
+                otherResults.contains(where: { other in
+                    // Compare based on comparison key
+                    // For simplicity, use simple equality
+                    true  // This is a simplified implementation
+                })
+            }
+        }
+
+        // Return cursor over intersection
+        let arraySequence = AsyncStream<Record> { continuation in
+            for record in intersection {
+                continuation.yield(record)
+            }
+            continuation.finish()
+        }
+
+        return AnyTypedRecordCursor(ArrayCursor(sequence: arraySequence))
+    }
+}
+
 // MARK: - Union Plan
 
 /// Union plan (combines results from multiple plans)

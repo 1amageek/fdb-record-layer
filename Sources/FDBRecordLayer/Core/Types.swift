@@ -12,6 +12,7 @@ public enum RecordLayerError: Error, Sendable {
     case invalidKey(String)
     case invalidSerializedData(String)
     case invalidIndexState(UInt8)
+    case invalidArgument(String)
     case serializationFailed(String)
     case deserializationFailed(String)
     case serializationValidationFailed(String)
@@ -37,6 +38,8 @@ extension RecordLayerError: LocalizedError {
             return "Invalid serialized data: \(message)"
         case .invalidIndexState(let value):
             return "Invalid index state value: \(value)"
+        case .invalidArgument(let message):
+            return "Invalid argument: \(message)"
         case .serializationFailed(let message):
             return "Serialization failed: \(message)"
         case .deserializationFailed(let message):
