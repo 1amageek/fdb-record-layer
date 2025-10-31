@@ -452,13 +452,13 @@ The Record Layer is organized into several key components:
 - **RangeSet**: Tracks progress for resumable operations
 - **RecordContext**: Transaction wrapper for consistent operations
 
-For detailed architecture information, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For detailed architecture information, see [Architecture Guide](docs/ARCHITECTURE.md).
 
 ## Documentation
 
-- [Architecture Guide](ARCHITECTURE.md) - Detailed design and implementation
-- [Project Structure](PROJECT_STRUCTURE.md) - File organization and conventions
-- [Migration Guide](MIGRATION.md) - Migrating from RDF Layer
+- [Architecture Guide](docs/ARCHITECTURE.md) - Detailed design and implementation
+- [Project Structure](docs/PROJECT_STRUCTURE.md) - File organization and conventions
+- [Migration Guide](docs/MIGRATION.md) - Migrating from RDF Layer
 - [Query Optimizer](docs/QUERY_OPTIMIZER.md) - Cost-based query optimization guide
 - [Getting Started](Documentation/GettingStarted.md) - Tutorial and examples
 - [Metadata Guide](Documentation/Metadata.md) - Schema definition
@@ -485,7 +485,7 @@ See the `Examples/` directory for complete examples:
 | Aggregation | Manual | Built-in (count, sum, rank) |
 | Use Case | Semantic web, graphs | Business applications |
 
-For migration instructions, see [MIGRATION.md](MIGRATION.md).
+For migration instructions, see [Migration Guide](docs/MIGRATION.md).
 
 ## Performance
 
