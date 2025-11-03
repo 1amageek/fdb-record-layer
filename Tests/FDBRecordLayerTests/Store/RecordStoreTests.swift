@@ -101,9 +101,9 @@ struct RecordStoreTests {
             // Save record
             try await store.save(user, context: context)
 
-            // Load record
+            // Fetch record
             let primaryKey = Tuple(Int64(1))
-            let loaded = try await store.load(primaryKey: primaryKey, context: context)
+            let loaded = try await store.fetch(primaryKey: primaryKey, context: context)
 
             #expect(loaded != nil)
             #expect(loaded?["name"] as? String == "Alice")
@@ -114,13 +114,13 @@ struct RecordStoreTests {
         try await cleanup(database: db, subspace: subspace)
     }
 
-    @Test("Load non-existent record returns nil")
-    func loadNonExistentRecord() async throws {
+    @Test("Fetch non-existent record returns nil")
+    func fetchNonExistentRecord() async throws {
         let (store, db, subspace) = try createTestStore()
 
         try await db.withRecordContext { context in
             let primaryKey = Tuple(Int64(999))
-            let loaded = try await store.load(primaryKey: primaryKey, context: context)
+            let loaded = try await store.fetch(primaryKey: primaryKey, context: context)
 
             #expect(loaded == nil)
         }
@@ -153,9 +153,9 @@ struct RecordStoreTests {
             ]
             try await store.save(updatedUser, context: context)
 
-            // Load and verify
+            // Fetch and verify
             let primaryKey = Tuple(Int64(2))
-            let loaded = try await store.load(primaryKey: primaryKey, context: context)
+            let loaded = try await store.fetch(primaryKey: primaryKey, context: context)
 
             #expect(loaded?["name"] as? String == "Bob Smith")
             #expect(loaded?["email"] as? String == "bob.smith@example.com")
@@ -182,14 +182,14 @@ struct RecordStoreTests {
 
             // Verify it exists
             let primaryKey = Tuple(Int64(3))
-            let loaded1 = try await store.load(primaryKey: primaryKey, context: context)
+            let loaded1 = try await store.fetch(primaryKey: primaryKey, context: context)
             #expect(loaded1 != nil)
 
             // Delete record
             try await store.delete(primaryKey: primaryKey, context: context)
 
             // Verify it's deleted
-            let loaded2 = try await store.load(primaryKey: primaryKey, context: context)
+            let loaded2 = try await store.fetch(primaryKey: primaryKey, context: context)
             #expect(loaded2 == nil)
         }
 
@@ -230,7 +230,7 @@ struct RecordStoreTests {
             // Verify all records exist
             for i in 10..<15 {
                 let primaryKey = Tuple(Int64(i))
-                let loaded = try await store.load(primaryKey: primaryKey, context: context)
+                let loaded = try await store.fetch(primaryKey: primaryKey, context: context)
                 #expect(loaded != nil)
                 #expect(loaded?["name"] as? String == "User\(i)")
             }
@@ -256,7 +256,7 @@ struct RecordStoreTests {
 
             // Should be visible in same transaction
             let primaryKey1 = Tuple(Int64(100))
-            let loaded1 = try await store.load(primaryKey: primaryKey1, context: context)
+            let loaded1 = try await store.fetch(primaryKey: primaryKey1, context: context)
             #expect(loaded1 != nil)
             #expect(loaded1?["name"] as? String == "User100")
 
@@ -272,7 +272,7 @@ struct RecordStoreTests {
 
             // Both should be visible
             let primaryKey2 = Tuple(Int64(101))
-            let loaded2 = try await store.load(primaryKey: primaryKey2, context: context)
+            let loaded2 = try await store.fetch(primaryKey: primaryKey2, context: context)
             #expect(loaded2 != nil)
         }
 
@@ -334,9 +334,9 @@ struct RecordStoreTests {
             // Save with compound key
             try await store.save(user, context: context)
 
-            // Load with compound key
+            // Fetch with compound key
             let compoundKey = Tuple("tenant1", Int64(123))
-            let loaded = try await store.load(primaryKey: compoundKey, context: context)
+            let loaded = try await store.fetch(primaryKey: compoundKey, context: context)
 
             #expect(loaded != nil)
             #expect(loaded?["name"] as? String == "Multi Key User")

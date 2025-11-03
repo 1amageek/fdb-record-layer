@@ -18,8 +18,8 @@ let package = Package(
             from: "1.6.4"
         ),
         .package(
-            url: "https://github.com/foundationdb/fdb-swift-bindings.git",
-            branch: "main"
+            url: "https://github.com/1amageek/fdb-swift-bindings.git",
+            branch: "feature/versionstamp-subspace-support"
         ),
         .package(
             url: "https://github.com/apple/swift-protobuf.git",

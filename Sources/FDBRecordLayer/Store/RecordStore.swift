@@ -99,8 +99,8 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
             )
         }
 
-        // Load existing record for index updates
-        let existingRecord = try await load(primaryKey: primaryKey, context: context)
+        // Fetch existing record for index updates
+        let existingRecord = try await fetch(primaryKey: primaryKey, context: context)
 
         // Serialize new record
         let serialized = try serializer.serialize(record)
@@ -121,9 +121,9 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         logger.debug("Record saved successfully")
     }
 
-    /// Load a record by primary key
-    public func load(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
-        logger.debug("Loading record with primary key")
+    /// Fetch a record by primary key
+    public func fetch(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
+        logger.debug("Fetching record with primary key")
 
         let transaction = context.getTransaction()
         let recordKey = recordSubspace.pack(primaryKey)
@@ -134,21 +134,21 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
         }
 
         let record = try serializer.deserialize(bytes)
-        logger.debug("Record loaded successfully")
+        logger.debug("Record fetched successfully")
         return record
     }
 
-    /// Load a record with its current version
+    /// Fetch a record with its current version
     ///
     /// - Parameters:
     ///   - primaryKey: The primary key of the record
     ///   - context: Transaction context
     /// - Returns: Tuple of (record, version), or nil if record not found
-    public func loadWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (Record, Version)? {
-        logger.debug("Loading record with version")
+    public func fetchWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (record: Record, version: Version)? {
+        logger.debug("Fetching record with version")
 
-        // Load the record
-        guard let record = try await load(primaryKey: primaryKey, context: context) else {
+        // Fetch the record
+        guard let record = try await fetch(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found")
             return nil
         }
@@ -161,8 +161,8 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
             return nil
         }
 
-        logger.debug("Record with version loaded successfully")
-        return (record, version)
+        logger.debug("Record with version fetched successfully")
+        return (record: record, version: version)
     }
 
     /// Delete a record by primary key
@@ -171,8 +171,8 @@ public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable 
 
         let transaction = context.getTransaction()
 
-        // Load existing record for index updates
-        guard let existingRecord = try await load(primaryKey: primaryKey, context: context) else {
+        // Fetch existing record for index updates
+        guard let existingRecord = try await fetch(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found, nothing to delete")
             return
         }

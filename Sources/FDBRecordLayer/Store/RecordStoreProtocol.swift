@@ -20,12 +20,12 @@ public protocol RecordStoreProtocol: Sendable {
     ///   - context: The transaction context
     func save(_ record: Record, context: RecordContext) async throws
 
-    /// Load a record by primary key
+    /// Fetch a record by primary key
     /// - Parameters:
     ///   - primaryKey: The primary key tuple
     ///   - context: The transaction context
     /// - Returns: The record, or nil if not found
-    func load(primaryKey: Tuple, context: RecordContext) async throws -> Record?
+    func fetch(primaryKey: Tuple, context: RecordContext) async throws -> Record?
 
     /// Delete a record by primary key
     /// - Parameters:

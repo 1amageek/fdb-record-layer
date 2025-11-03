@@ -155,7 +155,7 @@ struct SerializerTests {
             "Test\nwith\nnewlines",
             "Test\twith\ttabs",
             "Test with emoji 😀🎉",
-            "Test with unicode: 日本語",
+            "Test with unicode: Ελληνικά",
             "Test with quotes: \"quoted\"",
             "Test with backslash: \\path\\to\\file"
         ]

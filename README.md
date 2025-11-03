@@ -14,7 +14,7 @@ The Record Layer provides a powerful abstraction for storing and querying struct
 - **ACID Transactions**: Full transactional guarantees from FoundationDB
 - **Swift Concurrency**: Modern async/await with Actor isolation for thread safety
 - **Cost-Based Query Optimizer**: Statistics-driven query optimization with histogram selectivity
-- **Comprehensive Testing**: 93 tests passing with Swift Testing framework
+- **Comprehensive Testing**: 123 tests passing with Swift Testing framework
 
 ## Features
 
@@ -355,12 +355,12 @@ let user = User.with {
 }
 
 try await database.withRecordContext { context in
-    try await recordStore.saveRecord(user, context: context)
+    try await recordStore.save(user, context: context)
 }
 
-// Load a record
+// Fetch a record
 try await database.withRecordContext { context in
-    let loaded = try await recordStore.loadRecord(
+    let loaded = try await recordStore.fetch(
         primaryKey: Tuple(1),
         context: context
     )
@@ -396,7 +396,7 @@ The Record Layer is organized into several key components:
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
 │                      RecordStore<M>                              │
-│     - save()  - load()  - delete()  - executeQuery()            │
+│     - save()  - fetch()  - delete()  - executeQuery()           │
 └──────┬─────────┬──────────┬─────────┬──────────┬───────────────┘
        │         │          │         │          │
        ▼         ▼          ▼         ▼          ▼
@@ -452,19 +452,31 @@ The Record Layer is organized into several key components:
 - **RangeSet**: Tracks progress for resumable operations
 - **RecordContext**: Transaction wrapper for consistent operations
 
-For detailed architecture information, see [Architecture Guide](docs/ARCHITECTURE.md).
+For detailed architecture information, see [Architecture Overview](docs/architecture/ARCHITECTURE.md).
 
 ## Documentation
 
-- [Architecture Guide](docs/ARCHITECTURE.md) - Detailed design and implementation
+### 📚 Architecture Documentation
+
+- [Architecture Overview](docs/architecture/ARCHITECTURE.md) - Detailed design and implementation
+- [Design Review](docs/architecture/DESIGN_REVIEW.md) - Design decisions and rationale
+- [Design Principles](docs/architecture/DESIGN.md) - Core design principles
+- [FDB Bindings Architecture](docs/architecture/FDB_BINDINGS_ARCHITECTURE.md) - fdb-swift-bindings design philosophy
+- [Architecture Reference](docs/architecture/ARCHITECTURE_REFERENCE.md) - Quick reference
+
+### 📖 User Guides
+
+- [Tuple packWithVersionstamp](docs/guides/TUPLE_PACK_WITH_VERSIONSTAMP_EXPLANATION.md) - Versionstamp usage guide
+- [Versionstamp Usage](docs/guides/VERSIONSTAMP_USAGE_GUIDE.md) - Versionstamp detailed guide
+- [Advanced Index Design](docs/guides/ADVANCED_INDEX_DESIGN.md) - Complex indexing patterns
+- [Query Optimizer](docs/guides/QUERY_OPTIMIZER.md) - Cost-based optimization guide
+- [Migration Guide](docs/guides/MIGRATION.md) - Migrating from RDF Layer
+
+### 📋 Project Documentation
+
 - [Project Structure](docs/PROJECT_STRUCTURE.md) - File organization and conventions
-- [Migration Guide](docs/MIGRATION.md) - Migrating from RDF Layer
-- [Query Optimizer](docs/QUERY_OPTIMIZER.md) - Cost-based query optimization guide
-- [Getting Started](Documentation/GettingStarted.md) - Tutorial and examples
-- [Metadata Guide](Documentation/Metadata.md) - Schema definition
-- [Index Guide](Documentation/Indexes.md) - Index types and usage
-- [Query Guide](Documentation/Queries.md) - Query language reference
-- [Performance Guide](Documentation/Performance.md) - Optimization tips
+- [Status](docs/STATUS.md) - Current implementation status
+- [fdb-swift-bindings Usage](CLAUDE.md) - FoundationDB bindings guide
 
 ## Examples
 
@@ -485,7 +497,7 @@ See the `Examples/` directory for complete examples:
 | Aggregation | Manual | Built-in (count, sum, rank) |
 | Use Case | Semantic web, graphs | Business applications |
 
-For migration instructions, see [Migration Guide](docs/MIGRATION.md).
+For migration instructions, see [Migration Guide](docs/guides/MIGRATION.md).
 
 ## Performance
 
@@ -526,10 +538,18 @@ See [Performance Guide](Documentation/Performance.md) for details.
   - Cost estimation (I/O, CPU, cardinality)
   - Plan caching with LRU eviction
 - ✅ Test suite migration to Swift Testing
-- ✅ 93 tests passing across 11 test suites
+- ✅ 123 tests passing across 13 test suites
+- ✅ Swift naming conventions compliance
+  - Renamed `load()` → `fetch()` for record retrieval
+  - Renamed `loadWithVersion()` → `fetchWithVersion()` with named tuples
+  - Updated RecordStoreProtocol for consistency
+- ✅ fdb-swift-bindings integration
+  - Versionstamp support with `packWithVersionstamp()`
+  - Subspace management moved to base bindings
+  - Cross-language consistency (Python/Go/Java compatible)
 
 ### 🚧 In Progress
-- 🚧 Advanced index types (Rank, Version, Permuted)
+- 🚧 Advanced index types (Rank, Version, Permuted indexes)
 
 ### ⏳ Planned
 - ⏳ Protobuf serialization support
@@ -577,9 +597,9 @@ swift test --enable-code-coverage
 
 ### Test Coverage
 
-**Current Coverage: 93 tests across 11 test suites** - All passing ✅
+**Current Coverage: 123 tests across 13 test suites** - All passing ✅
 
-- ✅ **Unit Tests (65 tests)**: All passing
+- ✅ **Unit Tests (95 tests)**: All passing
   - Core types (Subspace, Tuple, KeyExpression)
   - RecordMetaData and builders
   - QueryComponent logic
@@ -640,7 +660,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- 📚 [Documentation](docs/ARCHITECTURE.md)
+- 📚 [Documentation](docs/architecture/ARCHITECTURE.md)
 - 🐛 [Issue Tracker](https://github.com/yourusername/fdb-record-layer/issues)
 - 💬 [Discussions](https://github.com/yourusername/fdb-record-layer/discussions)
 
@@ -683,7 +703,7 @@ A: The Record Layer provides:
 
 ### Q: Can I use this in production?
 
-A: The core functionality is implemented and tested (70% coverage), but we recommend waiting for version 1.0 with:
+A: The core functionality is implemented and well-tested (123 tests passing), but we recommend waiting for version 1.0 with:
 - Protobuf serialization support
 - Performance benchmarks and optimization
 - More comprehensive integration testing
@@ -702,7 +722,7 @@ A: Yes! All APIs use async/await for modern Swift concurrency.
 
 ### Q: Can I migrate from the RDF Layer?
 
-A: Yes, see the [Migration Guide](docs/MIGRATION.md) for detailed instructions.
+A: Yes, see the [Migration Guide](docs/guides/MIGRATION.md) for detailed instructions.
 
 ### Q: What about iOS/watchOS/tvOS support?
 

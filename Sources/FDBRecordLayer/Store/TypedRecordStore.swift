@@ -90,8 +90,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
             )
         }
 
-        // 3. Load existing record for index updates
-        let existingRecord = try await load(primaryKey: primaryKey, context: context)
+        // 3. Fetch existing record for index updates
+        let existingRecord = try await fetch(primaryKey: primaryKey, context: context)
 
         // 4. Serialize new record
         let serialized = try serializer.serialize(record)
@@ -111,9 +111,9 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         logger.debug("Record saved successfully")
     }
 
-    /// Load a record by primary key
-    public func load(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
-        logger.debug("Loading record with primary key")
+    /// Fetch a record by primary key
+    public func fetch(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
+        logger.debug("Fetching record with primary key")
 
         let transaction = context.getTransaction()
         let recordKey = recordSubspace.pack(primaryKey)
@@ -124,21 +124,21 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         }
 
         let record = try serializer.deserialize(bytes)
-        logger.debug("Record loaded successfully")
+        logger.debug("Record fetched successfully")
         return record
     }
 
-    /// Load a record with its current version
+    /// Fetch a record with its current version
     ///
     /// - Parameters:
     ///   - primaryKey: The primary key of the record
     ///   - context: Transaction context
-    /// - Returns: Tuple of (record, version), or nil if record not found
-    public func loadWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (Record, Version)? {
-        logger.debug("Loading record with version")
+    /// - Returns: Named tuple of (record, version), or nil if record not found
+    public func fetchWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (record: Record, version: Version)? {
+        logger.debug("Fetching record with version")
 
-        // Load the record
-        guard let record = try await load(primaryKey: primaryKey, context: context) else {
+        // Fetch the record
+        guard let record = try await fetch(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found")
             return nil
         }
@@ -151,8 +151,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
             return nil
         }
 
-        logger.debug("Record with version loaded successfully")
-        return (record, version)
+        logger.debug("Record with version fetched successfully")
+        return (record: record, version: version)
     }
 
     /// Delete a record by primary key
@@ -161,8 +161,8 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
 
         let transaction = context.getTransaction()
 
-        // 1. Load existing record for index updates
-        guard let existingRecord = try await load(primaryKey: primaryKey, context: context) else {
+        // 1. Fetch existing record for index updates
+        guard let existingRecord = try await fetch(primaryKey: primaryKey, context: context) else {
             logger.debug("Record not found, nothing to delete")
             return
         }
@@ -340,19 +340,24 @@ public final class TypedRecordStore<Record: Sendable>: Sendable {
         let beginKey = indexSubspace.pack(primaryKey)
         let endKey = beginKey + [0xFF]
 
-        let result = try await transaction.getRangeNative(
-            beginKey: beginKey,
-            endKey: endKey,
-            limit: 1,
-            snapshot: true
-        )
+        // OPTIMIZED: Use getKey with lastLessThan selector to find the last version key
+        // This is O(1) instead of O(n) with full range scan
+        let lastSelector = FDB.KeySelector.lastLessThan(endKey)
 
-        guard let (key, _) = result.records.last else {
+        guard let lastKey = try await transaction.getKey(selector: lastSelector, snapshot: true) else {
             return nil
         }
 
-        // Extract version from key (last 12 bytes)
-        let versionBytes = Array(key.suffix(12))
+        // Verify the key is actually in our range (belongs to this primary key)
+        guard lastKey.starts(with: beginKey) else {
+            return nil
+        }
+
+        // Extract version from key (last 10 bytes - 80-bit versionstamp)
+        guard lastKey.count >= 10 else {
+            return nil
+        }
+        let versionBytes = Array(lastKey.suffix(10))
         return Version(bytes: versionBytes)
     }
 

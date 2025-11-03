@@ -1,4 +1,5 @@
 import Testing
+import FoundationDB
 @testable import FDBRecordLayer
 
 /// Basic smoke tests to verify module imports and basic functionality

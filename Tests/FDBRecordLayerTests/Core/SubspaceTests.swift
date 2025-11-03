@@ -36,12 +36,13 @@ struct SubspaceTests {
         let subspace = Subspace(rootPrefix: "test")
         let (begin, end) = subspace.range()
 
-        #expect(begin == subspace.prefix)
-        // End should be different from begin
+        // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
+        let expectedBegin = subspace.prefix + [0x00]
+        let expectedEnd = subspace.prefix + [0xFF]
+
+        #expect(begin == expectedBegin)
+        #expect(end == expectedEnd)
         #expect(end != begin)
-        // Last byte should be incremented
-        let expectedEnd = subspace.prefix.dropLast() + [subspace.prefix.last! + 1]
-        #expect(end == Array(expectedEnd))
     }
 
     @Test("Range handles 0xFF overflow by appending 0x00")
@@ -51,9 +52,12 @@ struct SubspaceTests {
         let subspace = Subspace(rootPrefix: "test\u{00FF}")
         let (begin, end) = subspace.range()
 
-        #expect(begin == subspace.prefix)
-        // Should handle overflow correctly
-        #expect(end != begin)
+        // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
+        let expectedBegin = subspace.prefix + [0x00]
+        let expectedEnd = subspace.prefix + [0xFF]
+
+        #expect(begin == expectedBegin)
+        #expect(end == expectedEnd)
         #expect(end.count > 0)
     }
 
@@ -62,8 +66,12 @@ struct SubspaceTests {
         let subspace = Subspace(rootPrefix: "test_special_chars")
         let (begin, end) = subspace.range()
 
-        #expect(begin == subspace.prefix)
-        #expect(end != begin)
+        // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
+        let expectedBegin = subspace.prefix + [0x00]
+        let expectedEnd = subspace.prefix + [0xFF]
+
+        #expect(begin == expectedBegin)
+        #expect(end == expectedEnd)
         #expect(end.count > 0)
     }
 

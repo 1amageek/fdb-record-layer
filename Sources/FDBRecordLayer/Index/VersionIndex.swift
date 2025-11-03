@@ -3,28 +3,33 @@ import FoundationDB
 
 /// Represents a record version (FDB Versionstamp)
 ///
-/// A Version is a 12-byte value assigned by FoundationDB at commit time.
+/// A Version is a 10-byte value assigned by FoundationDB at commit time.
+/// This is the native 80-bit versionstamp used by SET_VERSIONSTAMPED_KEY.
 /// It consists of:
-/// - 10 bytes: transaction version (globally unique, monotonically increasing)
-/// - 2 bytes: batch order (for operations within same transaction)
+/// - 8 bytes: database commit version (big-endian, globally unique)
+/// - 2 bytes: batch order within same commit version (big-endian)
 ///
 /// Versions are comparable and provide total ordering for optimistic concurrency control.
+///
+/// Note: This is NOT the 96-bit versionstamp (12 bytes) used in Tuple layer.
+/// The Tuple layer adds 2 bytes for user-defined ordering, but SET_VERSIONSTAMPED_KEY
+/// only writes the native 10-byte versionstamp.
 public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
-    public let bytes: FDB.Bytes  // Must be exactly 12 bytes
+    public let bytes: FDB.Bytes  // Must be exactly 10 bytes
 
     // MARK: - Initialization
 
     /// Create a Version from versionstamp bytes
-    /// - Parameter bytes: 12-byte versionstamp from FoundationDB
+    /// - Parameter bytes: 10-byte versionstamp from FoundationDB
     public init(bytes: FDB.Bytes) {
-        precondition(bytes.count == 12, "Version must be 12 bytes (versionstamp)")
+        precondition(bytes.count == 10, "Version must be 10 bytes (80-bit versionstamp)")
         self.bytes = bytes
     }
 
     /// Create incomplete versionstamp placeholder (0xFF bytes)
     /// Used when setting keys/values that will be filled by FDB at commit time
     public static func incomplete() -> Version {
-        return Version(bytes: [UInt8](repeating: 0xFF, count: 10) + [0x00, 0x00])
+        return Version(bytes: [UInt8](repeating: 0xFF, count: 10))
     }
 
     // MARK: - Comparable
@@ -51,14 +56,16 @@ public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
 
     // MARK: - Conversion
 
-    /// Extract transaction version (first 10 bytes)
-    public var transactionVersion: FDB.Bytes {
-        return Array(bytes.prefix(10))
+    /// Extract database commit version (first 8 bytes, big-endian)
+    public var databaseVersion: UInt64 {
+        return bytes.prefix(8).withUnsafeBytes {
+            $0.load(as: UInt64.self).bigEndian
+        }
     }
 
-    /// Extract batch order (last 2 bytes)
+    /// Extract batch order (last 2 bytes, big-endian)
     public var batchOrder: UInt16 {
-        return UInt16(bytes[10]) << 8 | UInt16(bytes[11])
+        return UInt16(bytes[8]) << 8 | UInt16(bytes[9])
     }
 }
 
@@ -155,30 +162,42 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         // The versionstamp is automatically filled by FDB at commit time
 
         if let newRecord = newRecord {
-            // Insert: create new version entry
-
-            // LIMITATION: This implementation uses timestamp instead of true FDB versionstamp
+            // Insert: create new version entry using FDB versionstamp
             //
-            // For production use, this should use:
-            //   transaction.setVersionstampedKey(versionKey, value: FDB.Bytes())
+            // FDB versionstamp is a 10-byte unique, monotonically increasing value
+            // assigned at commit time. This is the native 80-bit versionstamp.
             //
-            // Current timestamp approach limitations:
-            // - No global monotonic ordering guarantee
-            // - Possible timestamp collisions in distributed systems
-            // - Not atomic with transaction commit
-            // - Cannot support true optimistic concurrency control
-            //
-            // True versionstamp benefits:
+            // Benefits:
             // - Globally unique, monotonically increasing
             // - Assigned atomically at commit time
-            // - Enables conflict-free concurrent updates
+            // - Enables true optimistic concurrency control
             // - Compatible with FoundationDB's MVCC
+            //
+            // Data Model: [subspace][primary_key][10-byte versionstamp] → ∅
 
-            let timestamp = Date().timeIntervalSince1970
-            let timestampBytes = withUnsafeBytes(of: timestamp) { Array($0) }
-            var keyWithTimestamp = subspace.pack(primaryKey)
-            keyWithTimestamp.append(contentsOf: timestampBytes)
-            transaction.setValue(FDB.Bytes(), for: keyWithTimestamp)
+            var key = subspace.pack(primaryKey)
+            let versionPosition = UInt32(key.count)
+
+            // Validate position fits in UInt32 range with room for versionstamp
+            guard versionPosition <= UInt32.max - 10 else {
+                throw RecordLayerError.internalError("Version key too long")
+            }
+
+            // Append 10-byte versionstamp placeholder (will be filled by FDB at commit)
+            key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
+
+            // Append 4-byte position (little-endian) - tells FDB where to write versionstamp
+            // This position points to the start of the 10-byte placeholder
+            let positionBytes = withUnsafeBytes(of: versionPosition.littleEndian) { Array($0) }
+            key.append(contentsOf: positionBytes)
+
+            // Use atomicOp with setVersionstampedKey
+            // FDB will:
+            // 1. Read last 4 bytes as offset (versionPosition)
+            // 2. Replace 10 bytes at key[versionPosition] with actual versionstamp
+            // 3. Remove last 4 bytes
+            // Final result: [subspace][primary_key][10-byte versionstamp]
+            transaction.atomicOp(key: key, param: FDB.Bytes(), mutationType: .setVersionstampedKey)
         }
 
         // Cleanup old versions based on strategy
@@ -190,13 +209,24 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         primaryKey: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        // For historical records, create version entry
-        // Use timestamp as version placeholder
-        let timestamp = Date().timeIntervalSince1970
-        let timestampBytes = withUnsafeBytes(of: timestamp) { Array($0) }
-        var keyWithTimestamp = subspace.pack(primaryKey)
-        keyWithTimestamp.append(contentsOf: timestampBytes)
-        transaction.setValue(FDB.Bytes(), for: keyWithTimestamp)
+        // For historical records, create version entry using FDB versionstamp
+        var key = subspace.pack(primaryKey)
+        let versionPosition = UInt32(key.count)
+
+        // Validate position
+        guard versionPosition <= UInt32.max - 10 else {
+            throw RecordLayerError.internalError("Version key too long")
+        }
+
+        // Append 10-byte versionstamp placeholder
+        key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
+
+        // Append 4-byte position (little-endian)
+        let positionBytes = withUnsafeBytes(of: versionPosition.littleEndian) { Array($0) }
+        key.append(contentsOf: positionBytes)
+
+        // Use atomicOp with setVersionstampedKey
+        transaction.atomicOp(key: key, param: FDB.Bytes(), mutationType: .setVersionstampedKey)
     }
 
     // MARK: - Version Operations
@@ -230,25 +260,27 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws -> Version? {
         // Query version index for latest version of this primary key
-        let pkBytes = primaryKey.encode()
         let beginKey = subspace.pack(primaryKey)
-
-        // Get the last version (reverse scan with limit 1)
         let endKey = beginKey + [0xFF]
 
-        let result = try await transaction.getRangeNative(
-            beginKey: beginKey,
-            endKey: endKey,
-            limit: 1,
-            snapshot: true
-        )
+        // OPTIMIZED: Use getKey with lastLessThan selector to find the last version key
+        // This is O(1) instead of O(n) with full range scan
+        let lastSelector = FDB.KeySelector.lastLessThan(endKey)
 
-        guard let (key, _) = result.records.last else {
+        guard let lastKey = try await transaction.getKey(selector: lastSelector, snapshot: true) else {
             return nil
         }
 
-        // Extract version from key
-        let versionBytes = Array(key.suffix(12))
+        // Verify the key is actually in our range (belongs to this primary key)
+        guard lastKey.starts(with: beginKey) else {
+            return nil
+        }
+
+        // Extract version from key (last 10 bytes - 80-bit versionstamp)
+        guard lastKey.count >= 10 else {
+            return nil
+        }
+        let versionBytes = Array(lastKey.suffix(10))
         return Version(bytes: versionBytes)
     }
 
@@ -260,31 +292,36 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         let beginKey = subspace.pack(primaryKey)
         let endKey = beginKey + [0xFF]
 
-        let result = try await transaction.getRangeNative(
-            beginKey: beginKey,
-            endKey: endKey,
-            limit: 0,
+        // Use getRange AsyncSequence (preferred over getRangeNative)
+        let beginSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
+        let endSelector = FDB.KeySelector.firstGreaterOrEqual(endKey)
+        let sequence = transaction.getRange(
+            beginSelector: beginSelector,
+            endSelector: endSelector,
             snapshot: true
         )
 
-        return result.records.compactMap { (key, _) in
-            guard key.count >= 12 else { return nil }
-            let versionBytes = Array(key.suffix(12))
-            return Version(bytes: versionBytes)
+        var versions: [Version] = []
+        for try await (key, _) in sequence {
+            // Extract 10-byte versionstamp from end of key
+            guard key.count >= 10 else { continue }
+            let versionBytes = Array(key.suffix(10))
+            versions.append(Version(bytes: versionBytes))
         }
+
+        return versions
     }
 
     // MARK: - Private Methods
 
     /// Build version index key with versionstamp placeholder
+    /// NOTE: This method is not used. Use atomicOp with setVersionstampedKey instead.
     private func buildVersionIndexKey(primaryKey: Tuple) throws -> FDB.Bytes {
-        // Format: [subspace][primary_key][versionstamp_placeholder]
+        // Format: [subspace][primary_key][10-byte versionstamp]
         var key = subspace.pack(primaryKey)
 
-        // Append incomplete versionstamp (10 bytes 0xFF + 2 bytes position)
-        // In real implementation, this would be used with setVersionstampedKey
+        // Append incomplete versionstamp (10 bytes 0xFF)
         key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
-        key.append(contentsOf: [0x00, 0x00])  // Batch order
 
         return key
     }
