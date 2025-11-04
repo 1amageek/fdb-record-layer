@@ -102,7 +102,7 @@ public final class RecordContext: Sendable {
     /// Remove metadata value for a key
     /// - Parameter key: The key to remove
     public func removeMetadata(forKey key: String) {
-        metadata.withLock { dict in
+        _ = metadata.withLock { dict in
             dict.removeValue(forKey: key)
         }
     }

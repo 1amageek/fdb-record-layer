@@ -1,28 +1,53 @@
 import Foundation
 import FoundationDB
 
-/// Maintainer for sum aggregation indexes
+// MARK: - Generic Sum Index Maintainer
+
+/// Generic maintainer for sum aggregation indexes
+///
+/// This is the new generic version that works with any record type
+/// through RecordAccess instead of assuming dictionary-based records.
 ///
 /// Sum indexes maintain sums of numeric field values grouped by other fields.
-public struct SumIndexMaintainer: IndexMaintainer {
+/// They use atomic operations for efficient concurrent updates.
+///
+/// **Usage:**
+/// ```swift
+/// let maintainer = GenericSumIndexMaintainer(
+///     index: sumIndex,
+///     recordType: orderType,
+///     subspace: sumSubspace
+/// )
+/// ```
+public struct GenericSumIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
 
-    public init(index: Index, subspace: Subspace) {
+    public init(
+        index: Index,
+        recordType: RecordType,
+        subspace: Subspace
+    ) {
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
     }
 
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         // For sum indexes, we need both grouping key and sum value
         // The index expression should produce: [grouping_fields..., sum_field]
 
         if let newRecord = newRecord {
-            let values = index.rootExpression.evaluate(record: newRecord)
+            let values = try recordAccess.evaluate(
+                record: newRecord,
+                expression: index.rootExpression
+            )
             if values.count >= 2 {
                 // Last value is what we sum, others are grouping
                 let groupingValues = Array(values.dropLast())
@@ -38,7 +63,10 @@ public struct SumIndexMaintainer: IndexMaintainer {
         }
 
         if let oldRecord = oldRecord {
-            let values = index.rootExpression.evaluate(record: oldRecord)
+            let values = try recordAccess.evaluate(
+                record: oldRecord,
+                expression: index.rootExpression
+            )
             if values.count >= 2 {
                 let groupingValues = Array(values.dropLast())
                 let sumValue = try extractNumericValue(values.last!)
@@ -54,11 +82,15 @@ public struct SumIndexMaintainer: IndexMaintainer {
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let values = index.rootExpression.evaluate(record: record)
+        let values = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
 
         guard values.count >= 2 else {
             throw RecordLayerError.internalError("Sum index requires at least 2 values")

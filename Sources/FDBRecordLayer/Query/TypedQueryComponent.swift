@@ -9,12 +9,13 @@ public protocol TypedQueryComponent<Record>: Sendable {
     /// Check if a record matches this component
     /// - Parameters:
     ///   - record: The record to test
-    ///   - accessor: The field accessor
+    ///   - recordAccess: The record access for field extraction
     /// - Returns: true if the record matches
-    func matches<A: FieldAccessor>(
+    /// - Throws: RecordLayerError if field extraction fails
+    func matches(
         record: Record,
-        accessor: A
-    ) -> Bool where A.Record == Record
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool
 }
 
 // MARK: - Field Query Component
@@ -46,11 +47,13 @@ public struct TypedFieldQueryComponent<Record: Sendable>: TypedQueryComponent {
         self.value = value
     }
 
-    public func matches<A: FieldAccessor>(
+    public func matches(
         record: Record,
-        accessor: A
-    ) -> Bool where A.Record == Record {
-        guard let fieldValue = accessor.extractField(fieldName, from: record) else {
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        let fieldValues = try recordAccess.extractField(from: record, fieldName: fieldName)
+
+        guard let fieldValue = fieldValues.first else {
             return false
         }
 
@@ -133,11 +136,11 @@ public struct TypedAndQueryComponent<Record: Sendable>: TypedQueryComponent {
         self.children = children
     }
 
-    public func matches<A: FieldAccessor>(
+    public func matches(
         record: Record,
-        accessor: A
-    ) -> Bool where A.Record == Record {
-        return children.allSatisfy { $0.matches(record: record, accessor: accessor) }
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        return try children.allSatisfy { try $0.matches(record: record, recordAccess: recordAccess) }
     }
 }
 
@@ -151,11 +154,11 @@ public struct TypedOrQueryComponent<Record: Sendable>: TypedQueryComponent {
         self.children = children
     }
 
-    public func matches<A: FieldAccessor>(
+    public func matches(
         record: Record,
-        accessor: A
-    ) -> Bool where A.Record == Record {
-        return children.contains { $0.matches(record: record, accessor: accessor) }
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        return try children.contains { try $0.matches(record: record, recordAccess: recordAccess) }
     }
 }
 
@@ -169,11 +172,11 @@ public struct TypedNotQueryComponent<Record: Sendable>: TypedQueryComponent {
         self.child = child
     }
 
-    public func matches<A: FieldAccessor>(
+    public func matches(
         record: Record,
-        accessor: A
-    ) -> Bool where A.Record == Record {
-        return !child.matches(record: record, accessor: accessor)
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        return !(try child.matches(record: record, recordAccess: recordAccess))
     }
 }
 

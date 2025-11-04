@@ -1,74 +1,94 @@
 import Foundation
 import FoundationDB
 
-/// Maintainer for value indexes (standard B-tree)
+// MARK: - Generic Value Index Maintainer
+
+/// Generic maintainer for value indexes (standard B-tree)
+///
+/// This is the new generic version that works with any record type
+/// through RecordAccess instead of assuming dictionary-based records.
 ///
 /// Value indexes map indexed field values to primary keys, enabling
 /// efficient lookups and range scans.
-public struct ValueIndexMaintainer: IndexMaintainer {
+///
+/// **Usage:**
+/// ```swift
+/// let maintainer = GenericValueIndexMaintainer(
+///     index: valueIndex,
+///     recordType: userType,
+///     subspace: valueSubspace,
+///     recordSubspace: recordSubspace
+/// )
+/// ```
+public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
-    public init(index: Index, subspace: Subspace, recordSubspace: Subspace) {
+    public init(
+        index: Index,
+        recordType: RecordType,
+        subspace: Subspace,
+        recordSubspace: Subspace
+    ) {
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
     }
 
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         // Remove old index entry
         if let oldRecord = oldRecord {
-            let oldKey = try buildIndexKey(record: oldRecord)
+            let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess)
             transaction.clear(key: oldKey)
         }
 
         // Add new index entry
         if let newRecord = newRecord {
-            let newKey = try buildIndexKey(record: newRecord)
+            let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
             let value = buildIndexValue()
             transaction.setValue(value, for: newKey)
         }
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let indexKey = try buildIndexKey(record: record)
+        let indexKey = try buildIndexKey(record: record, recordAccess: recordAccess)
         let value = buildIndexValue()
         transaction.setValue(value, for: indexKey)
     }
 
     // MARK: - Private Methods
 
-    private func buildIndexKey(record: [String: Any]) throws -> FDB.Bytes {
+    private func buildIndexKey(
+        record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> FDB.Bytes {
         // Evaluate index expression to get indexed values
-        let indexedValues = index.rootExpression.evaluate(record: record)
+        let indexedValues = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
 
-        // For value indexes, we need to append primary key for uniqueness
-        // Extract primary key values from record
-        // (In a real implementation, we'd get the RecordType to know the primary key expression)
+        // Extract primary key values
+        let primaryKeyValues = try recordAccess.evaluate(
+            record: record,
+            expression: recordType.primaryKey
+        )
 
-        // For now, assume there's an "id" field
-        let primaryKeyValue: any TupleElement
-        if let id = record["id"] as? Int64 {
-            primaryKeyValue = id
-        } else if let id = record["id"] as? Int {
-            primaryKeyValue = Int64(id)
-        } else if let id = record["id"] as? String {
-            primaryKeyValue = id
-        } else {
-            primaryKeyValue = ""
-        }
-
-        // Combine indexed values with primary key
-        let allValues = indexedValues + [primaryKeyValue]
+        // Combine indexed values with primary key for uniqueness
+        let allValues = indexedValues + primaryKeyValues
 
         // Build tuple and encode with subspace
         let tuple = TupleHelpers.toTuple(allValues)

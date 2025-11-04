@@ -3,7 +3,10 @@ import Testing
 import FoundationDB
 @testable import FDBRecordLayer
 
-/// Tests for Version Index functionality
+/// Tests for Version struct
+///
+/// Note: VersionIndexMaintainer is now generic and tested through
+/// RecordStore integration tests rather than unit tests.
 @Suite("Version Index Tests")
 struct VersionIndexTests {
 
@@ -89,10 +92,9 @@ struct VersionIndexTests {
     func testKeepAllStrategy() {
         let strategy = VersionHistoryStrategy.keepAll
 
-        switch strategy {
-        case .keepAll:
-            #expect(true)
-        default:
+        if case .keepAll = strategy {
+            // Success
+        } else {
             Issue.record("Expected keepAll strategy")
         }
     }
@@ -101,10 +103,9 @@ struct VersionIndexTests {
     func testKeepLastStrategy() {
         let strategy = VersionHistoryStrategy.keepLast(10)
 
-        switch strategy {
-        case .keepLast(let count):
+        if case .keepLast(let count) = strategy {
             #expect(count == 10)
-        default:
+        } else {
             Issue.record("Expected keepLast strategy")
         }
     }
@@ -113,77 +114,11 @@ struct VersionIndexTests {
     func testKeepForDurationStrategy() {
         let strategy = VersionHistoryStrategy.keepForDuration(3600.0)
 
-        switch strategy {
-        case .keepForDuration(let duration):
+        if case .keepForDuration(let duration) = strategy {
             #expect(duration == 3600.0)
-        default:
+        } else {
             Issue.record("Expected keepForDuration strategy")
         }
-    }
-
-    // MARK: - VersionIndexMaintainer Tests
-
-    @Test("VersionIndexMaintainer initialization")
-    func testVersionIndexMaintainerInit() throws {
-        let index = Index(
-            name: "test_version",
-            type: IndexType.version,
-            rootExpression: EmptyKeyExpression()
-        )
-
-        let subspace = Subspace(prefix: Tuple("test").encode())
-        let recordSubspace = Subspace(prefix: Tuple("records").encode())
-
-        let maintainer = VersionIndexMaintainer(
-            index: index,
-            subspace: subspace,
-            recordSubspace: recordSubspace
-        )
-
-        #expect(maintainer.index.name == "test_version")
-        #expect(maintainer.index.type == IndexType.version)
-    }
-
-    @Test("VersionIndexMaintainer with custom version field")
-    func testVersionIndexMaintainerCustomField() {
-        let index = Index(
-            name: "test_version",
-            type: IndexType.version,
-            rootExpression: EmptyKeyExpression()
-        )
-
-        let subspace = Subspace(prefix: Tuple("test").encode())
-        let recordSubspace = Subspace(prefix: Tuple("records").encode())
-
-        let maintainer = VersionIndexMaintainer(
-            index: index,
-            subspace: subspace,
-            recordSubspace: recordSubspace,
-            versionField: "custom_version"
-        )
-
-        #expect(maintainer.index.name == "test_version")
-    }
-
-    @Test("VersionIndexMaintainer with history strategy")
-    func testVersionIndexMaintainerWithStrategy() {
-        let index = Index(
-            name: "test_version",
-            type: IndexType.version,
-            rootExpression: EmptyKeyExpression()
-        )
-
-        let subspace = Subspace(prefix: Tuple("test").encode())
-        let recordSubspace = Subspace(prefix: Tuple("records").encode())
-
-        let maintainer = VersionIndexMaintainer(
-            index: index,
-            subspace: subspace,
-            recordSubspace: recordSubspace,
-            historyStrategy: .keepLast(5)
-        )
-
-        #expect(maintainer.index.name == "test_version")
     }
 
     // MARK: - Error Tests

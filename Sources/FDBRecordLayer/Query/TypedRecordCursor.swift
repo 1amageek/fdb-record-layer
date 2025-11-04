@@ -11,32 +11,31 @@ public protocol TypedRecordCursor<Record>: AsyncSequence where Element == Record
 // MARK: - Basic Record Cursor
 
 /// Basic cursor implementation for full scans
-public struct BasicTypedRecordCursor<Record: Sendable, A: FieldAccessor, S: RecordSerializer>: TypedRecordCursor
-where A.Record == Record, S.Record == Record {
+public struct BasicTypedRecordCursor<Record: Sendable>: TypedRecordCursor {
     public typealias Element = Record
 
     private let sequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>
-    private let serializer: S
-    private let accessor: A
+    private let recordAccess: any RecordAccess<Record>
     private let filter: (any TypedQueryComponent<Record>)?
+    private let expectedRecordType: String?
 
     init(
         sequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>,
-        serializer: S,
-        accessor: A,
-        filter: (any TypedQueryComponent<Record>)?
+        recordAccess: any RecordAccess<Record>,
+        filter: (any TypedQueryComponent<Record>)?,
+        expectedRecordType: String? = nil
     ) {
         self.sequence = sequence
-        self.serializer = serializer
-        self.accessor = accessor
+        self.recordAccess = recordAccess
         self.filter = filter
+        self.expectedRecordType = expectedRecordType
     }
 
     public struct AsyncIterator: AsyncIteratorProtocol {
         var iterator: any AsyncIteratorProtocol<(FDB.Bytes, FDB.Bytes), Error>
-        let serializer: S
-        let accessor: A
+        let recordAccess: any RecordAccess<Record>
         let filter: (any TypedQueryComponent<Record>)?
+        let expectedRecordType: String?
 
         public mutating func next() async throws -> Record? {
             while true {
@@ -44,11 +43,19 @@ where A.Record == Record, S.Record == Record {
                     return nil
                 }
 
-                let record = try serializer.deserialize(pair.1)
+                let record = try recordAccess.deserialize(pair.1)
+
+                // Check recordType if expectedRecordType is specified
+                if let expectedType = expectedRecordType {
+                    let actualType = recordAccess.recordTypeName(for: record)
+                    guard actualType == expectedType else {
+                        continue  // Skip records of wrong type
+                    }
+                }
 
                 // Apply filter
                 if let filter = filter {
-                    guard filter.matches(record: record, accessor: accessor) else {
+                    guard try filter.matches(record: record, recordAccess: recordAccess) else {
                         continue
                     }
                 }
@@ -62,9 +69,9 @@ where A.Record == Record, S.Record == Record {
         let iter = sequence.makeAsyncIterator()
         return AsyncIterator(
             iterator: iter,
-            serializer: serializer,
-            accessor: accessor,
-            filter: filter
+            recordAccess: recordAccess,
+            filter: filter,
+            expectedRecordType: expectedRecordType
         )
     }
 }
@@ -72,14 +79,12 @@ where A.Record == Record, S.Record == Record {
 // MARK: - Index Scan Cursor
 
 /// Cursor for index scans that fetches actual records
-public struct IndexScanTypedCursor<Record: Sendable, A: FieldAccessor, S: RecordSerializer>: TypedRecordCursor
-where A.Record == Record, S.Record == Record {
+public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
     public typealias Element = Record
 
     private let indexSequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>
     private let recordSubspace: Subspace
-    private let serializer: S
-    private let accessor: A
+    private let recordAccess: any RecordAccess<Record>
     private let transaction: any TransactionProtocol
     private let filter: (any TypedQueryComponent<Record>)?
     private let primaryKeyLength: Int
@@ -87,16 +92,14 @@ where A.Record == Record, S.Record == Record {
     init(
         indexSequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>,
         recordSubspace: Subspace,
-        serializer: S,
-        accessor: A,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol,
         filter: (any TypedQueryComponent<Record>)?,
         primaryKeyLength: Int
     ) {
         self.indexSequence = indexSequence
         self.recordSubspace = recordSubspace
-        self.serializer = serializer
-        self.accessor = accessor
+        self.recordAccess = recordAccess
         self.transaction = transaction
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
@@ -105,8 +108,7 @@ where A.Record == Record, S.Record == Record {
     public struct AsyncIterator: AsyncIteratorProtocol {
         var iterator: any AsyncIteratorProtocol<(FDB.Bytes, FDB.Bytes), Error>
         let recordSubspace: Subspace
-        let serializer: S
-        let accessor: A
+        let recordAccess: any RecordAccess<Record>
         let transaction: any TransactionProtocol
         let filter: (any TypedQueryComponent<Record>)?
         let primaryKeyLength: Int
@@ -139,11 +141,11 @@ where A.Record == Record, S.Record == Record {
                     continue
                 }
 
-                let record = try serializer.deserialize(recordBytes)
+                let record = try recordAccess.deserialize(recordBytes)
 
                 // Apply filter
                 if let filter = filter {
-                    guard filter.matches(record: record, accessor: accessor) else {
+                    guard try filter.matches(record: record, recordAccess: recordAccess) else {
                         continue
                     }
                 }
@@ -158,8 +160,7 @@ where A.Record == Record, S.Record == Record {
         return AsyncIterator(
             iterator: iter,
             recordSubspace: recordSubspace,
-            serializer: serializer,
-            accessor: accessor,
+            recordAccess: recordAccess,
             transaction: transaction,
             filter: filter,
             primaryKeyLength: primaryKeyLength

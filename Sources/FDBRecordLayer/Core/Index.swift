@@ -100,6 +100,109 @@ public struct IndexOptions: Sendable {
     }
 }
 
+// MARK: - Factory Methods
+
+extension Index {
+    /// Creates a value index (standard B-tree index)
+    ///
+    /// - Parameters:
+    ///   - name: Index name
+    ///   - on: Key expression defining indexed fields
+    ///   - unique: Whether to enforce uniqueness (default: false)
+    ///   - recordTypes: Optional set of record types this index applies to
+    /// - Returns: Value index instance
+    public static func value(
+        _ name: String,
+        on expression: KeyExpression,
+        unique: Bool = false,
+        recordTypes: Set<String>? = nil
+    ) -> Index {
+        Index(
+            name: name,
+            type: .value,
+            rootExpression: expression,
+            recordTypes: recordTypes,
+            options: IndexOptions(unique: unique)
+        )
+    }
+
+    /// Creates a count index (aggregation index for counting)
+    ///
+    /// - Parameters:
+    ///   - name: Index name
+    ///   - groupBy: Key expression for grouping
+    ///   - recordTypes: Optional set of record types this index applies to
+    /// - Returns: Count index instance
+    public static func count(
+        _ name: String,
+        groupBy expression: KeyExpression,
+        recordTypes: Set<String>? = nil
+    ) -> Index {
+        Index(
+            name: name,
+            type: .count,
+            rootExpression: expression,
+            recordTypes: recordTypes
+        )
+    }
+
+    /// Creates a sum index (aggregation index for summing values)
+    ///
+    /// - Parameters:
+    ///   - name: Index name
+    ///   - of: Key expression for the value to sum
+    ///   - groupBy: Key expression for grouping
+    ///   - recordTypes: Optional set of record types this index applies to
+    /// - Returns: Sum index instance
+    public static func sum(
+        _ name: String,
+        of valueExpression: KeyExpression,
+        groupBy groupExpression: KeyExpression,
+        recordTypes: Set<String>? = nil
+    ) -> Index {
+        // For sum indexes, we concatenate group and value expressions
+        let rootExpression = ConcatenateKeyExpression(children: [
+            groupExpression,
+            valueExpression
+        ])
+
+        return Index(
+            name: name,
+            type: .sum,
+            rootExpression: rootExpression,
+            recordTypes: recordTypes
+        )
+    }
+
+    /// Creates a rank index (for leaderboards and rankings)
+    ///
+    /// - Parameters:
+    ///   - name: Index name
+    ///   - on: Key expression defining ranked field
+    ///   - order: Rank order ("asc" for ascending, "desc" for descending)
+    ///   - bucketSize: Optional bucket size for optimization
+    ///   - recordTypes: Optional set of record types this index applies to
+    /// - Returns: Rank index instance
+    public static func rank(
+        _ name: String,
+        on expression: KeyExpression,
+        order: String = "asc",
+        bucketSize: Int? = nil,
+        recordTypes: Set<String>? = nil
+    ) -> Index {
+        Index(
+            name: name,
+            type: .rank,
+            rootExpression: expression,
+            recordTypes: recordTypes,
+            options: IndexOptions(
+                rankOrderString: order,
+                bucketSize: bucketSize
+            )
+        )
+    }
+}
+
 // MARK: - Equatable
 
 extension Index: Equatable {

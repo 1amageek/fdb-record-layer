@@ -191,38 +191,37 @@ extension IndexOptions {
 /// )
 /// // Query planner will automatically use city_country_name index
 /// ```
-public struct PermutedIndexMaintainer: IndexMaintainer {
+// MARK: - Generic Permuted Index Maintainer
+
+/// Generic maintainer for permuted indexes
+///
+/// This is the new generic version that works with any record type
+/// through RecordAccess instead of assuming dictionary-based records.
+///
+/// Permuted indexes reorder fields from a base index to enable different query patterns
+/// without duplicating data storage.
+///
+/// **Usage:**
+/// ```swift
+/// let maintainer = GenericPermutedIndexMaintainer(
+///     index: permutedIndex,
+///     recordType: userType,
+///     subspace: permutedSubspace,
+///     recordSubspace: recordSubspace
+/// )
+/// ```
+public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
-    /// Base index name that this permuted index references
-    ///
-    /// LIMITATION: Currently stored but not used for optimization
-    ///
-    /// In production, this should:
-    /// 1. Verify base index exists during initialization
-    /// 2. Use base index data to avoid duplicate storage
-    /// 3. Share data between base and permuted indexes
-    /// 4. Implement copy-on-write or reference counting
-    ///
-    /// Current implementation creates independent index entries,
-    /// losing the storage optimization benefit (60-80% savings).
     private let baseIndexName: String
-
-    /// Permutation to apply to fields
     private let permutation: Permutation
 
-    // MARK: - Initialization
-
-    /// Create a permuted index maintainer
-    /// - Parameters:
-    ///   - index: The permuted index definition
-    ///   - subspace: Subspace for this permuted index
-    ///   - recordSubspace: Subspace where records are stored
-    /// - Throws: RecordLayerError.invalidPermutation if configuration is invalid
     public init(
         index: Index,
+        recordType: RecordType,
         subspace: Subspace,
         recordSubspace: Subspace
     ) throws {
@@ -237,117 +236,85 @@ public struct PermutedIndexMaintainer: IndexMaintainer {
         }
 
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.baseIndexName = baseIndexName
         self.permutation = permutation
     }
 
-    // MARK: - IndexMaintainer Protocol
-
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         // Remove old permuted entry if record existed
         if let oldRecord = oldRecord {
-            let oldValues = index.rootExpression.evaluate(record: oldRecord)
+            let oldValues = try recordAccess.evaluate(
+                record: oldRecord,
+                expression: index.rootExpression
+            )
             let oldPermuted = try permutation.apply(oldValues)
-            let oldPrimaryKey = try extractPrimaryKey(oldRecord)
+            let oldPrimaryKey = try recordAccess.evaluate(
+                record: oldRecord,
+                expression: recordType.primaryKey
+            )
 
             let oldKey = buildPermutedKey(
                 permutedValues: oldPermuted,
-                primaryKey: oldPrimaryKey
+                primaryKeyValues: oldPrimaryKey
             )
             transaction.clear(key: oldKey)
         }
 
         // Add new permuted entry if record exists
         if let newRecord = newRecord {
-            let newValues = index.rootExpression.evaluate(record: newRecord)
+            let newValues = try recordAccess.evaluate(
+                record: newRecord,
+                expression: index.rootExpression
+            )
             let newPermuted = try permutation.apply(newValues)
-            let newPrimaryKey = try extractPrimaryKey(newRecord)
+            let newPrimaryKey = try recordAccess.evaluate(
+                record: newRecord,
+                expression: recordType.primaryKey
+            )
 
             let newKey = buildPermutedKey(
                 permutedValues: newPermuted,
-                primaryKey: newPrimaryKey
+                primaryKeyValues: newPrimaryKey
             )
             transaction.setValue(FDB.Bytes(), for: newKey)
         }
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let values = index.rootExpression.evaluate(record: record)
+        let values = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
         let permuted = try permutation.apply(values)
 
         let key = buildPermutedKey(
             permutedValues: permuted,
-            primaryKey: primaryKey
+            primaryKeyValues: try Tuple.decode(from: primaryKey.encode())
         )
         transaction.setValue(FDB.Bytes(), for: key)
     }
 
     // MARK: - Private Methods
 
-    /// Build permuted index key
     private func buildPermutedKey(
         permutedValues: [any TupleElement],
-        primaryKey: Tuple
+        primaryKeyValues: [any TupleElement]
     ) -> FDB.Bytes {
-        // Combine permuted values + primary key
-        let primaryKeyElements = (try? Tuple.decode(from: primaryKey.encode())) ?? []
-        let allElements = permutedValues + primaryKeyElements
+        let allElements = permutedValues + primaryKeyValues
         let tuple = TupleHelpers.toTuple(allElements)
-
         return subspace.pack(tuple)
-    }
-
-    /// Extract primary key from record
-    ///
-    /// LIMITATION: Currently assumes "id" field as primary key
-    ///
-    /// In production, this should:
-    /// 1. Accept RecordType parameter
-    /// 2. Use RecordType.primaryKey expression to extract key
-    /// 3. Support compound primary keys (multiple fields)
-    /// 4. Handle all TupleElement types properly
-    private func extractPrimaryKey(_ record: [String: Any]) throws -> Tuple {
-        let primaryKeyValue: any TupleElement
-        if let id = record["id"] as? Int64 {
-            primaryKeyValue = id
-        } else if let id = record["id"] as? Int {
-            primaryKeyValue = Int64(id)
-        } else if let id = record["id"] as? String {
-            primaryKeyValue = id
-        } else {
-            throw RecordLayerError.invalidKey("Cannot extract primary key from record")
-        }
-
-        return Tuple(primaryKeyValue)
-    }
-}
-
-// MARK: - Validation Helpers
-
-extension PermutedIndexMaintainer {
-    /// Validate that permutation size matches expected field count
-    /// - Parameters:
-    ///   - permutation: The permutation to validate
-    ///   - fieldCount: Expected number of fields
-    /// - Throws: RecordLayerError.invalidPermutation if size mismatch
-    public static func validatePermutation(
-        _ permutation: Permutation,
-        fieldCount: Int
-    ) throws {
-        guard permutation.indices.count == fieldCount else {
-            throw RecordLayerError.invalidPermutation(
-                "Permutation size \(permutation.indices.count) does not match field count \(fieldCount)"
-            )
-        }
     }
 }

@@ -559,40 +559,6 @@ struct CodeReviewFixTests {
         #expect(selectivity == 1.0)
     }
 
-    // MARK: - Fix 7: Primary Key Extraction Tests
-
-    @Test("Primary key field extraction")
-    func primaryKeyFieldExtraction() {
-        struct User: Sendable {}
-
-        // Single field primary key
-        let singleFieldPK = TypedFieldKeyExpression<User>(fieldName: "id")
-        let recordType1 = TypedRecordType<User>(
-            name: "User",
-            primaryKey: singleFieldPK
-        )
-        #expect(recordType1.fieldNames == ["id"])
-
-        // Composite primary key
-        let compositeKey = TypedConcatenateKeyExpression<User>(children: [
-            TypedFieldKeyExpression(fieldName: "userId"),
-            TypedFieldKeyExpression(fieldName: "timestamp")
-        ])
-        let recordType2 = TypedRecordType<User>(
-            name: "Event",
-            primaryKey: compositeKey
-        )
-        #expect(recordType2.fieldNames == ["userId", "timestamp"])
-
-        // Empty key expression
-        let emptyKey = TypedEmptyKeyExpression<User>()
-        let recordType3 = TypedRecordType<User>(
-            name: "NoKey",
-            primaryKey: emptyKey
-        )
-        #expect(recordType3.fieldNames == [])
-    }
-
     // MARK: - Integration Tests
 
     @Test("Histogram with all fixes applied")

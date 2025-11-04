@@ -1,38 +1,63 @@
 import Foundation
 import FoundationDB
 
-/// Maintainer for count aggregation indexes
+// MARK: - Generic Count Index Maintainer
+
+/// Generic maintainer for count aggregation indexes
+///
+/// This is the new generic version that works with any record type
+/// through RecordAccess instead of assuming dictionary-based records.
 ///
 /// Count indexes maintain counts of records grouped by specific field values.
 /// They use atomic operations for efficient concurrent updates.
-public struct CountIndexMaintainer: IndexMaintainer {
+///
+/// **Usage:**
+/// ```swift
+/// let maintainer = GenericCountIndexMaintainer(
+///     index: countIndex,
+///     recordType: userType,
+///     subspace: countSubspace
+/// )
+/// ```
+public struct GenericCountIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
 
-    public init(index: Index, subspace: Subspace) {
+    public init(
+        index: Index,
+        recordType: RecordType,
+        subspace: Subspace
+    ) {
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
     }
 
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         // Determine the grouping key
-        let groupingValues: [any TupleElement]?
+        let groupingValues: [any TupleElement]
 
         if let newRecord = newRecord {
-            groupingValues = index.rootExpression.evaluate(record: newRecord)
+            groupingValues = try recordAccess.evaluate(
+                record: newRecord,
+                expression: index.rootExpression
+            )
         } else if let oldRecord = oldRecord {
-            groupingValues = index.rootExpression.evaluate(record: oldRecord)
+            groupingValues = try recordAccess.evaluate(
+                record: oldRecord,
+                expression: index.rootExpression
+            )
         } else {
             return // Nothing to do
         }
 
-        guard let values = groupingValues else { return }
-
-        let groupingTuple = TupleHelpers.toTuple(values)
+        let groupingTuple = TupleHelpers.toTuple(groupingValues)
         let countKey = subspace.pack(groupingTuple)
 
         // Calculate delta: +1 for insert, -1 for delete, 0 for update with same group
@@ -45,12 +70,16 @@ public struct CountIndexMaintainer: IndexMaintainer {
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let values = index.rootExpression.evaluate(record: record)
-        let groupingTuple = TupleHelpers.toTuple(values)
+        let groupingValues = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
+        let groupingTuple = TupleHelpers.toTuple(groupingValues)
         let countKey = subspace.pack(groupingTuple)
 
         // Increment count

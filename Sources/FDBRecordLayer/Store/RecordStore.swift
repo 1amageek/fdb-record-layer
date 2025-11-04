@@ -2,361 +2,263 @@ import Foundation
 import FoundationDB
 import Logging
 
-/// Record store for managing records and indexes
+/// Record store for managing multiple record types
 ///
-/// RecordStore is the main interface for storing and retrieving records.
-/// It automatically maintains indexes and enforces the schema defined in RecordMetaData.
-public final class RecordStore<Record: Sendable>: RecordStoreProtocol, Sendable {
+/// RecordStore は複数のレコード型を管理できます。
+/// Recordableプロトコルに準拠した型を登録し、型安全なAPIで操作できます。
+///
+/// **使用例**:
+/// ```swift
+/// // RecordMetaDataに型を登録
+/// let metaData = RecordMetaData()
+/// try metaData.registerRecordType(User.self)
+/// try metaData.registerRecordType(Order.self)
+///
+/// // RecordStoreを初期化
+/// let store = RecordStore(
+///     database: database,
+///     subspace: subspace,
+///     metaData: metaData
+/// )
+///
+/// // 型安全な保存
+/// try await store.save(user)
+/// try await store.save(order)
+///
+/// // 型安全な取得
+/// if let user = try await store.fetch(User.self, by: 1) {
+///     print(user.name)
+/// }
+/// ```
+public final class RecordStore: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     public let subspace: Subspace
     public let metaData: RecordMetaData
-    private let serializer: any RecordSerializer<Record>
     private let logger: Logger
-    private let indexStateManager: IndexStateManager
 
     // Subspaces
-    private let recordSubspace: Subspace
-    private let indexSubspace: Subspace
-    private let indexStateSubspace: Subspace
-    private let storeInfoSubspace: Subspace
+    internal let recordSubspace: Subspace
+    internal let indexSubspace: Subspace
 
     // MARK: - Initialization
 
+    /// Initialize RecordStore
+    ///
+    /// - Parameters:
+    ///   - database: The FDB database
+    ///   - subspace: The subspace for this record store
+    ///   - metaData: Record metadata with registered types
+    ///   - logger: Optional logger
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
         metaData: RecordMetaData,
-        serializer: any RecordSerializer<Record>,
         logger: Logger? = nil
     ) {
         self.database = database
         self.subspace = subspace
         self.metaData = metaData
-        self.serializer = serializer
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
-        self.indexStateManager = IndexStateManager(
-            database: database,
-            subspace: subspace,
-            logger: logger
-        )
 
         // Initialize subspaces
-        self.recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
-        self.indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
-        self.indexStateSubspace = subspace.subspace(RecordStoreKeyspace.indexState.rawValue)
-        self.storeInfoSubspace = subspace.subspace(RecordStoreKeyspace.storeInfo.rawValue)
+        self.recordSubspace = subspace.subspace(Tuple("R"))  // Records
+        self.indexSubspace = subspace.subspace(Tuple("I"))    // Indexes
     }
 
-    // MARK: - Record Operations
+    // MARK: - Save
 
-    /// Save a record
+    /// レコードを保存（型安全）
     ///
-    /// If the record already exists (same primary key), it will be updated.
-    /// All indexes are automatically maintained.
-    public func save(_ record: Record, context: RecordContext) async throws {
-        try await save(record, expectedVersion: nil, context: context)
+    /// - Parameter record: 保存するレコード
+    /// - Throws: RecordLayerError if save fails
+    public func save<T: Recordable>(_ record: T) async throws {
+        let recordAccess = GenericRecordAccess<T>()
+        let bytes = try recordAccess.serialize(record)
+        let primaryKey = recordAccess.extractPrimaryKey(from: record)
+
+        // FDBに保存
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
+
+        // レコードタイプごとのサブスペース: /R/<TypeName>/<PrimaryKey>
+        let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(primaryKey).pack(Tuple())
+
+        let tr = context.getTransaction()
+        tr.setValue(bytes, for: key)
+
+        // インデックス更新（IndexManager使用）
+        // TODO: Implement IndexManager integration
+        // let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        // try await indexManager.updateIndexes(for: record, context: context)
+
+        try await context.commit()
     }
 
-    /// Save a record with optimistic concurrency control
-    ///
-    /// If the record already exists (same primary key), it will be updated.
-    /// All indexes are automatically maintained.
+    // MARK: - Fetch
+
+    /// プライマリキーでレコードを取得
     ///
     /// - Parameters:
-    ///   - record: The record to save
-    ///   - expectedVersion: The expected version for optimistic locking (nil for first save)
-    ///   - context: Transaction context
-    /// - Throws: RecordLayerError.versionMismatch if version doesn't match
-    public func save(_ record: Record, expectedVersion: Version?, context: RecordContext) async throws {
-        logger.debug("Saving record with version check")
+    ///   - type: レコード型
+    ///   - primaryKey: プライマリキー値
+    /// - Returns: レコード（存在しない場合は nil）
+    /// - Throws: RecordLayerError if fetch fails
+    public func fetch<T: Recordable>(
+        _ type: T.Type,
+        by primaryKey: any TupleElement
+    ) async throws -> T? {
+        let recordAccess = GenericRecordAccess<T>()
 
-        let transaction = context.getTransaction()
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
 
-        // For dictionary-based records, we can extract type and primary key
-        // In a real implementation with Protobuf, this would use reflection
-        guard let recordDict = record as? [String: Any] else {
-            throw RecordLayerError.internalError("Record must be a dictionary for this implementation")
+        let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
+
+        let tr = context.getTransaction()
+        guard let bytes = try await tr.getValue(for: key, snapshot: true) else {
+            return nil
         }
 
-        guard let recordTypeName = recordDict["_type"] as? String else {
-            throw RecordLayerError.internalError("Record must have _type field")
-        }
+        return try recordAccess.deserialize(bytes)
+    }
 
-        let recordType = try metaData.getRecordType(recordTypeName)
+    // MARK: - Query
 
-        // Extract primary key
-        let primaryKeyValues = recordType.primaryKey.evaluate(record: recordDict)
-        let primaryKey = TupleHelpers.toTuple(primaryKeyValues)
+    /// クエリビルダーを作成
+    ///
+    /// - Parameter type: レコード型
+    /// - Returns: クエリビルダー
+    public func query<T: Recordable>(_ type: T.Type) -> QueryBuilder<T> {
+        return QueryBuilder(
+            store: self,
+            recordType: type,
+            metaData: metaData,
+            database: database,
+            subspace: subspace
+        )
+    }
 
-        // Check version if expectedVersion is provided
-        if let expectedVersion = expectedVersion {
-            try await checkVersionForRecord(
-                primaryKey: primaryKey,
-                expectedVersion: expectedVersion,
-                context: context
-            )
-        }
+    // MARK: - Delete
 
-        // Fetch existing record for index updates
-        let existingRecord = try await fetch(primaryKey: primaryKey, context: context)
+    /// レコードを削除
+    ///
+    /// - Parameters:
+    ///   - type: レコード型
+    ///   - primaryKey: プライマリキー値
+    /// - Throws: RecordLayerError if delete fails
+    public func delete<T: Recordable>(
+        _ type: T.Type,
+        by primaryKey: any TupleElement
+    ) async throws {
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
 
-        // Serialize new record
-        let serialized = try serializer.serialize(record)
+        // レコード削除
+        let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
 
-        // Save record
-        let recordKey = recordSubspace.pack(primaryKey)
-        transaction.setValue(serialized, for: recordKey)
+        let tr = context.getTransaction()
+        tr.clear(key: key)
 
-        // Update indexes
-        try await updateIndexesForRecord(
-            oldRecord: existingRecord,
-            newRecord: record,
-            recordType: recordType,
-            recordDict: recordDict,
+        // インデックス削除
+        // TODO: Implement IndexManager integration
+        // let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        // try await indexManager.deleteIndexes(for: type, primaryKey: primaryKey, context: context)
+
+        try await context.commit()
+    }
+
+    // MARK: - Transaction
+
+    /// トランザクション内で操作を実行
+    ///
+    /// - Parameter block: トランザクション内で実行するブロック
+    /// - Returns: ブロックの戻り値
+    /// - Throws: ブロックがスローしたエラー
+    public func transaction<T>(
+        _ block: (RecordTransaction) async throws -> T
+    ) async throws -> T {
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
+
+        let recordTransaction = RecordTransaction(
+            store: self,
             context: context
         )
 
-        logger.debug("Record saved successfully")
+        let result = try await block(recordTransaction)
+        try await context.commit()
+
+        return result
+    }
+}
+
+// MARK: - RecordTransaction
+
+/// トランザクション内で使用するRecordStoreのラッパー
+///
+/// トランザクション内でレコード操作を行うために使用します。
+public struct RecordTransaction {
+    private let store: RecordStore
+    internal let context: RecordContext
+
+    internal init(store: RecordStore, context: RecordContext) {
+        self.store = store
+        self.context = context
     }
 
-    /// Fetch a record by primary key
-    public func fetch(primaryKey: Tuple, context: RecordContext) async throws -> Record? {
-        logger.debug("Fetching record with primary key")
+    /// レコードを保存
+    public func save<T: Recordable>(_ record: T) async throws {
+        let recordAccess = GenericRecordAccess<T>()
+        let bytes = try recordAccess.serialize(record)
+        let primaryKey = recordAccess.extractPrimaryKey(from: record)
 
-        let transaction = context.getTransaction()
-        let recordKey = recordSubspace.pack(primaryKey)
+        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(primaryKey).pack(Tuple())
 
-        guard let bytes = try await transaction.getValue(for: recordKey) else {
-            logger.debug("Record not found")
+        let tr = context.getTransaction()
+        tr.setValue(bytes, for: key)
+
+        // TODO: IndexManager integration
+    }
+
+    /// レコードを取得
+    public func fetch<T: Recordable>(
+        _ type: T.Type,
+        by primaryKey: any TupleElement
+    ) async throws -> T? {
+        let recordAccess = GenericRecordAccess<T>()
+
+        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
+
+        let tr = context.getTransaction()
+        guard let bytes = try await tr.getValue(for: key, snapshot: false) else {
             return nil
         }
 
-        let record = try serializer.deserialize(bytes)
-        logger.debug("Record fetched successfully")
-        return record
+        return try recordAccess.deserialize(bytes)
     }
 
-    /// Fetch a record with its current version
-    ///
-    /// - Parameters:
-    ///   - primaryKey: The primary key of the record
-    ///   - context: Transaction context
-    /// - Returns: Tuple of (record, version), or nil if record not found
-    public func fetchWithVersion(primaryKey: Tuple, context: RecordContext) async throws -> (record: Record, version: Version)? {
-        logger.debug("Fetching record with version")
-
-        // Fetch the record
-        guard let record = try await fetch(primaryKey: primaryKey, context: context) else {
-            logger.debug("Record not found")
-            return nil
-        }
-
-        // Get version from version index
-        let version = try await getVersionForRecord(primaryKey: primaryKey, context: context)
-
-        guard let version = version else {
-            logger.debug("Version not found for record")
-            return nil
-        }
-
-        logger.debug("Record with version fetched successfully")
-        return (record: record, version: version)
-    }
-
-    /// Delete a record by primary key
-    public func delete(primaryKey: Tuple, context: RecordContext) async throws {
-        logger.debug("Deleting record with primary key")
-
-        let transaction = context.getTransaction()
-
-        // Fetch existing record for index updates
-        guard let existingRecord = try await fetch(primaryKey: primaryKey, context: context) else {
-            logger.debug("Record not found, nothing to delete")
-            return
-        }
-
-        guard let recordDict = existingRecord as? [String: Any] else {
-            throw RecordLayerError.internalError("Record must be a dictionary")
-        }
-
-        guard let recordTypeName = recordDict["_type"] as? String else {
-            throw RecordLayerError.internalError("Record must have _type field")
-        }
-
-        let recordType = try metaData.getRecordType(recordTypeName)
-
-        // Delete record
-        let recordKey = recordSubspace.pack(primaryKey)
-        transaction.clear(key: recordKey)
-
-        // Update indexes
-        try await updateIndexesForRecord(
-            oldRecord: existingRecord,
-            newRecord: nil,
-            recordType: recordType,
-            recordDict: recordDict,
-            context: context
-        )
-
-        logger.debug("Record deleted successfully")
-    }
-
-    // MARK: - Index Management
-
-    /// Get index state
-    ///
-    /// Delegates to IndexStateManager for consistent state management
-    public func indexState(of indexName: String, context: RecordContext) async throws -> IndexState {
-        return try await indexStateManager.state(of: indexName, context: context)
-    }
-
-    // MARK: - Internal Methods
-
-    /// Filter indexes to only those that should be maintained
-    ///
-    /// - Parameter context: Transaction context for consistent state reading
-    /// - Returns: List of maintainable indexes
-    private func filterMaintainableIndexes(context: RecordContext) async throws -> [Index] {
-        let allIndexes = Array(metaData.indexes.values)
-        let indexNames = allIndexes.map { $0.name }
-        let states = try await indexStateManager.states(of: indexNames, context: context)
-
-        return allIndexes.filter { index in
-            guard let state = states[index.name] else { return false }
-            return state.shouldMaintain
-        }
-    }
-
-    /// Check version for optimistic concurrency control
-    private func checkVersionForRecord(
-        primaryKey: Tuple,
-        expectedVersion: Version,
-        context: RecordContext
+    /// レコードを削除
+    public func delete<T: Recordable>(
+        _ type: T.Type,
+        by primaryKey: any TupleElement
     ) async throws {
-        // LIMITATION: Uses first version index found, ignoring record type
-        //
-        // In production, this should:
-        // 1. Accept recordType parameter
-        // 2. Filter indexes by recordTypes field
-        // 3. Throw error if multiple version indexes match
-        // 4. Support per-record-type version indexes
-        let versionIndex = metaData.indexes.values.first { $0.type == .version }
+        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
+        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
 
-        guard let versionIndex = versionIndex else {
-            throw RecordLayerError.internalError("No version index configured for optimistic locking")
-        }
+        let tr = context.getTransaction()
+        tr.clear(key: key)
 
-        // Create version maintainer and check version
-        let maintainer = createIndexMaintainer(for: versionIndex)
-        guard let versionMaintainer = maintainer as? VersionIndexMaintainer else {
-            throw RecordLayerError.internalError("Version index maintainer not found")
-        }
-
-        try await versionMaintainer.checkVersion(
-            primaryKey: primaryKey,
-            expectedVersion: expectedVersion,
-            transaction: context.getTransaction()
-        )
-    }
-
-    /// Get current version for a record
-    private func getVersionForRecord(
-        primaryKey: Tuple,
-        context: RecordContext
-    ) async throws -> Version? {
-        // LIMITATION: Uses first version index found, ignoring record type
-        let versionIndex = metaData.indexes.values.first { $0.type == .version }
-
-        guard let versionIndex = versionIndex else {
-            return nil
-        }
-
-        // Create version maintainer and get current version
-        let maintainer = createIndexMaintainer(for: versionIndex)
-        guard let versionMaintainer = maintainer as? VersionIndexMaintainer else {
-            return nil
-        }
-
-        return try await versionMaintainer.getCurrentVersion(
-            primaryKey: primaryKey,
-            transaction: context.getTransaction()
-        )
-    }
-
-    private func updateIndexesForRecord(
-        oldRecord: Record?,
-        newRecord: Record?,
-        recordType: RecordType,
-        recordDict: [String: Any],
-        context: RecordContext
-    ) async throws {
-        let transaction = context.getTransaction()
-
-        // Only update indexes that should be maintained (checking state)
-        let maintainableIndexes = try await filterMaintainableIndexes(context: context)
-
-        // Filter to indexes for this record type
-        let relevantIndexes = maintainableIndexes.filter { index in
-            if let recordTypes = index.recordTypes {
-                return recordTypes.contains(recordType.name)
-            }
-            return true  // Universal index
-        }
-
-        for index in relevantIndexes {
-            let maintainer = createIndexMaintainer(for: index)
-
-            let oldDict = oldRecord as? [String: Any]
-            let newDict = newRecord as? [String: Any]
-
-            try await maintainer.updateIndex(
-                oldRecord: oldDict,
-                newRecord: newDict,
-                transaction: transaction
-            )
-        }
-    }
-
-    private func createIndexMaintainer(for index: Index) -> any IndexMaintainer {
-        let indexSubspace = self.indexSubspace.subspace(index.subspaceTupleKey)
-
-        switch index.type {
-        case .value:
-            return ValueIndexMaintainer(
-                index: index,
-                subspace: indexSubspace,
-                recordSubspace: recordSubspace
-            )
-        case .count:
-            return CountIndexMaintainer(
-                index: index,
-                subspace: indexSubspace
-            )
-        case .sum:
-            return SumIndexMaintainer(
-                index: index,
-                subspace: indexSubspace
-            )
-        case .version:
-            return VersionIndexMaintainer(
-                index: index,
-                subspace: indexSubspace,
-                recordSubspace: recordSubspace
-            )
-        case .permuted:
-            return try! PermutedIndexMaintainer(
-                index: index,
-                subspace: indexSubspace,
-                recordSubspace: recordSubspace
-            )
-        case .rank:
-            return RankIndexMaintainer(
-                index: index,
-                subspace: indexSubspace,
-                recordSubspace: recordSubspace
-            )
-        }
+        // TODO: IndexManager integration
     }
 }

@@ -97,6 +97,47 @@ FoundationDBはプロセス・ロールモデルを採用しており、Worker�
 2. Storage Serverから直接データを読み取り
 3. ReadYourWritesレイヤーが同一トランザクション内の書き込みを追跡
 
+#### snapshotパラメータの設計思想
+
+**FoundationDBにおけるsnapshot読み取り**:
+
+| パラメータ | 動作 | 用途 |
+|-----------|------|------|
+| `snapshot: true` | **スナップショット読み取り**<br>・競合検知なし (conflict detection disabled)<br>・他のトランザクションの変更を検知しない<br>・読み取り専用操作に最適 | **SnapshotCursor**<br>トランザクション外の単発読み取り |
+| `snapshot: false` | **Serializable読み取り**<br>・競合検知あり (conflict detection enabled)<br>・Read-Your-Writes保証<br>・Serializable isolation<br>・競合があればコミット時にエラー | **TransactionCursor**<br>明示的なトランザクション内の読み取り |
+
+**このプロジェクトにおける実装方針**:
+
+```swift
+// TransactionCursor: トランザクション内 → snapshot: false
+try await context.transaction { transaction in
+    let cursor = try await transaction.fetch(query)
+    // ← この読み取りは snapshot: false を使用
+    // ・同一トランザクション内の書き込みが見える
+    // ・他のトランザクションとの競合を検知
+    // ・Serializable isolation保証
+
+    for try await record in cursor {
+        // トランザクション内での変更が反映される
+    }
+}
+
+// SnapshotCursor: トランザクション外 → snapshot: true
+let cursor = try await context.fetch(query)
+// ← この読み取りは snapshot: true を使用
+// ・読み取り専用
+// ・競合検知不要
+// ・パフォーマンス最適
+for try await record in cursor {
+    // スナップショット時点のデータを読み取る
+}
+```
+
+**設計の根拠**:
+1. **TransactionCursor**は明示的なトランザクション内で使用されるため、Serializable isolationが必要
+2. **SnapshotCursor**は単発の読み取り専用操作なので、競合検知は不要
+3. この設計により、正しいトランザクション動作と最適なパフォーマンスを両立
+
 #### 書き込みトランザクション
 ```mermaid
 sequenceDiagram
@@ -2187,6 +2228,113 @@ while (iterator.hasNext() && page.size() < pageSize) {
 // 継続トークンを保存
 byte[] continuation = iterator.getContinuation();
 ```
+
+### Swift版の設計方針: SwiftData風マクロベースAPI
+
+> **注**: 以前は単一型 `RecordStore<Record>` アプローチでしたが、ユーザビリティと学習コストの観点から、SwiftData風のマクロベースAPIに完全再設計しました。
+
+#### 設計ドキュメント
+
+完全な設計仕様は [docs/swift-macro-design.md](docs/swift-macro-design.md) を参照してください。
+
+#### 設計の意図
+
+1. **SwiftData互換のAPI**: 学習コストを最小化し、Swift開発者に親しみやすいインターフェース
+2. **Protobuf実装の隠蔽**: ユーザーはProtobufを意識せずにSwiftのコードのみを記述
+3. **マルチタイプサポート**: 単一RecordStoreで複数のレコードタイプを管理
+4. **完全な型安全性**: マクロによるコンパイル時の型チェック
+5. **多言語互換性**: Swiftコードから.protoファイルを自動生成
+6. **基盤API優先**: マクロが依存する土台（Recordable、RecordAccess、IndexMaintainer）を先に確定し、手戻りを防ぐ
+
+#### 実装順序
+
+**Phase 0: 基盤API実装**（マクロより先）
+- `Recordable` プロトコル定義
+- `GenericRecordAccess` 実装
+- `RecordStore` マルチタイプ対応API
+- `IndexManager` 統合
+- `QueryBuilder` 実装
+
+**Phase 1以降: マクロ実装**（安定した基盤の上で）
+- `@Recordable`、`@PrimaryKey`、`@Transient` マクロ
+- `#Index`、`#Unique`、`#FieldOrder` マクロ
+- `@Relationship`、`@Attribute` マクロ
+- Protobuf自動生成プラグイン
+
+**重要な設計方針**: マクロが生成するコードは基盤APIに依存するため、基盤APIを先に確定させることで、マクロ実装の手戻りを防ぎます。
+
+#### 新しいAPI例
+
+```swift
+@Recordable
+struct User {
+    #Unique<User>([\.email])
+    #Index<User>([\.createdAt])
+
+    @PrimaryKey var userID: Int64
+    var email: String
+    var name: String
+
+    @Default(value: Date())
+    var createdAt: Date
+
+    @Transient var isLoggedIn: Bool = false
+}
+
+// 使用例
+let metaData = RecordMetaData()
+try metaData.registerRecordType(User.self, name: "User")
+
+let store = RecordStore(database: database, subspace: subspace, metaData: metaData)
+
+// 型安全な保存
+try await store.save(user)
+
+// 型安全なクエリ
+let users: [User] = try await store.fetch(User.self)
+    .where(\.email == "user@example.com")
+    .collect()
+```
+
+#### RecordTypeフィルタリング
+
+安全性のため、カーソルはレコードタイプを検証します：
+
+```swift
+// BasicTypedRecordCursor.next()
+let record = try recordAccess.deserialize(pair.1)
+
+// Check recordType if expectedRecordType is specified
+if let expectedType = expectedRecordType {
+    let actualType = recordAccess.recordTypeName(for: record)
+    guard actualType == expectedType else {
+        continue  // Skip records of wrong type
+    }
+}
+```
+
+**目的**:
+- データ破損や誤った型のレコードをスキップ
+- デシリアライズエラーの代わりに、明確なフィルタリング
+- 開発時のデバッグを容易にする
+
+#### Java版との違い
+
+| 項目 | Java版 | Swift版（マクロベース） |
+|------|--------|---------|
+| スキーマ定義 | `.proto`ファイル | `@Recordable`マクロ |
+| 複数レコードタイプ | 同一RecordStoreで可能 | 同一RecordStoreで可能（型登録） |
+| 型安全性 | 実行時 | コンパイル時 + 実行時 |
+| インデックス定義 | MetaDataBuilder | `#Index`, `#Unique`マクロ |
+| Protobuf | 手動で.proto作成 | Swiftから自動生成 |
+| リレーションシップ | 手動管理 | `@Relationship`マクロ |
+
+**利点**:
+- ✅ SwiftData互換で学習コストが低い
+- ✅ Protobufを意識せずに開発可能
+- ✅ マクロによる強力な型安全性
+- ✅ ボイラープレートコードの削減
+- ✅ 多言語互換性の維持（.proto自動生成）
 
 ### このプロジェクト（Swift版）との比較
 

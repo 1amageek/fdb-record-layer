@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import Collections
 
 // MARK: - Rank Index
 
@@ -87,30 +88,21 @@ extension IndexOptions {
 
 /// Maintainer for rank indexes
 ///
-/// Implements Range Tree algorithm for O(log n) rank queries.
+/// Works with any record type through RecordAccess.
+/// Implements Range Tree algorithm for O(log n) rank queries with Deque optimization.
 ///
-/// **Data Structure:**
-/// For each score entry, we maintain:
-/// 1. Score entry: [grouping][score][pk] → ∅
-/// 2. Count nodes at each level of range tree
-///
-/// **Range Tree Levels:**
-/// - Level 0: Individual entries
-/// - Level 1: Buckets of size N
-/// - Level 2: Buckets of size N²
-/// - Level K: Buckets of size N^K
-///
-/// **Rank Calculation:**
-/// To find rank of score S:
-/// 1. Count all scores better than S (using range tree)
-/// 2. Add 1 for 1-based ranking
-///
-/// **Complexity:**
-/// - Insert/Delete: O(log n) range tree updates
-/// - Get rank: O(log n) tree traversal
-/// - Get by rank: O(log n) binary search + range scan
-public struct RankIndexMaintainer: IndexMaintainer {
+/// **Usage:**
+/// ```swift
+/// let maintainer = RankIndexMaintainer(
+///     index: rankIndex,
+///     recordType: userType,
+///     subspace: rankSubspace,
+///     recordSubspace: recordSubspace
+/// )
+/// ```
+public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
@@ -118,52 +110,43 @@ public struct RankIndexMaintainer: IndexMaintainer {
     private let rankOrder: RankOrder
 
     /// Bucket size for range tree (default: 100)
-    /// Each level groups this many entries from the level below
     private let bucketSize: Int
 
     /// Maximum tree levels (default: 3)
-    /// Level 0: Individual entries
-    /// Level 1: Buckets of bucketSize
-    /// Level 2: Buckets of bucketSize^2
-    /// Level 3: Buckets of bucketSize^3
     private let maxLevel: Int
 
     // MARK: - Initialization
 
     public init(
         index: Index,
+        recordType: RecordType,
         subspace: Subspace,
         recordSubspace: Subspace
     ) {
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.rankOrder = index.options.rankOrder
         self.bucketSize = index.options.bucketSize ?? 100
-
-        // Calculate max levels based on bucket size
-        // Level 0: Individual entries
-        // Level 1: bucketSize (100)
-        // Level 2: bucketSize^2 (10,000)
-        // Level 3: bucketSize^3 (1,000,000)
         self.maxLevel = 3
     }
 
-    // MARK: - IndexMaintainer Protocol
+    // MARK: - GenericIndexMaintainer Protocol
 
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        // Extract grouping values and score
-        // For now, simplified implementation
-        // In production, would use key expression evaluation
-
         if let oldRecord = oldRecord {
             // Remove old entry
-            let oldValues = index.rootExpression.evaluate(record: oldRecord)
-            let oldPrimaryKey = try extractPrimaryKey(oldRecord)
+            let oldValues = try recordAccess.evaluate(
+                record: oldRecord,
+                expression: index.rootExpression
+            )
+            let oldPrimaryKey = try extractPrimaryKey(oldRecord, recordAccess: recordAccess)
 
             try await removeRankEntry(
                 values: oldValues,
@@ -174,8 +157,11 @@ public struct RankIndexMaintainer: IndexMaintainer {
 
         if let newRecord = newRecord {
             // Add new entry
-            let newValues = index.rootExpression.evaluate(record: newRecord)
-            let newPrimaryKey = try extractPrimaryKey(newRecord)
+            let newValues = try recordAccess.evaluate(
+                record: newRecord,
+                expression: index.rootExpression
+            )
+            let newPrimaryKey = try extractPrimaryKey(newRecord, recordAccess: recordAccess)
 
             try await addRankEntry(
                 values: newValues,
@@ -186,11 +172,15 @@ public struct RankIndexMaintainer: IndexMaintainer {
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let values = index.rootExpression.evaluate(record: record)
+        let values = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
 
         try await addRankEntry(
             values: values,
@@ -202,33 +192,20 @@ public struct RankIndexMaintainer: IndexMaintainer {
     // MARK: - Rank Operations
 
     /// Get rank for a given score
-    /// - Parameters:
-    ///   - groupingValues: Grouping field values (e.g., game_id)
-    ///   - score: The score to get rank for
-    ///   - transaction: Transaction
-    /// - Returns: 1-based rank (1 = best)
     public func getRank(
         groupingValues: [any TupleElement],
         score: Int64,
         transaction: any TransactionProtocol
     ) async throws -> Int {
-        // Count how many scores are better than this one
         let betterCount = try await countBetterScores(
             groupingValues: groupingValues,
             score: score,
             transaction: transaction
         )
-
-        // Rank is count of better scores + 1 (1-based)
         return betterCount + 1
     }
 
-    /// Get record by rank
-    /// - Parameters:
-    ///   - groupingValues: Grouping field values
-    ///   - rank: 1-based rank to retrieve
-    ///   - transaction: Transaction
-    /// - Returns: Primary key of record at that rank, or nil if not found
+    /// Get record by rank (OPTIMIZED with Deque)
     public func getRecordByRank(
         groupingValues: [any TupleElement],
         rank: Int,
@@ -251,7 +228,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
         )
 
         if rankOrder == .ascending {
-            // OPTIMIZED: Stream directly for ascending (keys already in correct order)
+            // Stream directly for ascending
             var currentRank = 0
             for try await (key, _) in sequence {
                 currentRank += 1
@@ -260,35 +237,26 @@ public struct RankIndexMaintainer: IndexMaintainer {
                 }
             }
         } else {
-            // For descending: Use circular buffer to keep only last 'rank' elements
-            // OPTIMIZED: O(rank) memory instead of O(N)
-            // NOTE: Swift bindings don't expose reverse parameter
-            var buffer: [FDB.Bytes] = []
+            // OPTIMIZED: Use Deque for O(1) removeFirst
+            var buffer = Deque<FDB.Bytes>()
             buffer.reserveCapacity(rank)
 
             for try await (key, _) in sequence {
                 buffer.append(key)
                 if buffer.count > rank {
-                    buffer.removeFirst()  // Keep only last 'rank' elements
+                    buffer.removeFirst()  // O(1) with Deque
                 }
             }
 
-            // The first element in buffer is the rank-th element from the end
             if buffer.count == rank {
                 return try extractPrimaryKeyFromIndexKey(buffer.first!)
             }
         }
 
-        return nil  // Rank not found
+        return nil
     }
 
-    /// Get records in rank range
-    /// - Parameters:
-    ///   - groupingValues: Grouping field values
-    ///   - startRank: Start rank (inclusive, 1-based)
-    ///   - endRank: End rank (exclusive, 1-based)
-    ///   - transaction: Transaction
-    /// - Returns: Array of primary keys
+    /// Get records in rank range (OPTIMIZED with Deque)
     public func getRecordsByRankRange(
         groupingValues: [any TupleElement],
         startRank: Int,
@@ -317,7 +285,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
         var results: [Tuple] = []
 
         if rankOrder == .ascending {
-            // OPTIMIZED: Stream directly for ascending (keys already in correct order)
+            // Stream directly for ascending
             var currentRank = 0
             for try await (key, _) in sequence {
                 currentRank += 1
@@ -326,24 +294,22 @@ public struct RankIndexMaintainer: IndexMaintainer {
                     results.append(pk)
                 }
                 if currentRank >= endRank {
-                    break  // Early exit once we've collected the range
+                    break
                 }
             }
         } else {
-            // For descending: Use circular buffer to keep only last 'endRank' elements
-            // OPTIMIZED: O(endRank) memory instead of O(N)
-            // NOTE: Swift bindings don't expose reverse parameter
-            var buffer: [FDB.Bytes] = []
+            // OPTIMIZED: Use Deque for O(1) removeFirst
+            var buffer = Deque<FDB.Bytes>()
             buffer.reserveCapacity(endRank)
 
             for try await (key, _) in sequence {
                 buffer.append(key)
                 if buffer.count > endRank {
-                    buffer.removeFirst()  // Keep only last 'endRank' elements
+                    buffer.removeFirst()  // O(1) with Deque
                 }
             }
 
-            // Extract elements from startRank to endRank (from the end)
+            // Extract elements from startRank to endRank
             let rangeSize = endRank - startRank
             if buffer.count >= startRank {
                 let startIndex = buffer.count - endRank + (startRank - 1)
@@ -361,6 +327,18 @@ public struct RankIndexMaintainer: IndexMaintainer {
 
     // MARK: - Private Methods
 
+    /// Extract primary key from record using RecordAccess
+    private func extractPrimaryKey(
+        _ record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Tuple {
+        let keyValues = try recordAccess.evaluate(
+            record: record,
+            expression: recordType.primaryKey
+        )
+        return TupleHelpers.toTuple(keyValues)
+    }
+
     /// Add rank entry for a record
     private func addRankEntry(
         values: [any TupleElement],
@@ -368,7 +346,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Build rank index key: [grouping][score][pk]
-        let allElements = values + (try! Tuple.decode(from: primaryKey.encode()))
+        let allElements = values + (try Tuple.decode(from: primaryKey.encode()))
         let tuple = TupleHelpers.toTuple(allElements)
         let key = subspace.pack(tuple)
 
@@ -389,7 +367,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
         primaryKey: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let allElements = values + (try! Tuple.decode(from: primaryKey.encode()))
+        let allElements = values + (try Tuple.decode(from: primaryKey.encode()))
         let tuple = TupleHelpers.toTuple(allElements)
         let key = subspace.pack(tuple)
 
@@ -405,33 +383,18 @@ public struct RankIndexMaintainer: IndexMaintainer {
     }
 
     /// Count scores better than the given score using count nodes
-    ///
-    /// Optimized O(log n) implementation using range tree count nodes.
-    /// Falls back to direct counting if count nodes are not available.
-    ///
-    /// - Parameters:
-    ///   - groupingValues: Grouping field values
-    ///   - score: The score to compare against
-    ///   - transaction: Transaction
-    /// - Returns: Number of scores better than the given score
     private func countBetterScores(
         groupingValues: [any TupleElement],
         score: Int64,
         transaction: any TransactionProtocol
     ) async throws -> Int {
-        let groupingElements = try! Tuple.decode(from: TupleHelpers.toTuple(groupingValues).encode())
-        let groupingTuple = TupleHelpers.toTuple(groupingElements)
+        let groupingElements = try Tuple.decode(from: TupleHelpers.toTuple(groupingValues).encode())
 
         var totalCount = 0
 
         // Use count nodes for efficient counting (O(log n))
         for level in stride(from: maxLevel, through: 1, by: -1) {
             let levelBucketSize = Int64(pow(Double(bucketSize), Double(level)))
-
-            // Determine count node range based on rank order
-            let countPrefix = subspace.pack(
-                Tuple(groupingElements + ["_count", level])
-            )
 
             let beginKey: FDB.Bytes
             let endKey: FDB.Bytes
@@ -462,20 +425,17 @@ public struct RankIndexMaintainer: IndexMaintainer {
             }
         }
 
-        // Count remaining scores not covered by count nodes (within smallest bucket)
-        // This is a small range scan for fine-grained counting
-        let levelBucketSize = Int64(bucketSize)  // Level 1 bucket size
+        // Count remaining scores not covered by count nodes
+        let levelBucketSize = Int64(bucketSize)
         let bucketStart = (score / levelBucketSize) * levelBucketSize
 
         let scoreBeginKey: FDB.Bytes
         let scoreEndKey: FDB.Bytes
 
         if rankOrder == .descending {
-            // Count scores in range (score+1, bucketEnd)
             scoreBeginKey = subspace.pack(Tuple(groupingElements + [score + 1]))
             scoreEndKey = subspace.pack(Tuple(groupingElements + [bucketStart + levelBucketSize]))
         } else {
-            // Count scores in range (bucketStart, score-1)
             scoreBeginKey = subspace.pack(Tuple(groupingElements + [bucketStart]))
             scoreEndKey = subspace.pack(Tuple(groupingElements + [score]))
         }
@@ -493,40 +453,11 @@ public struct RankIndexMaintainer: IndexMaintainer {
         return totalCount
     }
 
-    /// Extract primary key from record
-    ///
-    /// LIMITATION: Currently assumes "id" field as primary key
-    ///
-    /// In production, this should:
-    /// 1. Accept RecordType parameter
-    /// 2. Use RecordType.primaryKey expression to extract key
-    /// 3. Support compound primary keys (multiple fields)
-    /// 4. Handle all TupleElement types properly
-    private func extractPrimaryKey(_ record: [String: Any]) throws -> Tuple {
-        let primaryKeyValue: any TupleElement
-        if let id = record["id"] as? Int64 {
-            primaryKeyValue = id
-        } else if let id = record["id"] as? Int {
-            primaryKeyValue = Int64(id)
-        } else if let id = record["id"] as? String {
-            primaryKeyValue = id
-        } else {
-            throw RecordLayerError.invalidKey("Cannot extract primary key from record")
-        }
-
-        return Tuple(primaryKeyValue)
-    }
-
     /// Extract primary key from rank index key
     private func extractPrimaryKeyFromIndexKey(_ key: FDB.Bytes) throws -> Tuple {
-        // Remove subspace prefix
         let keyWithoutPrefix = Array(key.dropFirst(subspace.prefix.count))
-
-        // Decode tuple
         let elements = try Tuple.decode(from: keyWithoutPrefix)
 
-        // Last element(s) are the primary key
-        // For now, assume single-field primary key
         guard let lastElement = elements.last else {
             throw RecordLayerError.invalidKey("Cannot extract primary key from index key")
         }
@@ -534,20 +465,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
         return Tuple(lastElement)
     }
 
-    // MARK: - Count Node Management
-
     /// Update count nodes at each level of the range tree
-    ///
-    /// Data Model:
-    /// ```
-    /// Count Node:
-    ///   [subspace][grouping]["_count"][level][range_start] → count (Int64)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - values: Field values including grouping and score
-    ///   - delta: Change in count (+1 for add, -1 for remove)
-    ///   - transaction: Transaction
     private func updateCountNodes(
         values: [any TupleElement],
         delta: Int64,
@@ -571,7 +489,7 @@ public struct RankIndexMaintainer: IndexMaintainer {
             // Build count node key: [subspace][grouping]["_count"][level][range_start]
             let countKey = subspace.pack(
                 Tuple(
-                    try! Tuple.decode(from: groupingTuple.encode()) +
+                    try Tuple.decode(from: groupingTuple.encode()) +
                     ["_count", level, rangeStart]
                 )
             )

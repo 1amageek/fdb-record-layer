@@ -89,38 +89,21 @@ public enum VersionHistoryStrategy: Sendable {
 
 /// Maintainer for version indexes
 ///
-/// Version indexes provide:
-/// - Automatic versioning using FDB versionstamps
-/// - Optimistic concurrency control (OCC)
-/// - Version history queries
-///
-/// **Data Model:**
-/// ```
-/// Version Index Key:
-///   [subspace][primary_key][versionstamp]
-///
-/// Example:
-///   [version_idx][user:123][0x0000000000000001ABCD] → ∅
-/// ```
+/// This is the new generic version that works with any record type
+/// through RecordAccess instead of assuming dictionary-based records.
 ///
 /// **Usage:**
 /// ```swift
-/// // Define version index
-/// let versionIndex = Index(
-///     name: "document_version",
-///     type: .version,
-///     rootExpression: EmptyKeyExpression()
-/// )
-///
-/// // Save with optimistic lock
-/// try await recordStore.save(
-///     record,
-///     expectedVersion: currentVersion,
-///     context: context
+/// let maintainer = VersionIndexMaintainer(
+///     index: versionIndex,
+///     recordType: userType,
+///     subspace: versionSubspace,
+///     recordSubspace: recordSubspace
 /// )
 /// ```
-public struct VersionIndexMaintainer: IndexMaintainer {
+public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
+    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
@@ -134,69 +117,55 @@ public struct VersionIndexMaintainer: IndexMaintainer {
 
     public init(
         index: Index,
+        recordType: RecordType,
         subspace: Subspace,
         recordSubspace: Subspace,
         versionField: String = "_version",
         historyStrategy: VersionHistoryStrategy = .keepAll
     ) {
         self.index = index
+        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.versionField = versionField
         self.historyStrategy = historyStrategy
     }
 
-    // MARK: - IndexMaintainer Protocol
+    // MARK: - GenericIndexMaintainer Protocol
 
     public func updateIndex(
-        oldRecord: [String: Any]?,
-        newRecord: [String: Any]?,
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         guard let record = newRecord ?? oldRecord else { return }
 
-        // Extract primary key
-        let primaryKey = try extractPrimaryKey(record)
+        // Extract primary key using RecordAccess
+        let primaryKey = try extractPrimaryKey(record, recordAccess: recordAccess)
 
-        // For version index, we store: [subspace][primary_key][versionstamp] → empty
-        // The versionstamp is automatically filled by FDB at commit time
-
-        if let newRecord = newRecord {
+        if newRecord != nil {
             // Insert: create new version entry using FDB versionstamp
-            //
-            // FDB versionstamp is a 10-byte unique, monotonically increasing value
-            // assigned at commit time. This is the native 80-bit versionstamp.
-            //
-            // Benefits:
-            // - Globally unique, monotonically increasing
-            // - Assigned atomically at commit time
-            // - Enables true optimistic concurrency control
-            // - Compatible with FoundationDB's MVCC
-            //
-            // Data Model: [subspace][primary_key][10-byte versionstamp] → ∅
-
             var key = subspace.pack(primaryKey)
-            let versionPosition = UInt32(key.count)
+            let versionPosition = key.count
 
-            // Validate position fits in UInt32 range with room for versionstamp
-            guard versionPosition <= UInt32.max - 10 else {
-                throw RecordLayerError.internalError("Version key too long")
+            // Validate position fits in UInt16 range (FDB requires 2-byte offset)
+            // SET_VERSIONSTAMPED_KEY expects a 2-byte little-endian offset
+            guard versionPosition <= Int(UInt16.max) - 10 else {
+                throw RecordLayerError.internalError("Version key too long (max \(UInt16.max - 10) bytes)")
             }
 
-            // Append 10-byte versionstamp placeholder (will be filled by FDB at commit)
+            // Append 10-byte versionstamp placeholder
             key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
 
-            // Append 4-byte position (little-endian) - tells FDB where to write versionstamp
-            // This position points to the start of the 10-byte placeholder
-            let positionBytes = withUnsafeBytes(of: versionPosition.littleEndian) { Array($0) }
+            // Append 2-byte position (little-endian) as required by FDB
+            let position16 = UInt16(versionPosition)
+            let positionBytes = withUnsafeBytes(of: position16.littleEndian) { Array($0) }
             key.append(contentsOf: positionBytes)
 
             // Use atomicOp with setVersionstampedKey
-            // FDB will:
-            // 1. Read last 4 bytes as offset (versionPosition)
-            // 2. Replace 10 bytes at key[versionPosition] with actual versionstamp
-            // 3. Remove last 4 bytes
-            // Final result: [subspace][primary_key][10-byte versionstamp]
+            // FDB will read the last 2 bytes as the offset, replace 10 bytes at that offset
+            // with the versionstamp, and remove the last 2 bytes
             transaction.atomicOp(key: key, param: FDB.Bytes(), mutationType: .setVersionstampedKey)
         }
 
@@ -205,24 +174,26 @@ public struct VersionIndexMaintainer: IndexMaintainer {
     }
 
     public func scanRecord(
-        _ record: [String: Any],
+        _ record: Record,
         primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
         // For historical records, create version entry using FDB versionstamp
         var key = subspace.pack(primaryKey)
-        let versionPosition = UInt32(key.count)
+        let versionPosition = key.count
 
-        // Validate position
-        guard versionPosition <= UInt32.max - 10 else {
-            throw RecordLayerError.internalError("Version key too long")
+        // Validate position fits in UInt16 range (FDB requires 2-byte offset)
+        guard versionPosition <= Int(UInt16.max) - 10 else {
+            throw RecordLayerError.internalError("Version key too long (max \(UInt16.max - 10) bytes)")
         }
 
         // Append 10-byte versionstamp placeholder
         key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
 
-        // Append 4-byte position (little-endian)
-        let positionBytes = withUnsafeBytes(of: versionPosition.littleEndian) { Array($0) }
+        // Append 2-byte position (little-endian) as required by FDB
+        let position16 = UInt16(versionPosition)
+        let positionBytes = withUnsafeBytes(of: position16.littleEndian) { Array($0) }
         key.append(contentsOf: positionBytes)
 
         // Use atomicOp with setVersionstampedKey
@@ -263,20 +234,19 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         let beginKey = subspace.pack(primaryKey)
         let endKey = beginKey + [0xFF]
 
-        // OPTIMIZED: Use getKey with lastLessThan selector to find the last version key
-        // This is O(1) instead of O(n) with full range scan
+        // OPTIMIZED: Use getKey with lastLessThan selector
         let lastSelector = FDB.KeySelector.lastLessThan(endKey)
 
         guard let lastKey = try await transaction.getKey(selector: lastSelector, snapshot: true) else {
             return nil
         }
 
-        // Verify the key is actually in our range (belongs to this primary key)
+        // Verify the key is in our range
         guard lastKey.starts(with: beginKey) else {
             return nil
         }
 
-        // Extract version from key (last 10 bytes - 80-bit versionstamp)
+        // Extract version from key (last 10 bytes)
         guard lastKey.count >= 10 else {
             return nil
         }
@@ -292,7 +262,6 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         let beginKey = subspace.pack(primaryKey)
         let endKey = beginKey + [0xFF]
 
-        // Use getRange AsyncSequence (preferred over getRangeNative)
         let beginSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
         let endSelector = FDB.KeySelector.firstGreaterOrEqual(endKey)
         let sequence = transaction.getRange(
@@ -314,48 +283,18 @@ public struct VersionIndexMaintainer: IndexMaintainer {
 
     // MARK: - Private Methods
 
-    /// Build version index key with versionstamp placeholder
-    /// NOTE: This method is not used. Use atomicOp with setVersionstampedKey instead.
-    private func buildVersionIndexKey(primaryKey: Tuple) throws -> FDB.Bytes {
-        // Format: [subspace][primary_key][10-byte versionstamp]
-        var key = subspace.pack(primaryKey)
+    /// Extract primary key from record using RecordAccess
+    private func extractPrimaryKey(
+        _ record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Tuple {
+        // Use RecordAccess to evaluate the primary key expression
+        let keyValues = try recordAccess.evaluate(
+            record: record,
+            expression: recordType.primaryKey
+        )
 
-        // Append incomplete versionstamp (10 bytes 0xFF)
-        key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
-
-        return key
-    }
-
-    /// Extract primary key from record
-    ///
-    /// LIMITATION: Currently assumes "id" field as primary key
-    ///
-    /// In production, this should:
-    /// 1. Accept RecordType parameter
-    /// 2. Use RecordType.primaryKey expression to extract key
-    /// 3. Support compound primary keys (multiple fields)
-    /// 4. Handle all TupleElement types properly
-    ///
-    /// Example proper implementation:
-    /// ```
-    /// func extractPrimaryKey(_ record: [String: Any], recordType: RecordType) -> Tuple {
-    ///     let keyValues = recordType.primaryKey.evaluate(record: record)
-    ///     return TupleHelpers.toTuple(keyValues)
-    /// }
-    /// ```
-    private func extractPrimaryKey(_ record: [String: Any]) throws -> Tuple {
-        let primaryKeyValue: any TupleElement
-        if let id = record["id"] as? Int64 {
-            primaryKeyValue = id
-        } else if let id = record["id"] as? Int {
-            primaryKeyValue = Int64(id)
-        } else if let id = record["id"] as? String {
-            primaryKeyValue = id
-        } else {
-            throw RecordLayerError.invalidKey("Cannot extract primary key from record")
-        }
-
-        return Tuple(primaryKeyValue)
+        return TupleHelpers.toTuple(keyValues)
     }
 
     /// Clean up old versions based on strategy
@@ -407,7 +346,7 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Calculate cutoff time
-        let cutoffTime = Date().timeIntervalSince1970 - duration
+        _ = Date().timeIntervalSince1970 - duration
 
         let allVersions = try await getAllVersions(
             primaryKey: primaryKey,
@@ -415,8 +354,6 @@ public struct VersionIndexMaintainer: IndexMaintainer {
         )
 
         // Delete versions older than duration
-        // Note: This is a simplified implementation
-        // In production, we'd need to extract actual timestamps from versionstamps
         for version in allVersions.dropLast(1) {
             var key = subspace.pack(primaryKey)
             key.append(contentsOf: version.bytes)

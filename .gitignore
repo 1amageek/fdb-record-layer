@@ -75,3 +75,7 @@ temp/
 # Backup files
 *.bak
 *.backup
+
+# Protobuf generated files
+*.pb.swift
+Examples/*.pb.swift

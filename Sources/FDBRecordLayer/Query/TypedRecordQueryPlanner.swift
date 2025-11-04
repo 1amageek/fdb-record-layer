@@ -1,36 +1,49 @@
 import Foundation
+import FoundationDB
 
-/// Type-safe query planner for generating execution plans
+/// Query planner that chooses the best execution plan for a typed query
 ///
-/// The planner analyzes queries and selects the most efficient execution strategy.
+/// The TypedRecordQueryPlanner analyzes a TypedRecordQuery and selects the most
+/// efficient execution plan based on available indexes and query filters.
+///
+/// **Planning Strategy:**
+/// 1. Check if query filter can use an index
+/// 2. If yes, create TypedIndexScanPlan
+/// 3. If no, create TypedFullScanPlan
+/// 4. Wrap with TypedLimitPlan if limit is specified
 public struct TypedRecordQueryPlanner<Record: Sendable> {
-    public let recordType: TypedRecordType<Record>
-    public let indexes: [TypedIndex<Record>]
+    private let metaData: RecordMetaData
+    private let recordTypeName: String
 
-    public init(recordType: TypedRecordType<Record>, indexes: [TypedIndex<Record>]) {
-        self.recordType = recordType
-        self.indexes = indexes
+    /// Initialize query planner
+    ///
+    /// - Parameters:
+    ///   - metaData: Record metadata containing index definitions
+    ///   - recordTypeName: The record type being queried
+    public init(metaData: RecordMetaData, recordTypeName: String) {
+        self.metaData = metaData
+        self.recordTypeName = recordTypeName
     }
 
-    /// Generate an execution plan for a query
-    /// - Parameter query: The query to plan
-    /// - Returns: The execution plan
-    public func plan(_ query: TypedRecordQuery<Record>) throws -> any TypedQueryPlan<Record> {
-        // Simplified planning logic
-        // In a real implementation, this would be much more sophisticated
-
+    /// Plan query execution
+    ///
+    /// - Parameter query: The typed query to plan
+    /// - Returns: The optimal execution plan
+    public func plan(query: TypedRecordQuery<Record>) throws -> any TypedQueryPlan<Record> {
         var basePlan: any TypedQueryPlan<Record>
 
-        // Try to find a usable index
-        if let filter = query.filter,
-           let indexPlan = try? planIndexScan(filter: filter) {
+        // Try to find an index that can satisfy the filter
+        if let indexPlan = try planIndexScan(filter: query.filter) {
             basePlan = indexPlan
         } else {
             // Fall back to full scan
-            basePlan = TypedFullScanPlan(filter: query.filter)
+            basePlan = TypedFullScanPlan(
+                filter: query.filter,
+                expectedRecordType: recordTypeName
+            )
         }
 
-        // Apply limit if specified
+        // Wrap with limit if specified
         if let limit = query.limit {
             basePlan = TypedLimitPlan(child: basePlan, limit: limit)
         }
@@ -38,125 +51,122 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         return basePlan
     }
 
-    // MARK: - Private Methods
-
-    /// Try to plan an index scan for a filter
-    private func planIndexScan(filter: any TypedQueryComponent<Record>) throws -> (any TypedQueryPlan<Record>)? {
-        // Try to match the filter to an available index
-        // This is a simplified implementation
-
-        // Check if filter is a field comparison
-        if let fieldFilter = filter as? TypedFieldQueryComponent<Record> {
-            // Try to find an index on this field
-            for index in indexes where index.type == .value {
-                // Check if the index root expression matches the field
-                if let fieldExpr = index.rootExpression as? TypedFieldKeyExpression<Record>,
-                   fieldExpr.fieldName == fieldFilter.fieldName {
-
-                    // Build the index scan range based on the comparison
-                    let (beginValues, endValues) = buildIndexRange(
-                        fieldFilter: fieldFilter,
-                        fieldExpr: fieldExpr
-                    )
-
-                    return TypedIndexScanPlan(
-                        index: index,
-                        beginValues: beginValues,
-                        endValues: endValues,
-                        filter: filter,
-                        primaryKeyLength: recordType.primaryKey.columnCount
-                    )
-                }
-            }
+    /// Try to create an index scan plan for the given filter
+    ///
+    /// - Parameter filter: The query filter
+    /// - Returns: Index scan plan if a suitable index exists, nil otherwise
+    private func planIndexScan(
+        filter: (any TypedQueryComponent<Record>)?
+    ) throws -> (any TypedQueryPlan<Record>)? {
+        guard let filter = filter else {
+            return nil
         }
 
-        // Check if filter is an AND component
-        if let andFilter = filter as? TypedAndQueryComponent<Record> {
-            // Try to find the best index for any of the children
-            for child in andFilter.children {
-                if let plan = try? planIndexScan(filter: child) {
-                    // Use this index scan and keep the full AND filter
-                    return plan
-                }
+        // Get the record type
+        let recordType = try metaData.getRecordType(recordTypeName)
+
+        // Get indexes that apply to this record type
+        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+
+        // Try to match filter with available indexes
+        for index in applicableIndexes {
+            // Try to match filter with index
+            if let plan = try matchFilterWithIndex(
+                filter: filter,
+                index: index,
+                recordType: recordType
+            ) {
+                return plan
             }
         }
 
         return nil
     }
 
-    /// Build index scan range from a field filter
-    private func buildIndexRange(
-        fieldFilter: TypedFieldQueryComponent<Record>,
-        fieldExpr: TypedFieldKeyExpression<Record>
-    ) -> (beginValues: [any TupleElement], endValues: [any TupleElement]) {
-        let value = fieldFilter.value
+    /// Try to match a filter with a specific index
+    ///
+    /// - Parameters:
+    ///   - filter: The query filter
+    ///   - index: The index to match against
+    ///   - recordType: The record type
+    /// - Returns: Index scan plan if filter matches index, nil otherwise
+    private func matchFilterWithIndex(
+        filter: any TypedQueryComponent<Record>,
+        index: Index,
+        recordType: RecordType
+    ) throws -> (any TypedQueryPlan<Record>)? {
+        // Only handle simple field comparisons for now
+        // TODO: Support AND, OR, complex expressions
+        guard let fieldFilter = filter as? TypedFieldQueryComponent<Record> else {
+            return nil
+        }
+
+        // Check if index is on the same field
+        guard let fieldExpr = index.rootExpression as? FieldKeyExpression else {
+            return nil
+        }
+
+        guard fieldExpr.fieldName == fieldFilter.fieldName else {
+            return nil
+        }
+
+        // Determine key range based on comparison type
+        let (beginValues, endValues): ([any TupleElement], [any TupleElement])
 
         switch fieldFilter.comparison {
         case .equals:
-            // Exact match: [value, value]
-            return ([value], [value])
+            // Equals: scan from [value] to [value]
+            beginValues = [fieldFilter.value]
+            endValues = [fieldFilter.value]
+
+        case .notEquals:
+            // Not equals: cannot optimize with single index scan
+            return nil
 
         case .lessThan:
-            // Range: [MIN, value)
-            return ([], [value])
+            // Less than: scan from beginning to [value)
+            beginValues = []
+            endValues = [fieldFilter.value]
 
         case .lessThanOrEquals:
-            // Range: [MIN, value]
-            // For inclusive end, use value with max suffix
-            if let strValue = value as? String {
-                return ([], [strValue + "\u{FFFF}"])
-            } else {
-                return ([], [value])
-            }
+            // Less than or equals: scan from beginning to [value]
+            beginValues = []
+            endValues = [fieldFilter.value]
 
         case .greaterThan:
-            // Range: (value, MAX]
-            // For exclusive start, add suffix
-            if let strValue = value as? String {
-                return ([strValue + "\u{FFFF}"], ["\u{FFFF}"])
-            } else if let intValue = value as? Int64 {
-                return ([intValue + 1], [Int64.max])
-            } else {
-                return ([value], [Int64.max])
-            }
+            // Greater than: scan from (value] to end
+            // FDB doesn't have exclusive start, so we use value and skip it in filter
+            beginValues = [fieldFilter.value]
+            endValues = []
 
         case .greaterThanOrEquals:
-            // Range: [value, MAX]
-            return ([value], [Int64.max])
+            // Greater than or equals: scan from [value] to end
+            beginValues = [fieldFilter.value]
+            endValues = []
 
-        case .startsWith:
-            // For strings: [prefix, prefix + '\xFF')
-            if let strValue = value as? String {
-                let endValue = strValue + "\u{FFFF}"
-                return ([strValue], [endValue])
-            }
-            return ([], [Int64.max])
-
-        case .notEquals, .contains:
-            // These cannot use index effectively, return full range
-            return ([], [Int64.max])
-        }
-    }
-
-    /// Estimate the cost of a plan
-    /// - Parameter plan: The plan to evaluate
-    /// - Returns: Estimated cost (lower is better)
-    func estimateCost(_ plan: any TypedQueryPlan<Record>) -> Double {
-        // Simplified cost estimation
-        // In a real implementation, this would use statistics
-
-        if plan is TypedFullScanPlan<Record> {
-            return 1000000.0 // Full scans are expensive
-        } else if plan is TypedIndexScanPlan<Record> {
-            return 100.0 // Index scans are much cheaper
-        } else if let limitPlan = plan as? TypedLimitPlan<Record> {
-            // Limit reduces the cost proportionally
-            let childCost = estimateCost(limitPlan.child)
-            let limitFactor = Double(limitPlan.limit) / 1000.0
-            return childCost * limitFactor
+        case .startsWith, .contains:
+            // String operations: not optimized yet
+            return nil
         }
 
-        return 1000.0 // Default cost
+        // Get primary key length for extracting primary keys from index entries
+        let primaryKeyLength: Int
+        if let concatExpr = recordType.primaryKey as? ConcatenateKeyExpression {
+            primaryKeyLength = concatExpr.children.count
+        } else {
+            primaryKeyLength = 1
+        }
+
+        // Create index scan plan
+        let plan = TypedIndexScanPlan(
+            indexName: index.name,
+            indexSubspaceTupleKey: index.name,
+            beginValues: beginValues,
+            endValues: endValues,
+            filter: filter,  // Still need filter for exact comparisons
+            primaryKeyLength: primaryKeyLength
+        )
+
+        return plan
     }
 }
-

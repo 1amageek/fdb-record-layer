@@ -137,7 +137,7 @@ public struct CostEstimator: Sendable {
 
         // Get index statistics
         let indexStats = try? await statisticsManager.getIndexStatistics(
-            indexName: plan.index.name
+            indexName: plan.indexName
         )
 
         // Estimate selectivity based on index range

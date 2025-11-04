@@ -6,6 +6,7 @@ A Swift implementation of FoundationDB Record Layer, providing a structured reco
 
 The Record Layer provides a powerful abstraction for storing and querying structured data in FoundationDB, featuring:
 
+- **SwiftData-Style API**: Familiar context-based API like SwiftData's ModelContext
 - **Structured Schema**: Type-safe records with flexible serialization
 - **Secondary Indexes**: Flexible indexing with automatic state-aware maintenance
 - **Index State Management**: Three-state lifecycle (disabled → writeOnly → readable)
@@ -20,7 +21,7 @@ The Record Layer provides a powerful abstraction for storing and querying struct
 
 ### 📦 Record Storage
 
-Store structured records with Protobuf schemas:
+Store structured records with Protobuf schemas using SwiftData-style API:
 
 ```swift
 // Define your schema
@@ -31,6 +32,9 @@ message User {
     int64 created_at = 4;
 }
 
+// Create a context (like SwiftData's ModelContext)
+let context = try await recordStore.createContext()
+
 // Save records
 let user = User.with {
     $0.userID = 123
@@ -38,38 +42,33 @@ let user = User.with {
     $0.email = "alice@example.com"
 }
 
-try await database.withRecordContext { context in
-    try await recordStore.saveRecord(user, context: context)
-}
+try await context.save(user)
 ```
 
 ### 🔍 Flexible Indexing
 
-Define indexes for your access patterns:
+Define indexes using factory methods:
 
 ```swift
 // Email index for lookups
-let emailIndex = Index(
-    name: "user_by_email",
-    type: .value,
-    rootExpression: FieldKeyExpression(fieldName: "email")
+let emailIndex = Index.value(
+    "user_by_email",
+    on: FieldKeyExpression(fieldName: "email")
 )
 
 // Compound index for range queries
-let cityAgeIndex = Index(
-    name: "user_by_city_age",
-    type: .value,
-    rootExpression: ConcatenateKeyExpression(children: [
+let cityAgeIndex = Index.value(
+    "user_by_city_age",
+    on: ConcatenateKeyExpression(children: [
         FieldKeyExpression(fieldName: "city"),
         FieldKeyExpression(fieldName: "age")
     ])
 )
 
 // Count aggregation
-let cityCountIndex = Index(
-    name: "user_count_by_city",
-    type: .count,
-    rootExpression: FieldKeyExpression(fieldName: "city")
+let cityCountIndex = Index.count(
+    "user_count_by_city",
+    groupBy: FieldKeyExpression(fieldName: "city")
 )
 ```
 
@@ -78,6 +77,10 @@ let cityCountIndex = Index(
 Express complex queries with automatic optimization:
 
 ```swift
+// Create context
+let context = try await recordStore.createContext()
+
+// Define query
 let query = RecordQuery(
     recordType: "User",
     filter: AndQueryComponent(children: [
@@ -95,11 +98,13 @@ let query = RecordQuery(
     sort: [SortKey(expression: FieldKeyExpression(fieldName: "name"))]
 )
 
-try await database.withRecordContext { context in
-    let cursor = try await recordStore.executeQuery(query, context: context)
-    for try await user in cursor {
-        print(user.name)
-    }
+// Execute query within transaction for consistent results
+let cursor = try await context.transaction { transaction in
+    try await transaction.fetch(query)
+}
+
+for try await user in cursor {
+    print(user.name)
 }
 ```
 
@@ -314,18 +319,15 @@ let userRecordType = RecordType(
     messageDescriptor: User.messageDescriptor
 )
 
-let emailIndex = Index(
-    name: "user_by_email",
-    type: .value,
-    rootExpression: FieldKeyExpression(fieldName: "email")
+// Create metadata with Swift-style array initialization
+let metaData = try RecordMetaData(
+    version: 1,
+    recordTypes: [userRecordType],
+    indexes: [
+        .value("by_email", on: FieldKeyExpression(fieldName: "email"))
+    ],
+    unionDescriptor: RecordTypeUnion.unionDescriptor
 )
-
-let metaData = try RecordMetaDataBuilder()
-    .setVersion(1)
-    .addRecordType(userRecordType)
-    .addIndex(emailIndex)
-    .setUnionDescriptor(RecordTypeUnion.unionDescriptor)
-    .build()
 ```
 
 ### 4. Create Record Store
@@ -344,27 +346,31 @@ let recordStore = RecordStore<RecordTypeUnion>(
 )
 ```
 
-### 5. Perform Operations
+### 5. Create Context and Perform Operations
 
 ```swift
-// Save a record
+// Create a context (SwiftData-style API)
+let context = try await recordStore.createContext()
+
+// Save a record (single operation with automatic transaction)
 let user = User.with {
     $0.userID = 1
     $0.name = "Alice"
     $0.email = "alice@example.com"
 }
 
-try await database.withRecordContext { context in
-    try await recordStore.save(user, context: context)
+try await context.save(user)
+
+// Fetch a record (automatic transaction)
+if let loaded = try await context.fetch(by: Tuple(1)) {
+    print(loaded.name)
 }
 
-// Fetch a record
-try await database.withRecordContext { context in
-    let loaded = try await recordStore.fetch(
-        primaryKey: Tuple(1),
-        context: context
-    )
-    print(loaded?.name ?? "Not found")
+// Multiple operations in a single transaction
+try await context.transaction { transaction in
+    try await transaction.save(user)
+    let loaded = try await transaction.fetch(by: Tuple(1))
+    try await transaction.delete(at: Tuple(2))
 }
 
 // Query records
@@ -377,11 +383,12 @@ let query = RecordQuery(
     )
 )
 
-try await database.withRecordContext { context in
-    let cursor = try await recordStore.executeQuery(query, context: context)
-    for try await user in cursor {
-        print(user.name)
-    }
+let cursor = try await context.transaction { transaction in
+    try await transaction.fetch(query)
+}
+
+for try await user in cursor {
+    print(user.name)
 }
 ```
 
@@ -482,9 +489,34 @@ For detailed architecture information, see [Architecture Overview](docs/architec
 
 See the `Examples/` directory for complete examples:
 
-- [SimpleRecordStore](Examples/SimpleRecordStore/) - Basic CRUD operations
-- [QueryExample](Examples/QueryExample/) - Complex queries
-- [OnlineIndexExample](Examples/OnlineIndexExample/) - Index building
+### Running the Example
+
+```bash
+# 1. Generate Protobuf code
+cd Examples
+protoc --swift_out=. User.proto
+
+# 2. Ensure FoundationDB is running
+brew services start foundationdb
+
+# 3. Run the example
+swift run SimpleExample
+```
+
+### What the Example Demonstrates
+
+- **Type-Safe Records**: Using Protobuf for structured data
+- **CRUD Operations**: Creating, reading, updating, and deleting records
+- **Indexing**: Automatic index maintenance on email and age fields
+- **Querying**: Range queries and index-based lookups
+- **Transactions**: All operations wrapped in ACID transactions
+
+The example uses the same `User` schema as shown in the README, demonstrating:
+- Inserting multiple records with `.with` style initialization
+- Loading records by primary key
+- Querying records with filters (age >= 30)
+- Using email index for lookups
+- Deleting records and verifying deletion
 
 ## Comparison with RDF Layer
 
@@ -507,12 +539,23 @@ The Record Layer is designed for high performance:
 - **Index Optimization**: Query planner selects optimal indexes
 - **Streaming Queries**: Memory-efficient result iteration
 - **Atomic Operations**: Lock-free counters and aggregations
+- **Automatic Snapshot Optimization**: Single operations use snapshot reads automatically
 
-Performance tips:
+### Automatic Isolation Level Management
+
+The API automatically selects the optimal isolation level:
+
+- **Single operations** (`context.fetch()`) → Snapshot reads (no conflict detection, faster)
+- **Transactions** (`context.transaction { }`) → Serializable reads (conflict detection, safer)
+
+You don't need to specify or worry about snapshot parameters - the system handles this automatically.
+
+### Performance Tips
+
 - Define indexes for your query patterns
-- Use batch operations for bulk inserts
+- Use batch operations for bulk inserts with `context.transaction { }`
 - Enable compression for large records
-- Use snapshot reads for read-only queries
+- Single read operations are automatically optimized with snapshot isolation
 
 See [Performance Guide](Documentation/Performance.md) for details.
 

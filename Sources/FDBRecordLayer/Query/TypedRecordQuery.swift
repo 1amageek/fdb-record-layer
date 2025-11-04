@@ -33,15 +33,16 @@ public struct TypedRecordQuery<Record: Sendable>: Sendable {
 // MARK: - Sort Key
 
 /// Type-safe sort key specification
+/// NOTE: Sorting not yet fully implemented - uses field name for now
 public struct TypedSortKey<Record: Sendable>: Sendable {
-    /// The expression to sort by
-    public let expression: any TypedKeyExpression<Record>
+    /// The field name to sort by
+    public let fieldName: String
 
     /// Whether to sort ascending (true) or descending (false)
     public let ascending: Bool
 
-    public init(expression: any TypedKeyExpression<Record>, ascending: Bool = true) {
-        self.expression = expression
+    public init(fieldName: String, ascending: Bool = true) {
+        self.fieldName = fieldName
         self.ascending = ascending
     }
 }
@@ -66,8 +67,8 @@ extension TypedRecordQuery {
     }
 
     /// Add sorting to the query
-    public func sort(by expression: any TypedKeyExpression<Record>, ascending: Bool = true) -> TypedRecordQuery<Record> {
-        let sortKey = TypedSortKey(expression: expression, ascending: ascending)
+    public func sort(by fieldName: String, ascending: Bool = true) -> TypedRecordQuery<Record> {
+        let sortKey = TypedSortKey<Record>(fieldName: fieldName, ascending: ascending)
         var newSort = sort ?? []
         newSort.append(sortKey)
         return TypedRecordQuery(filter: filter, sort: newSort, limit: limit)

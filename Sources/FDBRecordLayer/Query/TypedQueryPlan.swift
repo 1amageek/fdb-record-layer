@@ -10,17 +10,18 @@ public protocol TypedQueryPlan<Record>: Sendable {
     /// Execute the plan
     /// - Parameters:
     ///   - subspace: The record store subspace
-    ///   - serializer: The record serializer
-    ///   - accessor: The field accessor
+    ///   - recordAccess: The record access for field extraction and serialization
     ///   - context: The transaction context
+    ///   - snapshot: Whether to use snapshot reads (true) or serializable reads (false)
+    ///               - true: No conflict detection, read-only optimization
+    ///               - false: Conflict detection enabled, Read-Your-Writes, Serializable isolation
     /// - Returns: An async sequence of records
-    func execute<A: FieldAccessor, S: RecordSerializer>(
+    func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record
 }
 
 // MARK: - Full Scan Plan
@@ -28,18 +29,19 @@ public protocol TypedQueryPlan<Record>: Sendable {
 /// Full table scan plan
 public struct TypedFullScanPlan<Record: Sendable>: TypedQueryPlan {
     public let filter: (any TypedQueryComponent<Record>)?
+    public let expectedRecordType: String?
 
-    public init(filter: (any TypedQueryComponent<Record>)?) {
+    public init(filter: (any TypedQueryComponent<Record>)?, expectedRecordType: String? = nil) {
         self.filter = filter
+        self.expectedRecordType = expectedRecordType
     }
 
-    public func execute<A: FieldAccessor, S: RecordSerializer>(
+    public func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
-    ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record {
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
         let transaction = context.getTransaction()
 
@@ -48,14 +50,14 @@ public struct TypedFullScanPlan<Record: Sendable>: TypedQueryPlan {
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(beginKey),
             endSelector: .firstGreaterThan(endKey),
-            snapshot: true
+            snapshot: snapshot
         )
 
-        let cursor = BasicTypedRecordCursor<Record, A, S>(
+        let cursor = BasicTypedRecordCursor(
             sequence: sequence,
-            serializer: serializer,
-            accessor: accessor,
-            filter: filter
+            recordAccess: recordAccess,
+            filter: filter,
+            expectedRecordType: expectedRecordType
         )
 
         return AnyTypedRecordCursor(cursor)
@@ -66,36 +68,38 @@ public struct TypedFullScanPlan<Record: Sendable>: TypedQueryPlan {
 
 /// Index scan plan
 public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
-    public let index: TypedIndex<Record>
+    public let indexName: String
+    public let indexSubspaceTupleKey: any TupleElement
     public let beginValues: [any TupleElement]
     public let endValues: [any TupleElement]
     public let filter: (any TypedQueryComponent<Record>)?
     public let primaryKeyLength: Int
 
     public init(
-        index: TypedIndex<Record>,
+        indexName: String,
+        indexSubspaceTupleKey: any TupleElement,
         beginValues: [any TupleElement],
         endValues: [any TupleElement],
         filter: (any TypedQueryComponent<Record>)?,
         primaryKeyLength: Int
     ) {
-        self.index = index
+        self.indexName = indexName
+        self.indexSubspaceTupleKey = indexSubspaceTupleKey
         self.beginValues = beginValues
         self.endValues = endValues
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
     }
 
-    public func execute<A: FieldAccessor, S: RecordSerializer>(
+    public func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
-    ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record {
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
         let transaction = context.getTransaction()
         let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
-            .subspace(index.subspaceTupleKey)
+            .subspace(indexSubspaceTupleKey)
 
         // Build index key range
         let beginTuple = TupleHelpers.toTuple(beginValues)
@@ -107,17 +111,16 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(beginKey),
             endSelector: .firstGreaterThan(endKey),
-            snapshot: true
+            snapshot: snapshot
         )
 
         // For index scans, we need to fetch the actual records
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
 
-        let cursor = IndexScanTypedCursor<Record, A, S>(
+        let cursor = IndexScanTypedCursor(
             indexSequence: sequence,
             recordSubspace: recordSubspace,
-            serializer: serializer,
-            accessor: accessor,
+            recordAccess: recordAccess,
             transaction: transaction,
             filter: filter,
             primaryKeyLength: primaryKeyLength
@@ -139,18 +142,17 @@ public struct TypedLimitPlan<Record: Sendable>: TypedQueryPlan {
         self.limit = limit
     }
 
-    public func execute<A: FieldAccessor, S: RecordSerializer>(
+    public func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
-    ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record {
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
         let childCursor = try await child.execute(
             subspace: subspace,
-            serializer: serializer,
-            accessor: accessor,
-            context: context
+            recordAccess: recordAccess,
+            context: context,
+            snapshot: snapshot
         )
 
         let limitedCursor = LimitedTypedCursor(source: childCursor, limit: limit)
@@ -171,22 +173,21 @@ public struct TypedIntersectionPlan<Record: Sendable>: TypedQueryPlan {
         self.comparisonKey = comparisonKey
     }
 
-    public func execute<A: FieldAccessor, S: RecordSerializer>(
+    public func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
-    ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record {
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute all child plans
         var childResults: [[Record]] = []
 
         for childPlan in children {
             let cursor = try await childPlan.execute(
                 subspace: subspace,
-                serializer: serializer,
-                accessor: accessor,
-                context: context
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: snapshot
             )
 
             var results: [Record] = []
@@ -237,22 +238,21 @@ public struct TypedUnionPlan<Record: Sendable>: TypedQueryPlan {
         self.children = children
     }
 
-    public func execute<A: FieldAccessor, S: RecordSerializer>(
+    public func execute(
         subspace: Subspace,
-        serializer: S,
-        accessor: A,
-        context: RecordContext
-    ) async throws -> AnyTypedRecordCursor<Record>
-    where A.Record == Record, S.Record == Record {
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute all child plans and combine their results
         var allResults: [Record] = []
 
         for childPlan in children {
             let cursor = try await childPlan.execute(
                 subspace: subspace,
-                serializer: serializer,
-                accessor: accessor,
-                context: context
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: snapshot
             )
 
             for try await record in cursor {

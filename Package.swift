@@ -25,6 +25,10 @@ let package = Package(
             url: "https://github.com/apple/swift-protobuf.git",
             from: "1.33.3"
         ),
+        .package(
+            url: "https://github.com/apple/swift-collections.git",
+            from: "1.3.0"
+        ),
     ],
     targets: [
         .target(
@@ -33,6 +37,7 @@ let package = Package(
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "Collections", package: "swift-collections"),
             ],
             path: "Sources/FDBRecordLayer"
         ),

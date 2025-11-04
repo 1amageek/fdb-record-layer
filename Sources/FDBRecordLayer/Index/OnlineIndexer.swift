@@ -12,14 +12,18 @@ import Synchronization
 /// - State management: Automatically transitions index state through lifecycle
 /// - Progress tracking: Reports progress and allows monitoring
 /// - Throttling: Configurable delays between batches to reduce load
-public final class OnlineIndexer: Sendable {
+///
+/// **Generic Version**: Works with any record type through RecordAccess
+public final class OnlineIndexer<Record: Sendable>: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
     private let metaData: RecordMetaData
+    private let recordType: RecordType
     private let index: Index
-    private let serializer: any RecordSerializer<[String: Any]>
+    private let recordAccess: any RecordAccess<Record>
+    private let serializer: any RecordSerializer<Record>
     private let indexStateManager: IndexStateManager
     private let rangeSet: RangeSet
     private let logger: Logger
@@ -49,8 +53,10 @@ public final class OnlineIndexer: Sendable {
         database: any DatabaseProtocol,
         subspace: Subspace,
         metaData: RecordMetaData,
+        recordType: RecordType,
         index: Index,
-        serializer: any RecordSerializer<[String: Any]>,
+        recordAccess: any RecordAccess<Record>,
+        serializer: any RecordSerializer<Record>,
         indexStateManager: IndexStateManager,
         batchSize: Int = 1000,
         throttleDelayMs: UInt64 = 10,
@@ -59,7 +65,9 @@ public final class OnlineIndexer: Sendable {
         self.database = database
         self.subspace = subspace
         self.metaData = metaData
+        self.recordType = recordType
         self.index = index
+        self.recordAccess = recordAccess
         self.serializer = serializer
         self.indexStateManager = indexStateManager
         self.batchSize = batchSize
@@ -278,8 +286,13 @@ public final class OnlineIndexer: Sendable {
                 let primaryKey = try recordSubspace.unpack(key)
 
                 // Create index entry
-                let maintainer = self.createIndexMaintainer(indexSubspace: indexSubspace)
-                try await maintainer.scanRecord(record, primaryKey: primaryKey, transaction: transaction)
+                let maintainer = try self.createIndexMaintainer(indexSubspace: indexSubspace)
+                try await maintainer.scanRecord(
+                    record,
+                    primaryKey: primaryKey,
+                    recordAccess: self.recordAccess,
+                    transaction: transaction
+                )
 
                 recordsInBatch += 1
                 lastKey = key
@@ -318,28 +331,66 @@ public final class OnlineIndexer: Sendable {
         return result
     }
 
-    private func createIndexMaintainer(indexSubspace: Subspace) -> any IndexMaintainer {
+    private func createIndexMaintainer(indexSubspace: Subspace) throws -> AnyGenericIndexMaintainer<Record> {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
 
         switch index.type {
         case .value:
-            return ValueIndexMaintainer(
+            let maintainer = GenericValueIndexMaintainer<Record>(
                 index: index,
+                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
+            return AnyGenericIndexMaintainer(maintainer)
+
         case .count:
-            return CountIndexMaintainer(
+            let maintainer = GenericCountIndexMaintainer<Record>(
                 index: index,
+                recordType: recordType,
                 subspace: indexSubspace
             )
+            return AnyGenericIndexMaintainer(maintainer)
+
         case .sum:
-            return SumIndexMaintainer(
+            let maintainer = GenericSumIndexMaintainer<Record>(
                 index: index,
+                recordType: recordType,
                 subspace: indexSubspace
             )
-        case .rank, .version, .permuted:
-            fatalError("Index type \(index.type) not yet implemented")
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .version:
+            let maintainer = VersionIndexMaintainer<Record>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .rank:
+            let maintainer = RankIndexMaintainer<Record>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .permuted:
+            do {
+                let maintainer = try GenericPermutedIndexMaintainer<Record>(
+                    index: index,
+                    recordType: recordType,
+                    subspace: indexSubspace,
+                    recordSubspace: recordSubspace
+                )
+                return AnyGenericIndexMaintainer(maintainer)
+            } catch {
+                logger.error("Failed to create permuted index maintainer for '\(index.name)': \(error)")
+                throw RecordLayerError.internalError("Invalid permuted index configuration for '\(index.name)': \(error)")
+            }
         }
     }
 }
