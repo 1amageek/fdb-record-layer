@@ -9,6 +9,8 @@ The Record Layer provides a powerful abstraction for storing and querying struct
 - **SwiftData-Style API**: Familiar context-based API like SwiftData's ModelContext
 - **Structured Schema**: Type-safe records with flexible serialization
 - **Secondary Indexes**: Flexible indexing with automatic state-aware maintenance
+- **🆕 Nested Field Indexes**: Type-safe KeyPath chains for indexing nested structures
+- **🆕 Full Type Support**: Custom types, arrays, optionals, and combinations
 - **Index State Management**: Three-state lifecycle (disabled → writeOnly → readable)
 - **Online Index Building**: Build indexes without downtime using batch transactions
 - **Resume Capability**: RangeSet-based progress tracking for fault-tolerant operations
@@ -71,6 +73,50 @@ let cityCountIndex = Index.count(
     groupBy: FieldKeyExpression(fieldName: "city")
 )
 ```
+
+### 🆕 Nested Field Indexes (NEW!)
+
+Create type-safe indexes on nested structure fields using KeyPath chains:
+
+```swift
+import FDBRecordLayer
+
+@Recordable
+struct Address {
+    @PrimaryKey var id: Int64
+    var city: String
+    var country: String
+}
+
+@Recordable
+struct Person {
+    // ✅ Type-safe nested field indexes
+    #Index<Person>([\\.address.city])
+    #Index<Person>([\\.address.country, \\.age])
+    #Unique<Person>([\\.email])
+
+    @PrimaryKey var personID: Int64
+    var name: String
+    var email: String
+    var age: Int32
+    var address: Address  // Nested type
+}
+
+// Query people by city
+let tokyoPeople = try await context.query(
+    recordType: Person.self,
+    indexName: "Person_address_city_index",
+    value: "Tokyo"
+)
+```
+
+**Benefits**:
+- ✅ Type-safe KeyPath chains
+- ✅ Compile-time field validation
+- ✅ Multi-level nesting support
+- ✅ Efficient FoundationDB indexes
+
+See [NESTED_FIELD_INDEX_GUIDE.md](./NESTED_FIELD_INDEX_GUIDE.md) for details.
 
 ### 🔎 Rich Query Language
 

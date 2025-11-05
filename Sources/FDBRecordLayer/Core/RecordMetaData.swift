@@ -319,14 +319,6 @@ public struct Relationship: Sendable {
     }
 }
 
-/// 削除ルール
-public enum DeleteRule: Sendable {
-    case cascade      // 関連レコードも削除
-    case nullify      // 外部キーを nil に設定
-    case deny         // 関連レコードが存在する場合削除を拒否
-    case noAction     // 何もしない（整合性チェックなし）
-}
-
 /// カーディナリティ
 public enum Cardinality: Sendable {
     case oneToOne

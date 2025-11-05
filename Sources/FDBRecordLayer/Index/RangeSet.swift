@@ -9,7 +9,7 @@ import Logging
 ///
 /// Implementation: Stores range boundaries in a subspace. A range is "completed"
 /// if it has been successfully processed and committed.
-public actor RangeSet {
+public final class RangeSet: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol

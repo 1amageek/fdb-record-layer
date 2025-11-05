@@ -9,7 +9,7 @@ import FoundationDB
 /// - Caching statistics for performance
 /// - Persisting statistics to FoundationDB
 public actor StatisticsManager: Sendable {
-    private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
 
     // Statistics cache

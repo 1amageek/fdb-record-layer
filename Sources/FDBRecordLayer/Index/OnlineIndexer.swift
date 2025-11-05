@@ -25,7 +25,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     private let recordAccess: any RecordAccess<Record>
     private let serializer: any RecordSerializer<Record>
     private let indexStateManager: IndexStateManager
-    private let rangeSet: RangeSet
+    private let rangeSetSubspace: Subspace
     private let logger: Logger
     private let lock: Mutex<IndexBuildState>
 
@@ -74,17 +74,21 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         self.throttleDelayMs = throttleDelayMs
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.indexer")
 
-        // Initialize RangeSet for tracking progress
-        let rangeSetSubspace = subspace
+        // Store RangeSet subspace for later use
+        self.rangeSetSubspace = subspace
             .subspace(RecordStoreKeyspace.indexRange.rawValue)
             .subspace(index.name)
-        self.rangeSet = RangeSet(
-            database: database,
-            subspace: rangeSetSubspace,
-            logger: logger
-        )
 
         self.lock = Mutex(IndexBuildState())
+    }
+
+    /// Create a RangeSet instance for tracking progress
+    private func createRangeSet() -> RangeSet {
+        return RangeSet(
+            database: self.database,
+            subspace: self.rangeSetSubspace,
+            logger: self.logger
+        )
     }
 
     // MARK: - Public Methods
@@ -116,7 +120,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
 
         // Step 2: Clear progress if requested
         if clearFirst {
-            try await rangeSet.clear()
+            try await createRangeSet().clear()
             logger.info("Cleared previous build progress")
         }
 
@@ -169,7 +173,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
         let (fullBegin, fullEnd) = recordSubspace.range()
-        let (_, progress) = try await rangeSet.getProgress(fullBegin: fullBegin, fullEnd: fullEnd)
+        let (_, progress) = try await createRangeSet().getProgress(fullBegin: fullBegin, fullEnd: fullEnd)
 
         return (recordsScanned: scanned, batchesProcessed: batches, estimatedProgress: progress)
     }
@@ -178,7 +182,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     ///
     /// This allows restarting from scratch.
     public func cancel() async throws {
-        try await rangeSet.clear()
+        try await createRangeSet().clear()
         logger.info("Cancelled index build for: \(index.name)")
     }
 
@@ -190,6 +194,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         let (fullBegin, fullEnd) = recordSubspace.range()
 
         // Get missing ranges that need to be processed
+        let rangeSet = createRangeSet()
         let missingRanges = try await rangeSet.missingRanges(fullBegin: fullBegin, fullEnd: fullEnd)
 
         if missingRanges.isEmpty {
@@ -222,6 +227,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
         let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
             .subspace(index.subspaceTupleKey)
+        let rangeSet = createRangeSet()
 
         while currentBegin.lexicographicallyPrecedes(end) {
             // Process one batch in its own transaction

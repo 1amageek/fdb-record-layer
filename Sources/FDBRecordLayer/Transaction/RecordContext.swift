@@ -85,7 +85,7 @@ public final class RecordContext: Sendable {
     ///   - value: The value to store
     ///   - key: The key to store the value under
     public func setMetadata<T>(_ value: T, forKey key: String) {
-        metadata.withLock { dict in
+        metadata.withLock { (dict: inout [String: Any]) in
             dict[key] = value
         }
     }

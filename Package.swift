@@ -1,5 +1,6 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.0
 import PackageDescription
+import CompilerPluginSupport
 
 let package = Package(
     name: "fdb-record-layer",
@@ -29,8 +30,23 @@ let package = Package(
             url: "https://github.com/apple/swift-collections.git",
             from: "1.3.0"
         ),
+        .package(
+            url: "https://github.com/apple/swift-syntax.git",
+            from: "600.0.0"
+        ),
     ],
     targets: [
+        // Macro implementation (compiler plugin)
+        .macro(
+            name: "FDBRecordLayerMacros",
+            dependencies: [
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+            ],
+            path: "Sources/FDBRecordLayerMacros"
+        ),
+
+        // Main library
         .target(
             name: "FDBRecordLayer",
             dependencies: [
@@ -38,6 +54,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Collections", package: "swift-collections"),
+                "FDBRecordLayerMacros",
             ],
             path: "Sources/FDBRecordLayer"
         ),
@@ -45,19 +62,13 @@ let package = Package(
             name: "FDBRecordLayerTests",
             dependencies: ["FDBRecordLayer"],
             path: "Tests/FDBRecordLayerTests",
-            swiftSettings: [
-                .enableUpcomingFeature("BareSlashRegexLiterals"),
-                .enableUpcomingFeature("ConciseMagicFile"),
-                .enableUpcomingFeature("ExistentialAny"),
-                .enableUpcomingFeature("ForwardTrailingClosures"),
-                .enableUpcomingFeature("ImplicitOpenExistentials")
-                // Note: StrictConcurrency is NOT enabled for tests to allow flexible initialization patterns
-            ],
+            // Note: Swift 6 already enables BareSlashRegexLiterals, ConciseMagicFile,
+            // ExistentialAny, ForwardTrailingClosures, and ImplicitOpenExistentials by default
+            // Note: StrictConcurrency is NOT enabled for tests to allow flexible initialization patterns
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
-    ],
-    swiftLanguageModes: [.v5]
+    ]
 )

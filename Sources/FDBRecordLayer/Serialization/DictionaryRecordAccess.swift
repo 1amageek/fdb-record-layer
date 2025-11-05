@@ -1,6 +1,17 @@
 import Foundation
 import FoundationDB
 
+/// Sendable wrapper for dictionary records
+/// This uses @unchecked Sendable because dictionary operations are inherently not thread-safe,
+/// but RecordStore guarantees single-threaded access per transaction
+public struct DictionaryRecord: @unchecked Sendable {
+    public let dict: [String: Any]
+
+    public init(_ dict: [String: Any]) {
+        self.dict = dict
+    }
+}
+
 /// RecordAccess implementation for dictionary-based records
 ///
 /// DictionaryRecordAccess provides backward compatibility with the legacy
@@ -33,23 +44,23 @@ import FoundationDB
 /// )
 /// ```
 public struct DictionaryRecordAccess: RecordAccess {
-    public typealias Record = [String: Any]
+    public typealias Record = DictionaryRecord
 
     public init() {}
 
     // MARK: - RecordAccess
 
-    public func recordTypeName(for record: [String: Any]) -> String {
-        return record["_type"] as? String ?? "Unknown"
+    public func recordTypeName(for record: DictionaryRecord) -> String {
+        return record.dict["_type"] as? String ?? "Unknown"
     }
 
     public func extractField(
-        from record: [String: Any],
+        from record: DictionaryRecord,
         fieldName: String
     ) throws -> [any TupleElement] {
         // Support dot notation: "user.address.city"
         let components = fieldName.split(separator: ".")
-        var current: Any = record
+        var current: Any = record.dict
 
         for component in components {
             guard let dict = current as? [String: Any],
@@ -67,23 +78,23 @@ public struct DictionaryRecordAccess: RecordAccess {
         return [element]
     }
 
-    public func serialize(_ record: [String: Any]) throws -> FDB.Bytes {
+    public func serialize(_ record: DictionaryRecord) throws -> FDB.Bytes {
         do {
             // Use JSONSerialization for better compatibility with Any types
-            let data = try JSONSerialization.data(withJSONObject: record, options: [])
+            let data = try JSONSerialization.data(withJSONObject: record.dict, options: [])
             return Array(data)
         } catch {
             throw RecordLayerError.serializationFailed("Dictionary serialization failed: \(error)")
         }
     }
 
-    public func deserialize(_ bytes: FDB.Bytes) throws -> [String: Any] {
+    public func deserialize(_ bytes: FDB.Bytes) throws -> DictionaryRecord {
         do {
             let data = Data(bytes)
             guard let dict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
                 throw RecordLayerError.deserializationFailed("Not a dictionary")
             }
-            return dict
+            return DictionaryRecord(dict)
         } catch {
             throw RecordLayerError.deserializationFailed("Dictionary deserialization failed: \(error)")
         }

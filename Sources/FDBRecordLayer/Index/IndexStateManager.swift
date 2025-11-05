@@ -14,7 +14,7 @@ import Logging
 /// State reads are performed within FoundationDB transactions to ensure
 /// consistency. No application-level caching is used, relying on
 /// FoundationDB's built-in read-your-writes and transaction optimizations.
-public actor IndexStateManager {
+public final class IndexStateManager: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol

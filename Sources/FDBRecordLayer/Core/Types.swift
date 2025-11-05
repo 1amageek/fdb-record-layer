@@ -203,3 +203,6 @@ public enum IndexType: String, Sendable {
 
 /// We use FoundationDB's TupleElement protocol directly
 public typealias TupleElement = FoundationDB.TupleElement
+
+/// We use FoundationDB's Tuple struct directly
+public typealias Tuple = FoundationDB.Tuple
