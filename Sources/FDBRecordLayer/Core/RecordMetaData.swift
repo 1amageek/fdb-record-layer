@@ -22,8 +22,14 @@ import Foundation
 ///     .addIndex(emailIndex)
 ///     .build()
 ///
-/// // RecordStore で使用
-/// let store = RecordStore(database: db, subspace: subspace, metaData: metaData)
+/// // RecordStore で使用（統計マネージャーと共に）
+/// let statisticsManager = StatisticsManager(database: db, subspace: statsSubspace)
+/// let store = RecordStore(
+///     database: db,
+///     subspace: subspace,
+///     metaData: metaData,
+///     statisticsManager: statisticsManager
+/// )
 /// ```
 ///
 /// **マイグレーション時の型登録**:

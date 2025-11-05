@@ -125,8 +125,13 @@ public struct CostEstimator: Sendable {
                   indexFields[i] == sortKey.fieldName else {
                 return false
             }
-            // Note: Currently we assume ascending order for indexes
-            // In the future, we might support descending index order
+
+            // Check sort direction
+            // FoundationDB VALUE indexes are always in ascending order
+            // If descending sort is required, we need in-memory sorting
+            if !sortKey.ascending {
+                return false
+            }
         }
 
         return true

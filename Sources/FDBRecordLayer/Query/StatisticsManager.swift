@@ -498,25 +498,3 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
         }
     }
 }
-
-// MARK: - NullStatisticsManager
-
-/// A null statistics manager that returns no statistics
-///
-/// Used when no database is available or statistics are not needed.
-/// The query planner will fall back to heuristic-based planning.
-public actor NullStatisticsManager: StatisticsManagerProtocol {
-    public init() {}
-
-    public func getTableStatistics(recordType: String) async throws -> TableStatistics? {
-        return nil
-    }
-
-    public func getIndexStatistics(indexName: String) async throws -> IndexStatistics? {
-        return nil
-    }
-
-    public func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double {
-        return 0.5  // Default selectivity when no statistics available
-    }
-}

@@ -78,11 +78,13 @@ public struct ProtobufFieldExtractor<M: SwiftProtobuf.Message & Sendable>: Senda
 ///     fieldExtractor: .forUser()
 /// )
 ///
+/// let statisticsManager = StatisticsManager(database: database, subspace: statsSubspace)
 /// let recordStore = try RecordStore(
 ///     database: database,
 ///     subspace: subspace,
 ///     metaData: metaData,
-///     recordAccess: userAccess
+///     recordAccess: userAccess,
+///     statisticsManager: statisticsManager
 /// )
 /// ```
 public struct ProtobufRecordAccess<M: SwiftProtobuf.Message & Sendable>: RecordAccess {

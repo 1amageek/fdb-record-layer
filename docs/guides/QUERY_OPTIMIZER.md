@@ -1,8 +1,8 @@
 # Query Optimizer - Design & Implementation
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** ✅ Production Ready
-**Last Updated:** 2025-10-31
+**Last Updated:** 2025-01-15
 
 ---
 
@@ -54,11 +54,11 @@ The Query Optimizer is a cost-based query optimization system for the FDB Record
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              TypedRecordQueryPlannerV2                       │
+│              TypedRecordQueryPlanner                         │
 │  1. Check plan cache                                         │
-│  2. Rewrite query                                            │
+│  2. Rewrite query (optional)                                 │
 │  3. Generate candidate plans                                 │
-│  4. Estimate costs                                           │
+│  4. Estimate costs (including sort cost)                     │
 │  5. Select best plan                                         │
 │  6. Cache plan                                               │
 └──────┬────────────┬────────────┬────────────┬───────────────┘
@@ -93,24 +93,30 @@ The Query Optimizer is a cost-based query optimization system for the FDB Record
 
 ## Core Components
 
-### 1. TypedRecordQueryPlannerV2
+### 1. TypedRecordQueryPlanner
 
 **Purpose**: Main entry point for query optimization
 
 **Responsibilities**:
 - Coordinate optimization pipeline
-- Generate candidate plans
-- Select optimal plan based on cost
+- Generate candidate plans with sort-aware cost estimation
+- Select optimal plan based on total cost (I/O + CPU + Sort)
 
 **Example**:
 ```swift
-let planner = TypedRecordQueryPlannerV2(
-    recordType: userType,
-    indexes: [cityIndex, ageIndex, emailIndex],
+let planner = TypedRecordQueryPlanner<User>(
+    metaData: metaData,
+    recordTypeName: "User",
     statisticsManager: statsManager
 )
 
-let plan = try await planner.plan(query)
+let query = TypedRecordQuery<User>(
+    filter: \.age > 30,
+    sort: [TypedSortKey(fieldName: "name", ascending: true)],
+    limit: 100
+)
+
+let plan = try await planner.plan(query: query)
 ```
 
 ### 2. QueryRewriter
@@ -138,16 +144,24 @@ let config = QueryRewriter.Config(
 
 **Cost Model**:
 ```
-Total Cost = I/O Cost + CPU Cost
+Total Cost = I/O Cost + CPU Cost + Sort Cost
 
 I/O Cost = rows × I/O_COST_PER_ROW
 CPU Cost = rows × CPU_COST_PER_ROW
+Sort Cost = needsSort ? rows × log2(rows) × 0.01 : 0
 
 where:
 - rows = estimated cardinality
 - I/O_COST_PER_ROW = 1.0 (index) or 10.0 (full scan)
 - CPU_COST_PER_ROW = 0.1
+- needsSort = true if index doesn't satisfy sort requirements
 ```
+
+**Sort Cost Optimization**:
+- Indexes naturally provide ascending order
+- If query requests descending sort → in-memory sort required
+- Planner prefers indexes that match sort requirements
+- O(n log n) cost accurately modeled
 
 **Cardinality Estimation**:
 - Full Scan: `rowCount`
@@ -159,11 +173,15 @@ where:
 
 **Purpose**: Collect and manage table/index statistics
 
-**Actor-Based**: Thread-safe statistics collection and caching
+**Thread-Safety**: Mutex-based fine-grained locking for better concurrency
+- Independent locks for table and index statistics
+- I/O operations performed outside locks
 
 **Statistics Types**:
 - **Table Statistics**: Row count, average row size
 - **Index Statistics**: Distinct values, null count, histogram
+- **HyperLogLog**: Scalable cardinality estimation
+- **Reservoir Sampling**: Memory-efficient histogram construction
 
 **Example**:
 ```swift

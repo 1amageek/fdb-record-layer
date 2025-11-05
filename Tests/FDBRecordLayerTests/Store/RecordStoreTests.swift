@@ -49,10 +49,12 @@ struct RecordStoreTests {
             .build()
 
         // Note: This test needs to be rewritten for the new Recordable-based API
+        let statisticsManager = NullStatisticsManager()
         let store = RecordStore(
             database: db,
             subspace: subspace,
-            metaData: metaData
+            metaData: metaData,
+            statisticsManager: statisticsManager
         )
 
         return (store, db, subspace)

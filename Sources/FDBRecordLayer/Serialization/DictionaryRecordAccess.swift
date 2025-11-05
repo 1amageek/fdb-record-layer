@@ -36,11 +36,13 @@ public struct DictionaryRecord: @unchecked Sendable {
 /// ```swift
 /// let dictionaryAccess = DictionaryRecordAccess()
 ///
+/// let statisticsManager = StatisticsManager(database: database, subspace: statsSubspace)
 /// let recordStore = try RecordStore(
 ///     database: database,
 ///     subspace: subspace,
 ///     metaData: metaData,
-///     recordAccess: dictionaryAccess
+///     recordAccess: dictionaryAccess,
+///     statisticsManager: statisticsManager
 /// )
 /// ```
 public struct DictionaryRecordAccess: RecordAccess {
