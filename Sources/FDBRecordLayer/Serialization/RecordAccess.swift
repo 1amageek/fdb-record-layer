@@ -101,6 +101,21 @@ extension RecordAccess {
         let visitor = RecordAccessEvaluator(recordAccess: self, record: record)
         return try expression.accept(visitor: visitor)
     }
+
+    /// Extract primary key from a record using the primary key expression
+    ///
+    /// - Parameters:
+    ///   - record: The record to extract from
+    ///   - primaryKeyExpression: The KeyExpression defining the primary key
+    /// - Returns: Tuple representing the primary key
+    /// - Throws: RecordLayerError if extraction fails
+    public func extractPrimaryKey(
+        from record: Record,
+        using primaryKeyExpression: KeyExpression
+    ) throws -> Tuple {
+        let elements = try evaluate(record: record, expression: primaryKeyExpression)
+        return TupleHelpers.toTuple(elements)
+    }
 }
 
 // MARK: - RecordAccessEvaluator

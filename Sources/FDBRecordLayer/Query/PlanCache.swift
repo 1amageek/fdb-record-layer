@@ -113,8 +113,13 @@ public actor PlanCache<Record: Sendable> {
             components.append("l:\(limit)")
         }
 
-        // Sort component (if added in future)
-        // if let sort = query.sort { ... }
+        // Sort component
+        if let sortKeys = query.sort, !sortKeys.isEmpty {
+            let sortString = sortKeys.map { sortKey in
+                "\(sortKey.fieldName):\(sortKey.ascending ? "asc" : "desc")"
+            }.joined(separator: ",")
+            components.append("s:\(sortString)")
+        }
 
         // Generate hash for efficient lookup
         let keyString = components.joined(separator: "|")
@@ -157,10 +162,37 @@ public struct CacheStats: Sendable {
 
 extension String {
     /// Generate stable hash that doesn't depend on memory addresses
+    ///
+    /// Uses FNV-1a algorithm to ensure deterministic hashing across runs.
+    /// Unlike Swift's built-in Hasher, this produces the same hash value
+    /// for the same input string across different program executions.
     func stableHash() -> String {
-        var hasher = Hasher()
+        var hasher = StableHasher()
         hasher.combine(self)
         return "\(hasher.finalize())"
+    }
+}
+
+// MARK: - StableHasher
+
+/// A hasher that produces stable, deterministic hashes
+///
+/// Unlike Swift's built-in Hasher, this produces the same hash value
+/// across different runs of the program, which is essential for
+/// plan caching that needs to persist across runs.
+private struct StableHasher {
+    private var state: UInt64 = 0xcbf29ce484222325 // FNV-1a offset basis
+
+    mutating func combine(_ value: String) {
+        let bytes = value.utf8
+        for byte in bytes {
+            state ^= UInt64(byte)
+            state = state &* 0x100000001b3 // FNV-1a prime
+        }
+    }
+
+    func finalize() -> UInt64 {
+        return state
     }
 }
 

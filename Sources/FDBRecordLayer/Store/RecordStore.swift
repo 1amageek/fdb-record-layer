@@ -88,12 +88,27 @@ public final class RecordStore: Sendable {
         let key = typeSubspace.subspace(primaryKey).pack(Tuple())
 
         let tr = context.getTransaction()
+
+        // Load old record if it exists (for index updates)
+        let oldRecord: T?
+        if let existingBytes = try await tr.getValue(for: key, snapshot: false) {
+            oldRecord = try recordAccess.deserialize(existingBytes)
+        } else {
+            oldRecord = nil
+        }
+
+        // Save the record
         tr.setValue(bytes, for: key)
 
-        // インデックス更新（IndexManager使用）
-        // TODO: Implement IndexManager integration
-        // let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
-        // try await indexManager.updateIndexes(for: record, context: context)
+        // Update indexes
+        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        try await indexManager.updateIndexes(
+            for: record,
+            primaryKey: primaryKey,
+            oldRecord: oldRecord,
+            context: context,
+            recordSubspace: recordSubspace
+        )
 
         try await context.commit()
     }
@@ -156,21 +171,40 @@ public final class RecordStore: Sendable {
         _ type: T.Type,
         by primaryKey: any TupleElement
     ) async throws {
+        let recordAccess = GenericRecordAccess<T>()
+
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
         defer { context.cancel() }
 
-        // レコード削除
+        // Load the record before deletion (needed for index updates)
         let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
         let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
 
         let tr = context.getTransaction()
+        let oldRecord: T?
+        if let existingBytes = try await tr.getValue(for: key, snapshot: false) {
+            oldRecord = try recordAccess.deserialize(existingBytes)
+        } else {
+            // Record doesn't exist, nothing to delete
+            return
+        }
+
+        guard let record = oldRecord else {
+            return
+        }
+
+        // Delete the record
         tr.clear(key: key)
 
-        // インデックス削除
-        // TODO: Implement IndexManager integration
-        // let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
-        // try await indexManager.deleteIndexes(for: type, primaryKey: primaryKey, context: context)
+        // Delete index entries
+        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        try await indexManager.deleteIndexes(
+            oldRecord: record,
+            primaryKey: Tuple([primaryKey]),
+            context: context,
+            recordSubspace: recordSubspace
+        )
 
         try await context.commit()
     }

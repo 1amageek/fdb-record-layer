@@ -636,12 +636,26 @@ See [Performance Guide](Documentation/Performance.md) for details.
   - Versionstamp support with `packWithVersionstamp()`
   - Subspace management moved to base bindings
   - Cross-language consistency (Python/Go/Java compatible)
+- ✅ Protobuf serialization support
+  - All primitive types with correct wire types
+  - Optional types, Arrays, Nested custom types
+  - SwiftProtobuf compatible encoding
+- ✅ Advanced index types
+  - **VALUE**: Standard B-tree indexes
+  - **COUNT**: Count aggregation indexes
+  - **SUM**: Sum aggregation indexes
+  - **RANK**: Leaderboard/ranking indexes (Range Tree algorithm, O(log n))
+  - **VERSION**: Version tracking indexes (OCC with FDB versionstamp)
+  - **PERMUTED**: Permuted indexes (alternative orderings, storage optimized)
+- ✅ IndexManager integration
+  - Automatic index maintenance on save/delete
+  - All 6 index types fully supported
+  - Factory pattern for maintainer creation
 
 ### 🚧 In Progress
-- 🚧 Advanced index types (Rank, Version, Permuted indexes)
+- 🚧 Query planner optimization with index selection
 
 ### ⏳ Planned
-- ⏳ Protobuf serialization support
 - ⏳ Query execution engine enhancements
 - ⏳ Compression and encryption
 - ⏳ Performance benchmarks

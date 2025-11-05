@@ -40,33 +40,55 @@ public struct GenericCountIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        // Determine the grouping key
-        let groupingValues: [any TupleElement]
-
-        if let newRecord = newRecord {
-            groupingValues = try recordAccess.evaluate(
-                record: newRecord,
-                expression: index.rootExpression
-            )
-        } else if let oldRecord = oldRecord {
-            groupingValues = try recordAccess.evaluate(
+        // Extract grouping values for old and new records
+        let oldGrouping: [any TupleElement]?
+        if let oldRecord = oldRecord {
+            oldGrouping = try recordAccess.evaluate(
                 record: oldRecord,
                 expression: index.rootExpression
             )
         } else {
-            return // Nothing to do
+            oldGrouping = nil
         }
 
-        let groupingTuple = TupleHelpers.toTuple(groupingValues)
-        let countKey = subspace.pack(groupingTuple)
-
-        // Calculate delta: +1 for insert, -1 for delete, 0 for update with same group
-        let delta: Int64 = (newRecord != nil ? 1 : 0) - (oldRecord != nil ? 1 : 0)
-
-        if delta != 0 {
-            let deltaBytes = TupleHelpers.int64ToBytes(delta)
-            transaction.atomicOp(key: countKey, param: deltaBytes, mutationType: .add)
+        let newGrouping: [any TupleElement]?
+        if let newRecord = newRecord {
+            newGrouping = try recordAccess.evaluate(
+                record: newRecord,
+                expression: index.rootExpression
+            )
+        } else {
+            newGrouping = nil
         }
+
+        // Compare groupings if both exist (update case)
+        if let old = oldGrouping, let new = newGrouping {
+            let oldKey = subspace.pack(TupleHelpers.toTuple(old))
+            let newKey = subspace.pack(TupleHelpers.toTuple(new))
+
+            if oldKey == newKey {
+                // Same group, count unchanged - no operation needed
+                return
+            } else {
+                // Different groups: decrement old, increment new
+                let decrement = TupleHelpers.int64ToBytes(-1)
+                transaction.atomicOp(key: oldKey, param: decrement, mutationType: .add)
+
+                let increment = TupleHelpers.int64ToBytes(1)
+                transaction.atomicOp(key: newKey, param: increment, mutationType: .add)
+            }
+        } else if let new = newGrouping {
+            // Insert: increment new group
+            let newKey = subspace.pack(TupleHelpers.toTuple(new))
+            let increment = TupleHelpers.int64ToBytes(1)
+            transaction.atomicOp(key: newKey, param: increment, mutationType: .add)
+        } else if let old = oldGrouping {
+            // Delete: decrement old group
+            let oldKey = subspace.pack(TupleHelpers.toTuple(old))
+            let decrement = TupleHelpers.int64ToBytes(-1)
+            transaction.atomicOp(key: oldKey, param: decrement, mutationType: .add)
+        }
+        // else: both nil, nothing to do
     }
 
     public func scanRecord(

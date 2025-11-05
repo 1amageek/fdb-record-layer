@@ -7,9 +7,15 @@ import FoundationDB
 /// saved, updated, or deleted. It works with IndexMaintainer implementations
 /// to update each index type.
 ///
-/// **Phase 0 Implementation**:
-/// This is a stub implementation. Full index maintenance will be implemented
-/// in a future phase.
+/// **Implementation Status**: ✅ **Fully Implemented**
+///
+/// IndexManager now provides complete index maintenance for all 6 index types:
+/// - **VALUE**: Standard B-tree indexes
+/// - **COUNT**: Count aggregation indexes
+/// - **SUM**: Sum aggregation indexes
+/// - **RANK**: Leaderboard/ranking indexes
+/// - **VERSION**: Version tracking indexes (OCC)
+/// - **PERMUTED**: Permuted indexes (alternative orderings)
 ///
 /// **使用例**:
 /// ```swift
@@ -19,16 +25,23 @@ import FoundationDB
 /// try await indexManager.updateIndexes(
 ///     for: user,
 ///     primaryKey: Tuple([user.id]),
-///     context: context
+///     oldRecord: existingUser,  // nil if inserting
+///     context: context,
+///     recordSubspace: recordSubspace
 /// )
 ///
 /// // Delete index entries when deleting a record
 /// try await indexManager.deleteIndexes(
+///     oldRecord: user,
 ///     primaryKey: Tuple([user.id]),
-///     recordTypeName: "User",
-///     context: context
+///     context: context,
+///     recordSubspace: recordSubspace
 /// )
 /// ```
+///
+/// **Integration**:
+/// IndexManager is automatically called by RecordStore during save() and delete() operations.
+/// No manual intervention is required for standard CRUD operations.
 public final class IndexManager: Sendable {
     // MARK: - Properties
 
@@ -54,25 +67,56 @@ public final class IndexManager: Sendable {
     /// This method is called when a record is saved (insert or update).
     /// It updates all indexes that apply to the record type.
     ///
-    /// **Current Implementation**: Stub - does nothing
-    /// **Future Implementation**: Will iterate through all applicable indexes
-    /// and update them using their IndexMaintainer implementations.
-    ///
     /// - Parameters:
     ///   - record: The record being saved (must conform to Recordable)
     ///   - primaryKey: The primary key of the record
+    ///   - oldRecord: The old record (nil if inserting)
     ///   - context: The record context for database operations
+    ///   - recordSubspace: The subspace for storing record data
     public func updateIndexes<T: Recordable>(
         for record: T,
         primaryKey: Tuple,
-        context: RecordContext
+        oldRecord: T? = nil,
+        context: RecordContext,
+        recordSubspace: Subspace
     ) async throws {
-        // TODO: Implement index maintenance
-        // 1. Get applicable indexes for this record type
-        // 2. For each index:
-        //    a. Extract index key using index's root expression
-        //    b. Get appropriate IndexMaintainer for index type
-        //    c. Call maintainer to update index entry
+        let recordTypeName = T.recordTypeName
+        let applicableIndexes = getApplicableIndexes(for: recordTypeName)
+
+        guard !applicableIndexes.isEmpty else {
+            return  // No indexes to maintain
+        }
+
+        // Get RecordType from metadata
+        let recordType = try metaData.getRecordType(recordTypeName)
+
+        // Create RecordAccess for this record type
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get transaction from context
+        let transaction = context.getTransaction()
+
+        // Update each applicable index
+        for index in applicableIndexes {
+            // Get subspace for this index
+            let indexSubspace = self.indexSubspace(for: index.name)
+
+            // Create maintainer for this index type
+            let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
+                for: index,
+                recordType: recordType,
+                indexSubspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+
+            // Update the index
+            try await maintainer.updateIndex(
+                oldRecord: oldRecord,
+                newRecord: record,
+                recordAccess: recordAccess,
+                transaction: transaction
+            )
+        }
     }
 
     /// Delete index entries for a deleted record
@@ -80,24 +124,54 @@ public final class IndexManager: Sendable {
     /// This method is called when a record is deleted.
     /// It removes all index entries for the record.
     ///
-    /// **Current Implementation**: Stub - does nothing
-    /// **Future Implementation**: Will iterate through all applicable indexes
-    /// and delete their entries.
-    ///
     /// - Parameters:
+    ///   - oldRecord: The record being deleted
     ///   - primaryKey: The primary key of the deleted record
-    ///   - recordTypeName: The name of the record type
     ///   - context: The record context for database operations
-    public func deleteIndexes(
+    ///   - recordSubspace: The subspace for storing record data
+    public func deleteIndexes<T: Recordable>(
+        oldRecord: T,
         primaryKey: Tuple,
-        recordTypeName: String,
-        context: RecordContext
+        context: RecordContext,
+        recordSubspace: Subspace
     ) async throws {
-        // TODO: Implement index cleanup
-        // 1. Get applicable indexes for this record type
-        // 2. For each index:
-        //    a. Get appropriate IndexMaintainer for index type
-        //    b. Call maintainer to delete index entry
+        let recordTypeName = T.recordTypeName
+        let applicableIndexes = getApplicableIndexes(for: recordTypeName)
+
+        guard !applicableIndexes.isEmpty else {
+            return  // No indexes to maintain
+        }
+
+        // Get RecordType from metadata
+        let recordType = try metaData.getRecordType(recordTypeName)
+
+        // Create RecordAccess for this record type
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get transaction from context
+        let transaction = context.getTransaction()
+
+        // Delete from each applicable index
+        for index in applicableIndexes {
+            // Get subspace for this index
+            let indexSubspace = self.indexSubspace(for: index.name)
+
+            // Create maintainer for this index type
+            let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
+                for: index,
+                recordType: recordType,
+                indexSubspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+
+            // Delete the index entry (oldRecord = deleted record, newRecord = nil)
+            try await maintainer.updateIndex(
+                oldRecord: oldRecord,
+                newRecord: nil as T?,
+                recordAccess: recordAccess,
+                transaction: transaction
+            )
+        }
     }
 
     // MARK: - Helpers
@@ -116,6 +190,78 @@ public final class IndexManager: Sendable {
     /// - Returns: The subspace for storing this index's data
     internal func indexSubspace(for indexName: String) -> Subspace {
         return subspace.subspace(Tuple([indexName]))
+    }
+
+    /// Create an index maintainer for a specific index type
+    ///
+    /// This factory method creates the appropriate maintainer based on the index type.
+    ///
+    /// - Parameters:
+    ///   - index: The index definition
+    ///   - recordType: The record type
+    ///   - indexSubspace: The subspace for this index's data
+    ///   - recordSubspace: The subspace for record data
+    /// - Returns: Type-erased index maintainer
+    /// - Throws: RecordLayerError if index type is not supported
+    private func createMaintainer<T: Recordable>(
+        for index: Index,
+        recordType: RecordType,
+        indexSubspace: Subspace,
+        recordSubspace: Subspace
+    ) throws -> AnyGenericIndexMaintainer<T> {
+        switch index.type {
+        case .value:
+            let maintainer = GenericValueIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .count:
+            let maintainer = GenericCountIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .sum:
+            let maintainer = GenericSumIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .rank:
+            let maintainer = RankIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .version:
+            let maintainer = VersionIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .permuted:
+            let maintainer = try GenericPermutedIndexMaintainer<T>(
+                index: index,
+                recordType: recordType,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+        }
     }
 }
 

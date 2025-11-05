@@ -233,7 +233,7 @@ public struct CostEstimator: Sendable {
 
         // Estimate cost of each child
         var childCosts: [QueryCost] = []
-        for child in plan.children {
+        for child in plan.childPlans {
             let cost = try await estimatePlanCost(
                 child,
                 recordType: recordType,
@@ -262,7 +262,7 @@ public struct CostEstimator: Sendable {
 
         // CPU cost: intersection processing (proportional to smallest child)
         let smallestChildRows = childCosts.first?.estimatedRows ?? 0
-        let cpuCost = Double(smallestChildRows) * cpuFilterCost * Double(plan.children.count)
+        let cpuCost = Double(smallestChildRows) * cpuFilterCost * Double(plan.childPlans.count)
 
         return QueryCost(
             ioCost: totalIoCost,
@@ -283,7 +283,7 @@ public struct CostEstimator: Sendable {
         var totalCpuCost = 0.0
         var totalRows: Int64 = 0
 
-        for child in plan.children {
+        for child in plan.childPlans {
             let cost = try await estimatePlanCost(
                 child,
                 recordType: recordType,

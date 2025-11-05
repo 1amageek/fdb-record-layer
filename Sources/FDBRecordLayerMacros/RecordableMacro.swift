@@ -1475,7 +1475,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     let length = try decodeVarint(data, offset: &offset)
                     let endOffset = offset + Int(length)
                     while offset < endOffset {
-                        guard offset + 8 <= data.count else {
+                        guard offset + 8 <= endOffset else {
                             throw RecordLayerError.serializationFailed("Not enough data for Double array element")
                         }
                         let byte0 = UInt64(data[offset])
@@ -1518,7 +1518,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     let length = try decodeVarint(data, offset: &offset)
                     let endOffset = offset + Int(length)
                     while offset < endOffset {
-                        guard offset + 4 <= data.count else {
+                        guard offset + 4 <= endOffset else {
                             throw RecordLayerError.serializationFailed("Not enough data for Float array element")
                         }
                         let byte0 = UInt32(data[offset])
@@ -1724,7 +1724,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     let length = try decodeVarint(data, offset: &offset)
                     let endOffset = offset + Int(length)
                     while offset < endOffset {
-                        guard offset + 8 <= data.count else {
+                        guard offset + 8 <= endOffset else {
                             throw RecordLayerError.serializationFailed("Not enough data for Double array element")
                         }
                         let byte0 = UInt64(data[offset])
@@ -1769,7 +1769,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     let length = try decodeVarint(data, offset: &offset)
                     let endOffset = offset + Int(length)
                     while offset < endOffset {
-                        guard offset + 4 <= data.count else {
+                        guard offset + 4 <= endOffset else {
                             throw RecordLayerError.serializationFailed("Not enough data for Float array element")
                         }
                         let byte0 = UInt32(data[offset])

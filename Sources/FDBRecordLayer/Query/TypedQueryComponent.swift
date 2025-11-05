@@ -35,6 +35,11 @@ public struct TypedFieldQueryComponent<Record: Sendable>: TypedQueryComponent {
         case greaterThanOrEquals
         case startsWith
         case contains
+
+        /// Check if this comparison is an equality check
+        public var isEquality: Bool {
+            return self == .equals
+        }
     }
 
     public init(

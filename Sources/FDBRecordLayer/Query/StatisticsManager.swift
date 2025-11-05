@@ -103,16 +103,21 @@ public actor StatisticsManager: Sendable {
 
     // MARK: - Index Statistics
 
-    /// Collect index statistics with histogram
+    /// Collect index statistics with histogram using scalable algorithms
+    ///
+    /// Uses HyperLogLog for cardinality estimation and Reservoir Sampling
+    /// for histogram construction. Memory usage is O(1) regardless of index size.
     ///
     /// - Parameters:
     ///   - indexName: The index name
     ///   - indexSubspace: The index subspace
-    ///   - bucketCount: Number of histogram buckets
+    ///   - bucketCount: Number of histogram buckets (default: 100)
+    ///   - reservoirSize: Size of reservoir sample (default: 10,000)
     public func collectIndexStatistics(
         indexName: String,
         indexSubspace: Subspace,
-        bucketCount: Int = 100
+        bucketCount: Int = 100,
+        reservoirSize: Int = 10_000
     ) async throws {
         // Input validation
         guard !indexName.isEmpty else {
@@ -123,8 +128,12 @@ public actor StatisticsManager: Sendable {
             throw RecordLayerError.invalidArgument("bucketCount must be in range (0, 10000], got \(bucketCount)")
         }
 
-        // Scan index entries and collect values
-        let (distinctValues, nullCount, minValue, maxValue, allValues) = try await database.withRecordContext { context in
+        guard reservoirSize > 0 && reservoirSize <= 100_000 else {
+            throw RecordLayerError.invalidArgument("reservoirSize must be in range (0, 100000], got \(reservoirSize)")
+        }
+
+        // Scan index entries using HyperLogLog and Reservoir Sampling
+        let (hll, sampler, nullCount, minValue, maxValue) = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
             let (begin, end) = indexSubspace.range()
 
@@ -134,11 +143,11 @@ public actor StatisticsManager: Sendable {
                 snapshot: true
             )
 
-            var localDistinctValues: Set<ComparableValue> = []
+            var localHLL = HyperLogLog()
+            var localSampler = ReservoirSampling(reservoirSize: reservoirSize)
             var localNullCount: Int64 = 0
             var localMinValue: ComparableValue?
             var localMaxValue: ComparableValue?
-            var localAllValues: [ComparableValue] = []
 
             for try await (key, _) in sequence {
                 let tuple = try indexSubspace.unpack(key)
@@ -156,9 +165,14 @@ public actor StatisticsManager: Sendable {
                 }
 
                 let value = ComparableValue(firstElement)
-                localDistinctValues.insert(value)
-                localAllValues.append(value)
 
+                // Add to HyperLogLog for cardinality estimation
+                localHLL.add(value)
+
+                // Add to Reservoir Sampler for histogram
+                localSampler.add(value)
+
+                // Track min/max
                 if localMinValue == nil || value < localMinValue! {
                     localMinValue = value
                 }
@@ -167,18 +181,18 @@ public actor StatisticsManager: Sendable {
                 }
             }
 
-            return (localDistinctValues, localNullCount, localMinValue, localMaxValue, localAllValues)
+            return (localHLL, localSampler, localNullCount, localMinValue, localMaxValue)
         }
 
-        // Build histogram
-        let histogram = buildHistogram(
-            values: allValues,
-            bucketCount: bucketCount
-        )
+        // Estimate distinct values using HyperLogLog
+        let distinctValues = hll.cardinality()
+
+        // Build histogram from reservoir sample
+        let histogram = sampler.buildHistogram(bucketCount: bucketCount)
 
         let stats = IndexStatistics(
             indexName: indexName,
-            distinctValues: Int64(distinctValues.count),
+            distinctValues: distinctValues,
             nullCount: nullCount,
             minValue: minValue,
             maxValue: maxValue,
@@ -318,43 +332,6 @@ public actor StatisticsManager: Sendable {
 
 
     // MARK: - Private Helpers
-
-    /// Build histogram from values
-    private func buildHistogram(
-        values: [ComparableValue],
-        bucketCount: Int
-    ) -> Histogram {
-        guard !values.isEmpty else {
-            return Histogram(buckets: [], totalCount: 0)
-        }
-
-        let sortedValues = values.sorted()
-        let totalCount = Int64(sortedValues.count)
-        let valuesPerBucket = max(1, sortedValues.count / bucketCount)
-
-        var buckets: [Histogram.Bucket] = []
-
-        for i in stride(from: 0, to: sortedValues.count, by: valuesPerBucket) {
-            let endIndex = min(i + valuesPerBucket, sortedValues.count)
-            let bucketValues = sortedValues[i..<endIndex]
-
-            guard let lowerBound = bucketValues.first,
-                  let upperBound = bucketValues.last else {
-                continue
-            }
-
-            let distinctCount = Set(bucketValues).count
-
-            buckets.append(Histogram.Bucket(
-                lowerBound: lowerBound,
-                upperBound: upperBound,
-                count: Int64(bucketValues.count),
-                distinctCount: Int64(distinctCount)
-            ))
-        }
-
-        return Histogram(buckets: buckets, totalCount: totalCount)
-    }
 
     /// Get storage key for statistics
     private func statisticsKey(type: StatisticsKeyspace, name: String) -> FDB.Bytes {
