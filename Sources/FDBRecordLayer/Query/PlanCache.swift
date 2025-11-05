@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 // MARK: - CacheKeyable Protocol
 
@@ -18,8 +19,16 @@ public protocol CacheKeyable {
 ///
 /// Caches optimized plans to avoid re-planning identical queries.
 /// Uses stable cache keys to ensure correctness across runs.
-public actor PlanCache<Record: Sendable> {
-    private var cache: [String: CachedPlan] = [:]
+///
+/// **Thread Safety**: Uses Mutex for fine-grained locking.
+/// All cache operations are protected by a single mutex, providing
+/// better performance than Actor due to reduced context switching overhead.
+public final class PlanCache<Record: Sendable>: Sendable {
+    private struct CacheState {
+        var cache: [String: CachedPlan] = [:]
+    }
+
+    private let state: Mutex<CacheState>
     private let maxSize: Int
 
     struct CachedPlan {
@@ -31,6 +40,7 @@ public actor PlanCache<Record: Sendable> {
 
     public init(maxSize: Int = 1000) {
         self.maxSize = maxSize
+        self.state = Mutex(CacheState())
     }
 
     // MARK: - Public API
@@ -42,15 +52,17 @@ public actor PlanCache<Record: Sendable> {
     public func get(query: TypedRecordQuery<Record>) -> (any TypedQueryPlan<Record>)? {
         let key = cacheKey(query: query)
 
-        guard var cached = cache[key] else {
-            return nil
+        return state.withLock { state in
+            guard var cached = state.cache[key] else {
+                return nil
+            }
+
+            // Update hit count
+            cached.hitCount += 1
+            state.cache[key] = cached
+
+            return cached.plan
         }
-
-        // Update hit count
-        cached.hitCount += 1
-        cache[key] = cached
-
-        return cached.plan
     }
 
     /// Store plan in cache
@@ -66,35 +78,41 @@ public actor PlanCache<Record: Sendable> {
     ) {
         let key = cacheKey(query: query)
 
-        // Evict if cache is full
-        if cache.count >= maxSize {
-            evictLRU()
-        }
+        state.withLock { state in
+            // Evict if cache is full
+            if state.cache.count >= maxSize {
+                evictLRU(state: &state)
+            }
 
-        cache[key] = CachedPlan(
-            plan: plan,
-            cost: cost,
-            timestamp: Date(),
-            hitCount: 0
-        )
+            state.cache[key] = CachedPlan(
+                plan: plan,
+                cost: cost,
+                timestamp: Date(),
+                hitCount: 0
+            )
+        }
     }
 
     /// Clear all cached plans
     public func clear() {
-        cache.removeAll()
+        state.withLock { state in
+            state.cache.removeAll()
+        }
     }
 
     /// Get cache statistics
     public func getStats() -> CacheStats {
-        let totalHits = cache.values.reduce(0) { $0 + $1.hitCount }
-        let avgHits = cache.isEmpty ? 0.0 : Double(totalHits) / Double(cache.count)
+        return state.withLock { state in
+            let totalHits = state.cache.values.reduce(0) { $0 + $1.hitCount }
+            let avgHits = state.cache.isEmpty ? 0.0 : Double(totalHits) / Double(state.cache.count)
 
-        return CacheStats(
-            size: cache.count,
-            totalHits: totalHits,
-            avgHits: avgHits,
-            maxSize: maxSize
-        )
+            return CacheStats(
+                size: state.cache.count,
+                totalHits: totalHits,
+                avgHits: avgHits,
+                maxSize: maxSize
+            )
+        }
     }
 
     // MARK: - Private Helpers
@@ -127,11 +145,12 @@ public actor PlanCache<Record: Sendable> {
     }
 
     /// Evict least recently used entry
-    private func evictLRU() {
-        guard let oldest = cache.min(by: { $0.value.timestamp < $1.value.timestamp }) else {
+    /// - Parameter state: Mutable cache state (must be called within withLock)
+    private func evictLRU(state: inout CacheState) {
+        guard let oldest = state.cache.min(by: { $0.value.timestamp < $1.value.timestamp }) else {
             return
         }
-        cache.removeValue(forKey: oldest.key)
+        state.cache.removeValue(forKey: oldest.key)
     }
 }
 

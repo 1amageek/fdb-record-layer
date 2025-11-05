@@ -29,6 +29,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
     private let recordSubspace: Subspace
     private let storeSubspace: Subspace
     private let metaData: RecordMetaData
+    private let statisticsManager: any StatisticsManagerProtocol
 
     // MARK: - Initialization
 
@@ -38,7 +39,8 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         recordAccess: any RecordAccess<Record>,
         recordSubspace: Subspace,
         storeSubspace: Subspace,
-        metaData: RecordMetaData
+        metaData: RecordMetaData,
+        statisticsManager: any StatisticsManagerProtocol
     ) {
         self.database = database
         self.query = query
@@ -46,6 +48,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         self.recordSubspace = recordSubspace
         self.storeSubspace = storeSubspace
         self.metaData = metaData
+        self.statisticsManager = statisticsManager
     }
 
     // MARK: - AsyncSequence
@@ -57,7 +60,8 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             recordAccess: recordAccess,
             recordSubspace: recordSubspace,
             storeSubspace: storeSubspace,
-            metaData: metaData
+            metaData: metaData,
+            statisticsManager: statisticsManager
         )
     }
 
@@ -68,6 +72,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         private let recordSubspace: Subspace
         private let storeSubspace: Subspace
         private let metaData: RecordMetaData
+        private let statisticsManager: any StatisticsManagerProtocol
 
         private var context: RecordContext?
         private var typedCursor: AnyTypedRecordCursor<Record>?
@@ -80,7 +85,8 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             recordAccess: any RecordAccess<Record>,
             recordSubspace: Subspace,
             storeSubspace: Subspace,
-            metaData: RecordMetaData
+            metaData: RecordMetaData,
+            statisticsManager: any StatisticsManagerProtocol
         ) {
             self.database = database
             self.query = query
@@ -88,6 +94,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             self.recordSubspace = recordSubspace
             self.storeSubspace = storeSubspace
             self.metaData = metaData
+            self.statisticsManager = statisticsManager
         }
 
         public mutating func next() async throws -> Record? {
@@ -105,10 +112,11 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
 
                 let typedQuery: TypedRecordQuery<Record> = try query.toTypedQuery(recordTypeName: recordTypeName)
 
-                // Use QueryPlanner to create optimal execution plan
+                // Use QueryPlanner with real StatisticsManager for cost-based optimization
                 let planner = TypedRecordQueryPlanner<Record>(
                     metaData: metaData,
-                    recordTypeName: recordTypeName
+                    recordTypeName: recordTypeName,
+                    statisticsManager: statisticsManager
                 )
                 let plan = try await planner.plan(query: typedQuery)
 

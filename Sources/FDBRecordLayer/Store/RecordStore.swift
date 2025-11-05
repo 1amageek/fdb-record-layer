@@ -38,34 +38,67 @@ public final class RecordStore: Sendable {
     public let metaData: RecordMetaData
     private let logger: Logger
 
+    /// Statistics manager for cost-based query optimization
+    private let statisticsManager: any StatisticsManagerProtocol
+
     // Subspaces
     internal let recordSubspace: Subspace
     internal let indexSubspace: Subspace
 
     // MARK: - Initialization
 
-    /// Initialize RecordStore
+    /// Initialize RecordStore with injected StatisticsManager
     ///
     /// - Parameters:
     ///   - database: The FDB database
     ///   - subspace: The subspace for this record store
     ///   - metaData: Record metadata with registered types
+    ///   - statisticsManager: Statistics manager for cost-based optimization
     ///   - logger: Optional logger
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
         metaData: RecordMetaData,
+        statisticsManager: any StatisticsManagerProtocol,
         logger: Logger? = nil
     ) {
         self.database = database
         self.subspace = subspace
         self.metaData = metaData
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
+        self.statisticsManager = statisticsManager
 
         // Initialize subspaces
         self.recordSubspace = subspace.subspace(Tuple("R"))  // Records
         self.indexSubspace = subspace.subspace(Tuple("I"))    // Indexes
     }
+
+    // MARK: - Statistics Support
+
+    /// Create RecordStore with real StatisticsManager for cost-based optimization
+    ///
+    /// This is the recommended way to create a RecordStore for production use.
+    /// It automatically initializes a StatisticsManager for cost-based query optimization.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Create StatisticsManager first
+    /// let statsManager = StatisticsManager(
+    ///     database: database,
+    ///     subspace: subspace.subspace(Tuple("stats"))
+    /// )
+    ///
+    /// // Create RecordStore with statistics support
+    /// let store = RecordStore(
+    ///     database: database,
+    ///     subspace: subspace,
+    ///     metaData: metaData,
+    ///     statisticsManager: statsManager
+    /// )
+    /// ```
+    ///
+    /// - Note: For testing or environments where statistics are not needed,
+    ///         you can pass `NullStatisticsManager()` instead.
 
     // MARK: - Save
 
@@ -155,7 +188,8 @@ public final class RecordStore: Sendable {
             recordType: type,
             metaData: metaData,
             database: database,
-            subspace: subspace
+            subspace: subspace,
+            statisticsManager: statisticsManager
         )
     }
 

@@ -66,31 +66,6 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.planner")
     }
 
-    /// Initialize query planner without statistics (heuristic-based planning)
-    ///
-    /// - Parameters:
-    ///   - metaData: Record metadata containing index definitions
-    ///   - recordTypeName: The record type being queried
-    ///   - planCache: Optional plan cache (creates default if nil)
-    ///   - config: Plan generation configuration (default: .default)
-    ///   - logger: Optional logger (creates default if nil)
-    public init(
-        metaData: RecordMetaData,
-        recordTypeName: String,
-        planCache: PlanCache<Record>? = nil,
-        config: PlanGenerationConfig = .default,
-        logger: Logger? = nil
-    ) {
-        self.init(
-            metaData: metaData,
-            recordTypeName: recordTypeName,
-            statisticsManager: NullStatisticsManager(),
-            planCache: planCache,
-            config: config,
-            logger: logger
-        )
-    }
-
     // MARK: - Public API
 
     /// Plan query execution with cost-based optimization
@@ -106,8 +81,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     /// - Returns: The optimal execution plan
     /// - Throws: RecordLayerError if planning fails
     public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
-        // Check cache
-        if let cachedPlan = await planCache.get(query: query) {
+        // Check cache (synchronous access with Mutex)
+        if let cachedPlan = planCache.get(query: query) {
             logger.debug("Plan cache hit", metadata: [
                 "recordType": "\(recordTypeName)"
             ])
@@ -142,8 +117,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         // Estimate cost for caching
         let cost = try await costEstimator.estimateCost(finalPlan, recordType: recordTypeName)
 
-        // Cache result
-        await planCache.put(query: query, plan: finalPlan, cost: cost)
+        // Cache result (synchronous access with Mutex)
+        planCache.put(query: query, plan: finalPlan, cost: cost)
 
         logger.debug("Plan generated and cached", metadata: [
             "estimatedRows": "\(cost.estimatedRows)",
@@ -175,17 +150,23 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             "count": "\(candidates.count)"
         ])
 
-        // Estimate costs for each candidate
+        // Estimate costs for each candidate (including sort cost if applicable)
         var costsWithPlans: [(plan: any TypedQueryPlan<Record>, cost: QueryCost)] = []
 
         for plan in candidates {
-            let cost = try await costEstimator.estimateCost(plan, recordType: recordTypeName)
+            let cost = try await costEstimator.estimateCost(
+                plan,
+                recordType: recordTypeName,
+                sortKeys: query.sort,
+                metaData: metaData
+            )
             costsWithPlans.append((plan, cost))
 
             logger.trace("Candidate plan cost", metadata: [
                 "planType": "\(type(of: plan))",
                 "estimatedRows": "\(cost.estimatedRows)",
-                "totalCost": "\(cost.totalCost)"
+                "totalCost": "\(cost.totalCost)",
+                "needsSort": "\(cost.needsSort)"
             ])
         }
 

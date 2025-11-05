@@ -26,21 +26,120 @@ public struct CostEstimator: Sendable {
     /// - Parameters:
     ///   - plan: The execution plan
     ///   - recordType: The record type name
+    ///   - sortKeys: Optional sort requirements to determine if sorting is needed
+    ///   - metaData: Optional metadata to check if plan satisfies sort order
     /// - Returns: Estimated query cost
     public func estimateCost<Record: Sendable>(
         _ plan: any TypedQueryPlan<Record>,
-        recordType: String
+        recordType: String,
+        sortKeys: [TypedSortKey<Record>]? = nil,
+        metaData: RecordMetaData? = nil
     ) async throws -> QueryCost {
         // Fetch statistics once at the top level (async-safe pattern)
         let tableStats = try? await statisticsManager.getTableStatistics(
             recordType: recordType
         )
 
+        // Determine if this plan will need sorting
+        let needsSort = determineNeedsSort(
+            plan: plan,
+            sortKeys: sortKeys,
+            recordType: recordType,
+            metaData: metaData
+        )
+
         return try await estimatePlanCost(
             plan,
             recordType: recordType,
-            tableStats: tableStats
+            tableStats: tableStats,
+            needsSort: needsSort
         )
+    }
+
+    // MARK: - Sort Detection
+
+    /// Determine if a plan will need sorting
+    ///
+    /// Only index scans can provide natural sort order. Other plan types
+    /// (full scan, union, intersection, limit) require explicit sorting.
+    ///
+    /// - Parameters:
+    ///   - plan: The query plan
+    ///   - sortKeys: Required sort order
+    ///   - recordType: Record type name
+    ///   - metaData: Metadata to look up index definitions
+    /// - Returns: true if plan will need TypedSortPlan wrapper
+    private func determineNeedsSort<Record: Sendable>(
+        plan: any TypedQueryPlan<Record>,
+        sortKeys: [TypedSortKey<Record>]?,
+        recordType: String,
+        metaData: RecordMetaData?
+    ) -> Bool {
+        // No sort required
+        guard let sortKeys = sortKeys, !sortKeys.isEmpty else {
+            return false
+        }
+
+        // No metadata - assume sorting needed (conservative)
+        guard let metaData = metaData else {
+            return true
+        }
+
+        // Only index scans can provide natural sort order
+        guard let indexScan = plan as? TypedIndexScanPlan<Record> else {
+            return true  // Full scan, union, etc. need sorting
+        }
+
+        // Check if index provides the required sort order
+        return !indexSatisfiesSort(
+            indexName: indexScan.indexName,
+            sortKeys: sortKeys,
+            recordType: recordType,
+            metaData: metaData
+        )
+    }
+
+    /// Check if an index naturally provides the required sort order
+    private func indexSatisfiesSort<Record: Sendable>(
+        indexName: String,
+        sortKeys: [TypedSortKey<Record>],
+        recordType: String,
+        metaData: RecordMetaData
+    ) -> Bool {
+        // Get index definition
+        guard let index = metaData.getIndexesForRecordType(recordType)
+            .first(where: { $0.name == indexName }) else {
+            return false
+        }
+
+        // Extract index fields from root expression
+        let indexFields = extractFieldNames(from: index.rootExpression)
+
+        // Check if index fields match sort keys in order
+        guard indexFields.count >= sortKeys.count else {
+            return false
+        }
+
+        for (i, sortKey) in sortKeys.enumerated() {
+            guard i < indexFields.count,
+                  indexFields[i] == sortKey.fieldName else {
+                return false
+            }
+            // Note: Currently we assume ascending order for indexes
+            // In the future, we might support descending index order
+        }
+
+        return true
+    }
+
+    /// Extract field names from a key expression
+    private func extractFieldNames(from expression: any KeyExpression) -> [String] {
+        if let field = expression as? FieldKeyExpression {
+            return [field.fieldName]
+        } else if let concat = expression as? ConcatenateKeyExpression {
+            return concat.children.flatMap { extractFieldNames(from: $0) }
+        }
+        return []
     }
 
     // MARK: - Plan Cost Estimation
@@ -49,37 +148,43 @@ public struct CostEstimator: Sendable {
     private func estimatePlanCost<Record: Sendable>(
         _ plan: any TypedQueryPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         if let scanPlan = plan as? TypedFullScanPlan<Record> {
             return try await estimateFullScanCost(
                 scanPlan,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: needsSort
             )
         } else if let indexPlan = plan as? TypedIndexScanPlan<Record> {
             return try await estimateIndexScanCost(
                 indexPlan,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: needsSort
             )
         } else if let intersectionPlan = plan as? TypedIntersectionPlan<Record> {
             return try await estimateIntersectionCost(
                 intersectionPlan,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: needsSort
             )
         } else if let unionPlan = plan as? TypedUnionPlan<Record> {
             return try await estimateUnionCost(
                 unionPlan,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: needsSort
             )
         } else if let limitPlan = plan as? TypedLimitPlan<Record> {
             return try await estimateLimitCost(
                 limitPlan,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: needsSort
             )
         } else {
             // Unknown plan type
@@ -92,7 +197,8 @@ public struct CostEstimator: Sendable {
     private func estimateFullScanCost<Record: Sendable>(
         _ plan: TypedFullScanPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         guard let tableStats = tableStats, tableStats.rowCount > 0 else {
             return QueryCost.defaultFullScan
@@ -120,7 +226,8 @@ public struct CostEstimator: Sendable {
         return QueryCost(
             ioCost: ioCost,
             cpuCost: cpuCost,
-            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows)
+            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows),
+            needsSort: needsSort
         )
     }
 
@@ -129,7 +236,8 @@ public struct CostEstimator: Sendable {
     private func estimateIndexScanCost<Record: Sendable>(
         _ plan: TypedIndexScanPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         guard let tableStats = tableStats, tableStats.rowCount > 0 else {
             return QueryCost.defaultIndexScan
@@ -170,7 +278,8 @@ public struct CostEstimator: Sendable {
         return QueryCost(
             ioCost: totalIoCost,
             cpuCost: cpuCost,
-            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows)
+            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows),
+            needsSort: needsSort
         )
     }
 
@@ -225,19 +334,21 @@ public struct CostEstimator: Sendable {
     private func estimateIntersectionCost<Record: Sendable>(
         _ plan: TypedIntersectionPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         guard let tableStats = tableStats, tableStats.rowCount > 0 else {
             return QueryCost.defaultIntersection
         }
 
-        // Estimate cost of each child
+        // Estimate cost of each child (children don't need sort themselves)
         var childCosts: [QueryCost] = []
         for child in plan.childPlans {
             let cost = try await estimatePlanCost(
                 child,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: false  // Child plans don't need sorting
             )
             childCosts.append(cost)
         }
@@ -267,7 +378,8 @@ public struct CostEstimator: Sendable {
         return QueryCost(
             ioCost: totalIoCost,
             cpuCost: cpuCost,
-            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows)
+            estimatedRows: max(Int64(estimatedRows), QueryCost.minEstimatedRows),
+            needsSort: needsSort  // Intersection result might need sorting
         )
     }
 
@@ -276,7 +388,8 @@ public struct CostEstimator: Sendable {
     private func estimateUnionCost<Record: Sendable>(
         _ plan: TypedUnionPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         // Union cost: sum of all children (with potential overlap)
         var totalIoCost = 0.0
@@ -287,7 +400,8 @@ public struct CostEstimator: Sendable {
             let cost = try await estimatePlanCost(
                 child,
                 recordType: recordType,
-                tableStats: tableStats
+                tableStats: tableStats,
+                needsSort: false  // Child plans don't need sorting
             )
             totalIoCost += cost.ioCost
             totalCpuCost += cost.cpuCost
@@ -301,7 +415,8 @@ public struct CostEstimator: Sendable {
         return QueryCost(
             ioCost: totalIoCost,
             cpuCost: totalCpuCost,
-            estimatedRows: max(adjustedRows, QueryCost.minEstimatedRows)
+            estimatedRows: max(adjustedRows, QueryCost.minEstimatedRows),
+            needsSort: needsSort  // Union result might need sorting
         )
     }
 
@@ -310,17 +425,19 @@ public struct CostEstimator: Sendable {
     private func estimateLimitCost<Record: Sendable>(
         _ plan: TypedLimitPlan<Record>,
         recordType: String,
-        tableStats: TableStatistics?
+        tableStats: TableStatistics?,
+        needsSort: Bool
     ) async throws -> QueryCost {
         let childCost = try await estimatePlanCost(
             plan.child,
             recordType: recordType,
-            tableStats: tableStats
+            tableStats: tableStats,
+            needsSort: needsSort  // Pass through sort requirement to child
         )
 
         // Guard against zero rows
         guard childCost.estimatedRows > 0 else {
-            return QueryCost(ioCost: 0, cpuCost: 0, estimatedRows: 0)
+            return QueryCost(ioCost: 0, cpuCost: 0, estimatedRows: 0, needsSort: needsSort)
         }
 
         // Limit reduces cost proportionally
@@ -335,7 +452,8 @@ public struct CostEstimator: Sendable {
         return QueryCost(
             ioCost: childCost.ioCost * limitFactor,
             cpuCost: childCost.cpuCost * limitFactor,
-            estimatedRows: min(Int64(plan.limit), childCost.estimatedRows)
+            estimatedRows: min(Int64(plan.limit), childCost.estimatedRows),
+            needsSort: needsSort  // Limit doesn't change sort requirement
         )
     }
 }
@@ -353,15 +471,32 @@ public struct QueryCost: Sendable, Comparable {
     /// Estimated number of result rows
     public let estimatedRows: Int64
 
+    /// Whether this plan requires in-memory sorting
+    public let needsSort: Bool
+
     /// Total cost (weighted sum, I/O dominates)
+    ///
+    /// Includes sort cost when needsSort is true.
+    /// Sort cost is O(n log n) where n is estimatedRows.
     public var totalCost: Double {
-        return ioCost + cpuCost * 0.1
+        var cost = ioCost + cpuCost * 0.1
+
+        if needsSort {
+            // O(n log n) sort cost with coefficient
+            // Use max(1.0) to avoid log(0)
+            let n = Double(estimatedRows)
+            let sortCost = n * log2(max(n, 1.0)) * 0.01
+            cost += sortCost
+        }
+
+        return cost
     }
 
-    public init(ioCost: Double, cpuCost: Double, estimatedRows: Int64) {
+    public init(ioCost: Double, cpuCost: Double, estimatedRows: Int64, needsSort: Bool = false) {
         self.ioCost = max(0, ioCost)
         self.cpuCost = max(0, cpuCost)
         self.estimatedRows = max(estimatedRows, Self.minEstimatedRows)
+        self.needsSort = needsSort
     }
 
     // MARK: - Comparable

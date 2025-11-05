@@ -26,6 +26,7 @@ public final class QueryBuilder<T: Recordable> {
     private let metaData: RecordMetaData
     private let database: any DatabaseProtocol
     private let subspace: Subspace
+    private let statisticsManager: any StatisticsManagerProtocol
     private var filters: [any TypedQueryComponent<T>] = []
     private var limitValue: Int?
 
@@ -34,13 +35,15 @@ public final class QueryBuilder<T: Recordable> {
         recordType: T.Type,
         metaData: RecordMetaData,
         database: any DatabaseProtocol,
-        subspace: Subspace
+        subspace: Subspace,
+        statisticsManager: any StatisticsManagerProtocol
     ) {
         self.store = store
         self.recordType = recordType
         self.metaData = metaData
         self.database = database
         self.subspace = subspace
+        self.statisticsManager = statisticsManager
     }
 
     // MARK: - Query Construction
@@ -91,10 +94,11 @@ public final class QueryBuilder<T: Recordable> {
         )
 
         // QueryPlanner を使用して最適な実行プランを作成
-        // Note: QueryBuilder uses heuristic-based planning without statistics
+        // Use real StatisticsManager for cost-based optimization
         let planner = TypedRecordQueryPlanner<T>(
             metaData: metaData,
-            recordTypeName: T.recordTypeName
+            recordTypeName: T.recordTypeName,
+            statisticsManager: statisticsManager
         )
         let plan = try await planner.plan(query: query)
 

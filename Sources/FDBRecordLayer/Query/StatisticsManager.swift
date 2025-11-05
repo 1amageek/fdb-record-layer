@@ -1,8 +1,12 @@
 import Foundation
 import FoundationDB
+import Synchronization
 
 /// Protocol for statistics management
-public protocol StatisticsManagerProtocol: Actor, Sendable {
+///
+/// **Thread Safety**: Implementations must be thread-safe and Sendable.
+/// The recommended implementation uses Mutex for fine-grained locking.
+public protocol StatisticsManagerProtocol: Sendable {
     func getTableStatistics(recordType: String) async throws -> TableStatistics?
     func getIndexStatistics(indexName: String) async throws -> IndexStatistics?
     func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double
@@ -10,18 +14,22 @@ public protocol StatisticsManagerProtocol: Actor, Sendable {
 
 /// Manages statistics for cost-based query optimization
 ///
-/// This actor is responsible for:
+/// This class is responsible for:
 /// - Collecting table and index statistics
 /// - Building histograms for selectivity estimation
 /// - Caching statistics for performance
 /// - Persisting statistics to FoundationDB
-public actor StatisticsManager: StatisticsManagerProtocol {
+///
+/// **Thread Safety**: Uses Mutex for fine-grained locking of cache state.
+/// - tableStats and indexStats have independent locks for better concurrency
+/// - I/O operations are performed outside of locks to maximize parallelism
+public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
 
-    // Statistics cache
-    private var tableStats: [String: TableStatistics] = [:]
-    private var indexStats: [String: IndexStatistics] = [:]
+    // Statistics cache with independent locks for better concurrency
+    private let tableStatsLock: Mutex<[String: TableStatistics]>
+    private let indexStatsLock: Mutex<[String: IndexStatistics]>
 
     /// Storage keys for statistics
     private enum StatisticsKeyspace: String {
@@ -32,6 +40,8 @@ public actor StatisticsManager: StatisticsManagerProtocol {
     public init(database: any DatabaseProtocol, subspace: Subspace) {
         self.database = database
         self.subspace = subspace
+        self.tableStatsLock = Mutex([:])
+        self.indexStatsLock = Mutex([:])
     }
 
     // MARK: - Table Statistics
@@ -96,16 +106,31 @@ public actor StatisticsManager: StatisticsManagerProtocol {
     }
 
     /// Get table statistics
+    ///
+    /// **Thread Safety**: Short-lived lock for cache check, I/O outside lock.
     public func getTableStatistics(
         recordType: String
     ) async throws -> TableStatistics? {
-        // Check cache
-        if let cached = tableStats[recordType] {
+        // Check cache with short-lived lock
+        let cached = tableStatsLock.withLock { cache in
+            return cache[recordType]
+        }
+
+        if let cached = cached {
             return cached
         }
 
-        // Load from storage
-        return try await loadTableStatistics(recordType: recordType)
+        // Load from storage (I/O outside lock for better concurrency)
+        guard let stats = try await loadTableStatistics(recordType: recordType) else {
+            return nil
+        }
+
+        // Update cache with short-lived lock
+        tableStatsLock.withLock { cache in
+            cache[recordType] = stats
+        }
+
+        return stats
     }
 
     // MARK: - Index Statistics
@@ -211,16 +236,31 @@ public actor StatisticsManager: StatisticsManagerProtocol {
     }
 
     /// Get index statistics
+    ///
+    /// **Thread Safety**: Short-lived lock for cache check, I/O outside lock.
     public func getIndexStatistics(
         indexName: String
     ) async throws -> IndexStatistics? {
-        // Check cache
-        if let cached = indexStats[indexName] {
+        // Check cache with short-lived lock
+        let cached = indexStatsLock.withLock { cache in
+            return cache[indexName]
+        }
+
+        if let cached = cached {
             return cached
         }
 
-        // Load from storage
-        return try await loadIndexStatistics(indexName: indexName)
+        // Load from storage (I/O outside lock for better concurrency)
+        guard let stats = try await loadIndexStatistics(indexName: indexName) else {
+            return nil
+        }
+
+        // Update cache with short-lived lock
+        indexStatsLock.withLock { cache in
+            cache[indexName] = stats
+        }
+
+        return stats
     }
 
     // MARK: - Selectivity Estimation
@@ -361,7 +401,10 @@ public actor StatisticsManager: StatisticsManagerProtocol {
             transaction.setValue(Array(data), for: key)
         }
 
-        tableStats[recordType] = stats
+        // Update cache with short-lived lock
+        tableStatsLock.withLock { cache in
+            cache[recordType] = stats
+        }
     }
 
     /// Load table statistics
@@ -378,9 +421,11 @@ public actor StatisticsManager: StatisticsManagerProtocol {
             return try JSONDecoder().decode(TableStatistics.self, from: Data(bytes))
         }
 
-        // Update cache outside closure
+        // Update cache with short-lived lock
         if let stats = stats {
-            tableStats[recordType] = stats
+            tableStatsLock.withLock { cache in
+                cache[recordType] = stats
+            }
         }
 
         return stats
@@ -399,7 +444,10 @@ public actor StatisticsManager: StatisticsManagerProtocol {
             transaction.setValue(Array(data), for: key)
         }
 
-        indexStats[indexName] = stats
+        // Update cache with short-lived lock
+        indexStatsLock.withLock { cache in
+            cache[indexName] = stats
+        }
     }
 
     /// Load index statistics
@@ -416,9 +464,11 @@ public actor StatisticsManager: StatisticsManagerProtocol {
             return try JSONDecoder().decode(IndexStatistics.self, from: Data(bytes))
         }
 
-        // Update cache outside closure
+        // Update cache with short-lived lock
         if let stats = stats {
-            indexStats[indexName] = stats
+            indexStatsLock.withLock { cache in
+                cache[indexName] = stats
+            }
         }
 
         return stats
@@ -428,8 +478,12 @@ public actor StatisticsManager: StatisticsManagerProtocol {
 
     /// Clear statistics cache
     public func clearCache() {
-        tableStats.removeAll()
-        indexStats.removeAll()
+        tableStatsLock.withLock { cache in
+            cache.removeAll()
+        }
+        indexStatsLock.withLock { cache in
+            cache.removeAll()
+        }
     }
 
     /// Clear all statistics (cache and storage)

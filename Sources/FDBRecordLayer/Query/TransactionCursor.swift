@@ -30,6 +30,7 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
     private let recordSubspace: Subspace
     private let storeSubspace: Subspace
     private let metaData: RecordMetaData
+    private let statisticsManager: any StatisticsManagerProtocol
 
     // MARK: - Initialization
 
@@ -39,7 +40,8 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
         recordAccess: any RecordAccess<Record>,
         recordSubspace: Subspace,
         storeSubspace: Subspace,
-        metaData: RecordMetaData
+        metaData: RecordMetaData,
+        statisticsManager: any StatisticsManagerProtocol
     ) {
         self.context = context
         self.query = query
@@ -47,6 +49,7 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
         self.recordSubspace = recordSubspace
         self.storeSubspace = storeSubspace
         self.metaData = metaData
+        self.statisticsManager = statisticsManager
     }
 
     // MARK: - AsyncSequence
@@ -57,7 +60,8 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
             query: query,
             recordAccess: recordAccess,
             storeSubspace: storeSubspace,
-            metaData: metaData
+            metaData: metaData,
+            statisticsManager: statisticsManager
         )
     }
 
@@ -67,6 +71,7 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
         private let recordAccess: any RecordAccess<Record>
         private let storeSubspace: Subspace
         private let metaData: RecordMetaData
+        private let statisticsManager: any StatisticsManagerProtocol
 
         private var typedCursor: AnyTypedRecordCursor<Record>?
         private var typedIterator: AnyTypedRecordCursor<Record>.AnyAsyncIterator?
@@ -77,13 +82,15 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
             query: RecordQuery,
             recordAccess: any RecordAccess<Record>,
             storeSubspace: Subspace,
-            metaData: RecordMetaData
+            metaData: RecordMetaData,
+            statisticsManager: any StatisticsManagerProtocol
         ) {
             self.context = context
             self.query = query
             self.recordAccess = recordAccess
             self.storeSubspace = storeSubspace
             self.metaData = metaData
+            self.statisticsManager = statisticsManager
         }
 
         public mutating func next() async throws -> Record? {
@@ -95,10 +102,11 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
 
                 let typedQuery: TypedRecordQuery<Record> = try query.toTypedQuery(recordTypeName: recordTypeName)
 
-                // Use QueryPlanner to create optimal execution plan
+                // Use QueryPlanner with real StatisticsManager for cost-based optimization
                 let planner = TypedRecordQueryPlanner<Record>(
                     metaData: metaData,
-                    recordTypeName: recordTypeName
+                    recordTypeName: recordTypeName,
+                    statisticsManager: statisticsManager
                 )
                 let plan = try await planner.plan(query: typedQuery)
 
