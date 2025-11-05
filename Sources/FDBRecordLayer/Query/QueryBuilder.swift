@@ -91,11 +91,12 @@ public final class QueryBuilder<T: Recordable> {
         )
 
         // QueryPlanner を使用して最適な実行プランを作成
+        // Note: QueryBuilder uses heuristic-based planning without statistics
         let planner = TypedRecordQueryPlanner<T>(
             metaData: metaData,
             recordTypeName: T.recordTypeName
         )
-        let plan = try planner.plan(query: query)
+        let plan = try await planner.plan(query: query)
 
         // プランを実行
         let transaction = try database.createTransaction()

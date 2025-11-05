@@ -8,14 +8,14 @@ import Foundation
 /// - CPU cost (deserialization, filtering)
 /// - Estimated result size
 public struct CostEstimator: Sendable {
-    private let statisticsManager: StatisticsManager
+    private let statisticsManager: any StatisticsManagerProtocol
 
     /// Cost constants (tunable based on benchmarking)
     private let ioReadCost: Double = 1.0
     private let cpuDeserializeCost: Double = 0.1
     private let cpuFilterCost: Double = 0.05
 
-    public init(statisticsManager: StatisticsManager) {
+    public init(statisticsManager: any StatisticsManagerProtocol) {
         self.statisticsManager = statisticsManager
     }
 

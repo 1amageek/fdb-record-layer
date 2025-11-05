@@ -1,6 +1,13 @@
 import Foundation
 import FoundationDB
 
+/// Protocol for statistics management
+public protocol StatisticsManagerProtocol: Actor, Sendable {
+    func getTableStatistics(recordType: String) async throws -> TableStatistics?
+    func getIndexStatistics(indexName: String) async throws -> IndexStatistics?
+    func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double
+}
+
 /// Manages statistics for cost-based query optimization
 ///
 /// This actor is responsible for:
@@ -8,7 +15,7 @@ import FoundationDB
 /// - Building histograms for selectivity estimation
 /// - Caching statistics for performance
 /// - Persisting statistics to FoundationDB
-public actor StatisticsManager: Sendable {
+public actor StatisticsManager: StatisticsManagerProtocol {
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
 
@@ -435,5 +442,27 @@ public actor StatisticsManager: Sendable {
             let (begin, end) = statsSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
+    }
+}
+
+// MARK: - NullStatisticsManager
+
+/// A null statistics manager that returns no statistics
+///
+/// Used when no database is available or statistics are not needed.
+/// The query planner will fall back to heuristic-based planning.
+public actor NullStatisticsManager: StatisticsManagerProtocol {
+    public init() {}
+
+    public func getTableStatistics(recordType: String) async throws -> TableStatistics? {
+        return nil
+    }
+
+    public func getIndexStatistics(indexName: String) async throws -> IndexStatistics? {
+        return nil
+    }
+
+    public func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double {
+        return 0.5  // Default selectivity when no statistics available
     }
 }

@@ -110,7 +110,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
                     metaData: metaData,
                     recordTypeName: recordTypeName
                 )
-                let plan = try planner.plan(query: typedQuery)
+                let plan = try await planner.plan(query: typedQuery)
 
                 // Execute the plan
                 // Use snapshot: true for read-only snapshot queries

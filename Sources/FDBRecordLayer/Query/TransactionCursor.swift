@@ -100,7 +100,7 @@ public struct TransactionCursor<Record: Sendable>: AsyncSequence, Sendable {
                     metaData: metaData,
                     recordTypeName: recordTypeName
                 )
-                let plan = try planner.plan(query: typedQuery)
+                let plan = try await planner.plan(query: typedQuery)
 
                 // Execute the plan
                 // Use snapshot: false for serializable reads within transactions

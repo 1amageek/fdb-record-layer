@@ -9,7 +9,7 @@ import Foundation
 /// **Usage:**
 /// ```swift
 /// // Default configuration (balanced)
-/// let planner = TypedRecordQueryPlannerV2(
+/// let planner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
 ///     recordTypeName: "User",
 ///     statisticsManager: statsManager,
@@ -17,7 +17,7 @@ import Foundation
 /// )
 ///
 /// // Aggressive optimization (slower planning, better plans)
-/// let aggressivePlanner = TypedRecordQueryPlannerV2(
+/// let aggressivePlanner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
 ///     recordTypeName: "User",
 ///     statisticsManager: statsManager,
@@ -25,7 +25,7 @@ import Foundation
 /// )
 ///
 /// // Conservative optimization (faster planning, good enough plans)
-/// let conservativePlanner = TypedRecordQueryPlannerV2(
+/// let conservativePlanner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
 ///     recordTypeName: "User",
 ///     statisticsManager: statsManager,
