@@ -6,8 +6,8 @@ import SwiftProtobuf
 /// Simple example demonstrating FDB Record Layer API
 ///
 /// This example shows:
-/// - Creating metadata with array-based initialization
-/// - Using Index factory methods (.value, .count)
+/// - Creating schema with Schema-based API
+/// - Defining indexes with Index initializers
 /// - Type-safe RecordStore API with Recordable protocol
 /// - Query builder with KeyPath-based filtering
 /// - Cost-based query optimization with StatisticsManager
@@ -29,29 +29,34 @@ struct SimpleExample {
         let database = try FDBClient.openDatabase()
         print("   ✓ Connected to FoundationDB\n")
 
-        // Define metadata using Swift-style API
-        print("2. Defining metadata...")
-        let primaryKey = FieldKeyExpression(fieldName: "user_id")
+        // Define schema using Schema-based API
+        print("2. Defining schema...")
 
-        let userType = RecordType(
-            name: "User",
-            primaryKey: primaryKey,
-            messageDescriptor: User.messageDescriptor
-        )
-
-        // Create metadata with array-based initialization
-        let metaData = try RecordMetaData(
-            version: 1,
-            recordTypes: [userType],
+        // Create schema with User type and indexes
+        let schema = Schema(
+            [User.self],
             indexes: [
-                // Factory methods for clean, Swift-style index creation
-                .value("by_email", on: FieldKeyExpression(fieldName: "email")),
-                .value("by_age", on: FieldKeyExpression(fieldName: "age")),
-                .count("count_by_city", groupBy: FieldKeyExpression(fieldName: "city"))
-            ],
-            unionDescriptor: RecordTypeUnion.unionDescriptor
+                Index(
+                    name: "by_email",
+                    type: .value,
+                    rootExpression: FieldKeyExpression(fieldName: "email"),
+                    recordTypes: Set(["User"])
+                ),
+                Index(
+                    name: "by_age",
+                    type: .value,
+                    rootExpression: FieldKeyExpression(fieldName: "age"),
+                    recordTypes: Set(["User"])
+                ),
+                Index(
+                    name: "count_by_city",
+                    type: .count,
+                    rootExpression: FieldKeyExpression(fieldName: "city"),
+                    recordTypes: Set(["User"])
+                )
+            ]
         )
-        print("   ✓ Metadata created with 3 indexes\n")
+        print("   ✓ Schema created with 3 indexes\n")
 
         // Create record store
         print("3. Creating record store...")
@@ -63,10 +68,10 @@ struct SimpleExample {
             subspace: statsSubspace
         )
 
-        let recordStore = try RecordStore(
+        let recordStore = RecordStore(
             database: database,
             subspace: Subspace(rootPrefix: "example"),
-            metaData: metaData,
+            schema: schema,
             statisticsManager: statisticsManager
         )
         print("   ✓ Record store created with statistics support\n")
@@ -102,7 +107,7 @@ struct SimpleExample {
 
         // Load a record by primary key
         print("5. Loading record by primary key...")
-        if let user = try await recordStore.fetch(User.self, by: Int64(1)) {
+        if let user: User = try await recordStore.fetch(by: Int64(1)) {
             print("   ✓ Record loaded:")
             print("     - ID: \(user.userID)")
             print("     - Name: \(user.name)")
@@ -131,18 +136,18 @@ struct SimpleExample {
 
         // Verify update
         print("8. Verifying update...")
-        if let verifiedBob = try await recordStore.fetch(User.self, by: Int64(2)) {
+        if let verifiedBob: User = try await recordStore.fetch(by: Int64(2)) {
             print("   ✓ Bob's age updated: \(verifiedBob.age)\n")
         }
 
         // Delete a record
         print("9. Deleting record...")
-        try await recordStore.delete(User.self, by: Int64(3))
+        try await recordStore.delete(by: Int64(3))
         print("   ✓ Deleted Charlie\n")
 
         // Verify deletion
         print("10. Verifying deletion...")
-        let deletedUser = try await recordStore.fetch(User.self, by: Int64(3))
+        let deletedUser: User? = try await recordStore.fetch(by: Int64(3))
         if deletedUser == nil {
             print("   ✓ Charlie successfully deleted\n")
         } else {
@@ -155,7 +160,7 @@ struct SimpleExample {
         print("  • KeyPath-based query building")
         print("  • Automatic serialization/deserialization")
         print("  • Cost-based query optimization with StatisticsManager")
-        print("  • Index factory methods (.value, .count, .sum, .rank)")
-        print("  • Array-based metadata initialization")
+        print("  • Schema-based API for clean type registration")
+        print("  • Multiple index types (.value, .count, .sum, .rank)")
     }
 }

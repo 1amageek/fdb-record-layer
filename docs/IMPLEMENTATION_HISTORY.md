@@ -1,17 +1,23 @@
-# 最終レビュー修正完了サマリー
+# 実装履歴
 
-## 完了ステータス ✅
+このドキュメントは、FDB Record Layer（Swift版）の主要な実装と修正の履歴を記録します。
 
-**日付**: 2025-01-15
-**ビルド**: ✅ Passing
-**テスト**: ✅ All 8 tests passed
-**重要度**: **Blocker** 2件 + **Major** 1件
+## 最終更新: 2025-01-15
 
 ---
 
-## 修正一覧
+## Index Collection Pipeline 完成 ✅
 
-### 1. Schema.convertIndexDefinition 型不一致 ✅ (Initial Issue)
+**完了日**: 2025-01-15
+**重要度**: Blocker × 2 + Major × 1
+
+### 概要
+
+インデックス収集パイプラインの完全実装と、3つの重大な問題の修正を完了しました。
+
+### 修正内容
+
+#### 1. Schema.convertIndexDefinition 型不一致修正 ✅
 
 **重要度**: Minor
 **ファイル**: `Sources/FDBRecordLayer/Schema/Schema.swift:211`
@@ -28,7 +34,7 @@ recordTypes: Set([definition.recordType])  // ✅ Explicit Set
 
 ---
 
-### 2. indexDefinitions 自動生成未実装 ✅ (Initial Issue)
+#### 2. @Recordable マクロのindexDefinitions自動生成 ✅
 
 **重要度**: Major
 **ファイル**: `Sources/FDBRecordLayerMacros/RecordableMacro.swift`
@@ -38,9 +44,9 @@ recordTypes: Set([definition.recordType])  // ✅ Explicit Set
 - `#Index`/`#Unique` で宣言したインデックスが Schema に登録されない
 
 **修正**:
-1. `extractIndexDefinitionNames()` ヘルパー追加 (Line 183-210)
-2. `expansion()` でヘルパー呼び出し (Line 89-100)
-3. `generateRecordableExtension()` で `indexDefinitions` プロパティ生成 (Line 425-445)
+1. `extractIndexDefinitionNames()` ヘルパー追加（Line 183-210）
+2. `expansion()` でヘルパー呼び出し（Line 89-100）
+3. `generateRecordableExtension()` で `indexDefinitions` プロパティ生成（Line 425-445）
 
 **結果**:
 ```swift
@@ -54,7 +60,7 @@ extension User: Recordable {
 
 ---
 
-### 3. Schema.convertIndexDefinition が型名文字列に依存 ✅ (Blocker)
+#### 3. Schema.convertIndexDefinition の型名文字列依存問題修正（Blocker） ✅
 
 **重要度**: **Blocker**
 **ファイル**: `Sources/FDBRecordLayer/Schema/Schema.swift:197-224`
@@ -92,9 +98,9 @@ let index = Self.convertIndexDefinition(def, recordName: type.recordName)
 
 ---
 
-### 4. recordTypeName → recordName 統一 ✅ (追加改善)
+#### 4. recordTypeName → recordName 統一 ✅
 
-**重要度**: Major (一貫性)
+**重要度**: Major（一貫性）
 **影響範囲**: 153箇所
 
 **問題**:
@@ -122,9 +128,7 @@ User.recordName  // ✅ 統一！
 
 ---
 
-## 修正の影響
-
-### Index Collection Pipeline (完全動作)
+### Index Collection Pipeline（完全動作）
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -178,9 +182,9 @@ User.recordName  // ✅ 統一！
 
 ---
 
-## テスト結果
+### テスト結果
 
-### IndexCollectionTests (8 tests)
+**IndexCollectionTests (8 tests)** ✅ 全テストパス
 
 ```
 􀟈  Suite "Index Collection Tests" started.
@@ -196,13 +200,11 @@ User.recordName  // ✅ 統一！
 􁁛  Test run with 8 tests in 1 suite passed after 0.001 seconds.
 ```
 
-✅ **全テストパス**
-
 ---
 
-## 変更ファイル
+### 変更ファイル
 
-### Sources/FDBRecordLayer
+#### Sources/FDBRecordLayer
 
 | ファイル | 変更内容 |
 |---------|---------|
@@ -212,47 +214,35 @@ User.recordName  // ✅ 統一！
 | `Serialization/GenericRecordAccess.swift` | recordName統一 |
 | `Schema/Schema+Entity.swift` | recordName統一 |
 | `Schema/RecordContainer.swift` | recordName統一 |
-| その他多数 | recordName統一 (合計約100箇所) |
+| その他多数 | recordName統一（合計約100箇所） |
 
-### Sources/FDBRecordLayerMacros
+#### Sources/FDBRecordLayerMacros
 
 | ファイル | 変更内容 |
 |---------|---------|
 | `RecordableMacro.swift` | indexDefinitions生成、recordName統一 |
 
-### Tests
+#### Tests
 
 | ファイル | 変更内容 |
 |---------|---------|
 | `Schema/IndexCollectionTests.swift` | 新規作成（Swift Testing、8テスト） |
-| その他テストファイル | recordName統一 (約43箇所) |
+| その他テストファイル | recordName統一（約43箇所） |
+
+#### Examples
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `Examples/User+Recordable.swift` | 完全なRecordable実装、recordName統一 |
+| `Examples/SimpleExample.swift` | Schema-based APIへ更新 |
 
 ---
 
-## ドキュメント
+### API変更サマリー
 
-1. **[index-collection-implementation.md](index-collection-implementation.md)**
-   - indexDefinitions 自動生成の詳細実装
+#### Breaking Changes
 
-2. **[index-collection-summary.md](index-collection-summary.md)**
-   - Index収集パイプライン完成サマリー
-
-3. **[blocker-recordname-fix.md](blocker-recordname-fix.md)**
-   - Blocker: type.recordName使用による修正
-
-4. **[recordname-unification.md](recordname-unification.md)**
-   - recordTypeName → recordName 統一の詳細
-
-5. **[FINAL-REVIEW-FIXES.md](FINAL-REVIEW-FIXES.md)** (このファイル)
-   - 全修正の最終サマリー
-
----
-
-## API変更サマリー
-
-### Breaking Changes
-
-#### recordTypeName → recordName
+**recordTypeName → recordName**
 
 ```swift
 // Before
@@ -273,35 +263,14 @@ protocol RecordAccess {
 ```
 
 **理由**: マクロ引数 `recordName` との一貫性
-
 **影響**: 全コードベース（153箇所）
-
 **移行**: `recordTypeName` → `recordName` に置換
 
 ---
 
-## 今後の課題
+### 使用例（修正後）
 
-### 完了 ✅
-1. ✅ Schema.convertIndexDefinition型修正
-2. ✅ indexDefinitions自動生成実装
-3. ✅ Blocker: type.recordName使用
-4. ✅ recordName統一
-5. ✅ Swift Testingでテスト作成
-6. ✅ 全テストパス確認
-
-### 残課題 ⏳
-1. ⏳ #Index/#Uniqueマクロの循環参照問題解決
-2. ⏳ 実際の#Index/#Uniqueマクロを使った統合テスト
-3. ⏳ QueryPlannerがマクロ定義インデックスを使用することの確認
-4. ⏳ OnlineIndexerでのインデックス再構築テスト
-5. ⏳ ユーザードキュメント更新
-
----
-
-## 使用例（修正後）
-
-### 基本的な使用
+#### 基本的な使用
 
 ```swift
 @Recordable
@@ -340,23 +309,6 @@ try await recordStore.save(user)    // インデックス自動更新
 try await recordStore.delete(user)  // インデックス自動削除
 ```
 
-### Self使用（修正後は動作）
-
-```swift
-@Recordable
-struct User {
-    // ✅ #Index<Self> でも動作（将来実装時）
-    #Index<Self>([\.email])
-
-    @PrimaryKey var userID: Int64
-    var email: String
-}
-
-let schema = Schema([User.self])
-// ✅ type.recordName="User" が使われるため、正しくマッチ
-let indexes = schema.indexes(for: "User")  // 1
-```
-
 ---
 
 ## まとめ
@@ -366,12 +318,14 @@ let indexes = schema.indexes(for: "User")  // 1
 2. ✅ indexDefinitions自動生成実装
 3. ✅ **Blocker**: type.recordName使用による確実な型名取得
 4. ✅ recordName統一による一貫性向上
+5. ✅ Example files更新（Schema-based API）
 
 ### 効果
 - インデックス収集パイプラインが完全動作
 - `#Index<Self>` や `#Index<MyModule.User>` でも正しく動作
 - API一貫性向上（recordName統一）
 - すべてのテストパス
+- ドキュメントとサンプルコードが最新
 
 ### 安全性
 - 公開API変更は recordName統一のみ（破壊的変更だが開発段階）

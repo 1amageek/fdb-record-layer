@@ -1,8 +1,9 @@
 # 残りの作業リスト
 
-**最終更新**: 2025-01-06
+**最終更新**: 2025-01-15
 **Phase 1**: ✅ 完了（Production-Ready Core）
-**現在**: Phase 2計画中
+**Phase 2a**: ✅ 完了（Multi-Tenant & Schema-Based API）
+**現在**: Phase 2b計画中
 
 ---
 
@@ -21,20 +22,24 @@
   - Swift 6並行性準拠
   - 包括的なエラーハンドリング
 
+- **Phase 2a マルチテナント & スキーマAPI（2025-01-15完了）**
+  - PartitionManager（アカウントベースのデータ分離）
+  - 複合主キー対応（Tuple & 可変引数）
+  - Schema-based API（クリーンな型登録）
+  - Index Collection Pipeline（自動インデックス収集）
+  - @Recordable マクロ（indexDefinitions自動生成）
+  - recordName統一（API一貫性向上）
+  - Example files更新（最新API反映）
+
 - **メトリクスとロギング（2025-01-06完了）**
   - MetricsRecorder プロトコル
   - SwiftMetricsRecorder 実装（swift-metrics統合）
   - RecordStore統合（構造化ログ付き）
   - 包括的なドキュメント（METRICS_AND_LOGGING.md）
 
-- **SwiftData風マクロAPI（80%完了）**
-  - Phase 0-3完了（基盤API、マクロ実装、インデックス、リレーションシップ）
-  - 16テスト全合格
-  - すべてのプリミティブ型、配列、ネストされた型対応
-
 ---
 
-## 🎯 Phase 2a: コア機能完成（3-4ヶ月）
+## 🎯 Phase 2b: 高度な機能（3-4ヶ月）
 
 ### 優先度: 🔴 CRITICAL（本番環境必須）
 

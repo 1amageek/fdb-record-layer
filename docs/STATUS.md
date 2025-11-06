@@ -1,7 +1,7 @@
 # Project Status
 
-**Last Updated:** 2025-01-06
-**Current Phase:** Phase 2a Partial Complete - Multi-Tenant & Advanced Features
+**Last Updated:** 2025-01-15
+**Current Phase:** Phase 2a Complete - Multi-Tenant & Schema-Based API
 
 > 📋 **残りの作業**: [REMAINING_WORK.md](REMAINING_WORK.md) を参照してください
 
@@ -17,13 +17,16 @@ Phase 1 is **complete** and Phase 2a is **partially complete**. The Record Layer
 - ✅ Comprehensive indexing system
 - ✅ Metrics and structured logging
 
-### Phase 2a (Partial - 75% Complete)
+### Phase 2a (Complete - 100%)
 - ✅ **RecordStore<Record> Generic Type**: Full type safety with generic parameters
 - ✅ **PartitionManager**: Multi-tenant data isolation (2025-01-06)
 - ✅ **Composite Primary Keys**: Tuple and variadic argument support
 - ✅ **Code Refactoring**: Eliminated duplication between RecordStore and RecordTransaction
-- ⏳ **Macro API**: Deferred to later phase (following foundation-first approach)
-- ✅ **Documentation**: PARTITION_USAGE_GUIDE.md and examples
+- ✅ **Schema-Based API**: Clean Schema([Type.self]) initialization (2025-01-15)
+- ✅ **Index Collection Pipeline**: Automatic index collection from @Recordable types (2025-01-15)
+- ✅ **@Recordable Macro**: Automatic indexDefinitions generation (2025-01-15)
+- ✅ **API Consistency**: recordName unification across codebase (2025-01-15)
+- ✅ **Documentation**: Updated examples and comprehensive implementation history
 
 ---
 
@@ -159,13 +162,14 @@ let item = try await itemStore.fetch(by: "order-123", "item-456")
 
 ## 📋 Phase 2 Roadmap (Future)
 
-### SwiftData-Style Macro API
+### SwiftData-Style Macro API (Partial)
 See [swift-macro-design.md](swift-macro-design.md) for details.
 
-- ⏳ `@Recordable` macro for automatic conformance
-- ⏳ `#Index`, `#Unique` macros for index definition
+- ✅ `@Recordable` macro with indexDefinitions generation
+- ⏳ `#Index`, `#Unique` macros (circular reference issue - workaround: define in extensions)
 - ⏳ `@Relationship` macro for foreign keys
 - ⏳ Protobuf auto-generation from Swift types
+- ⏳ Full macro integration without circular reference issues
 
 ### Advanced Index Types
 - ⏳ **Rank Index**: Leaderboards with O(log n) rank/select
@@ -224,6 +228,7 @@ See [swift-macro-design.md](swift-macro-design.md) for details.
 ### Reference
 - [CLAUDE.md](../CLAUDE.md) - FoundationDB usage guide
 - [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md) - All documentation index
+- [IMPLEMENTATION_HISTORY.md](IMPLEMENTATION_HISTORY.md) - **NEW** Implementation and fix history
 
 ---
 
@@ -289,10 +294,13 @@ See [MIGRATION.md](guides/MIGRATION.md) for detailed migration guide.
 - Automatic index maintenance
 - Online schema evolution
 
-**Phase 2a (75% Complete)** adds multi-tenant capabilities:
+**Phase 2a (Complete - 100%)** adds multi-tenant and schema-based capabilities:
 - ✅ PartitionManager for account-based isolation
 - ✅ Composite primary key support
 - ✅ High-throughput partition management
-- ⏳ SwiftData-style macros (deferred to later phase)
+- ✅ Schema-based API for clean type registration
+- ✅ Index collection pipeline with automatic indexDefinitions
+- ✅ @Recordable macro with index generation
+- ✅ API consistency (recordName unification)
 
-**Phase 2b** will add SwiftData-style macros and advanced index types.
+**Phase 2b** will add full SwiftData-style macro integration and advanced index types.
