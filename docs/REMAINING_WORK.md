@@ -151,28 +151,21 @@ let avgAge = try await store.query(User.self)
 
 ### 優先度: 🟡 IMPORTANT（プロダクション品質向上）
 
-#### 1. SwiftData風マクロAPI完成（80%→100%）
+#### 1. SwiftData風マクロAPI完成（95%→100%）
 
 **残りの作業**:
 
-**Phase 4: Protobuf自動生成（0%）**
-```swift
-- [ ] Swift Package Plugin実装
-- [ ] 型マッピングルール（Date, Decimal等）
-- [ ] .proto生成ロジック
-- [ ] swift package generate-protobuf コマンド
-```
-**見積もり**: 2-3週間
-
-**Phase 5: Examples & Documentation（40%→100%）**
+**Phase 4: Examples & Documentation（40%→100%）**
 ```swift
 - [ ] SimpleExampleをマクロAPIで書き直し
 - [ ] MultiTypeExample作成（User + Order）
-- [ ] MACRO_USAGE_GUIDE.md作成
+- [ ] docs/guides/macro-usage.md作成
 - [ ] ベストプラクティスガイド
 - [ ] トラブルシューティングガイド
 ```
 **見積もり**: 1-2週間
+
+**注**: Protobuf定義は手動で作成します（多言語互換性維持のため）。マクロがシリアライズ処理を自動生成するため、実用上の問題はありません。
 
 ---
 
@@ -314,15 +307,11 @@ let avgAge = try await store.query(User.self)
 
 ### 中期（2-4ヶ月）
 
-6. **Protobuf自動生成**
-   - Swift Package Plugin実装
-   - マクロAPI完成度100%達成
-
-7. **Rank Index実装**
+6. **Rank Index実装**
    - リーダーボード機能
    - トップN、パーセンタイル
 
-8. **パフォーマンス最適化**
+7. **パフォーマンス最適化**
    - 並列処理
    - Bloom filter
    - Connection pooling

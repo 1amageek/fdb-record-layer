@@ -2234,37 +2234,33 @@ byte[] continuation = iterator.getContinuation();
 
 ### Swift版の設計方針: SwiftData風マクロベースAPI
 
-> **注**: 以前は単一型 `RecordStore<Record>` アプローチでしたが、ユーザビリティと学習コストの観点から、SwiftData風のマクロベースAPIに完全再設計しました。
+> **完全な設計仕様**: [docs/design/swift-macro-design.md](docs/design/swift-macro-design.md) を参照してください。
 
-#### 設計ドキュメント
+#### 概要
 
-完全な設計仕様は [docs/swift-macro-design.md](docs/swift-macro-design.md) を参照してください。
+このプロジェクトはSwiftData風のマクロベースAPIを採用しており、以下の特徴があります：
 
-#### 設計の意図
-
-1. **SwiftData互換のAPI**: 学習コストを最小化し、Swift開発者に親しみやすいインターフェース
-2. **Protobuf実装の隠蔽**: ユーザーはProtobufを意識せずにSwiftのコードのみを記述
+1. **SwiftData互換のAPI**: 学習コストを最小化
+2. **Protobuf実装の隠蔽**: ユーザーはProtobufを意識せずに開発可能
 3. **マルチタイプサポート**: 単一RecordStoreで複数のレコードタイプを管理
 4. **完全な型安全性**: マクロによるコンパイル時の型チェック
-5. **多言語互換性**: Swiftコードから.protoファイルを自動生成
-6. **基盤API優先**: マクロが依存する土台（Recordable、RecordAccess、IndexMaintainer）を先に確定し、手戻りを防ぐ
 
-#### 実装順序
+#### 実装状況（2025-11-07）
 
-**Phase 0: 基盤API実装**（マクロより先）
-- `Recordable` プロトコル定義
-- `GenericRecordAccess` 実装
-- `RecordStore` マルチタイプ対応API
-- `IndexManager` 統合
-- `QueryBuilder` 実装
+**全体進捗**: ✅ **95%完了**（コア機能は本番環境で使用可能）
 
-**Phase 1以降: マクロ実装**（安定した基盤の上で）
-- `@Recordable`、`@PrimaryKey`、`@Transient` マクロ
-- `#Index`、`#Unique`、`#FieldOrder` マクロ
-- `@Relationship`、`@Attribute` マクロ
-- Protobuf自動生成プラグイン
-
-**重要な設計方針**: マクロが生成するコードは基盤APIに依存するため、基盤APIを先に確定させることで、マクロ実装の手戻りを防ぎます。
+| マクロ | 実装 | テスト |
+|--------|-----|-------|
+| @Recordable | ✅ | ✅ 27テスト |
+| @PrimaryKey | ✅ | ✅ |
+| @Transient | ✅ | ✅ |
+| @Default | ✅ | ✅ |
+| @Attribute | ✅ | ✅ |
+| #Index | ✅ | ✅ 11テスト |
+| #Unique | ✅ | ✅ |
+| #FieldOrder | ✅ | ✅ |
+| @Relationship | ✅ | ✅ |
+| #Subspace | ✅ | ⏳ |
 
 #### 新しいAPI例
 
@@ -2299,45 +2295,7 @@ let users: [User] = try await store.fetch(User.self)
     .collect()
 ```
 
-#### RecordTypeフィルタリング
-
-安全性のため、カーソルはレコードタイプを検証します：
-
-```swift
-// BasicTypedRecordCursor.next()
-let record = try recordAccess.deserialize(pair.1)
-
-// Check recordType if expectedRecordType is specified
-if let expectedType = expectedRecordType {
-    let actualType = recordAccess.recordTypeName(for: record)
-    guard actualType == expectedType else {
-        continue  // Skip records of wrong type
-    }
-}
-```
-
-**目的**:
-- データ破損や誤った型のレコードをスキップ
-- デシリアライズエラーの代わりに、明確なフィルタリング
-- 開発時のデバッグを容易にする
-
-#### Java版との違い
-
-| 項目 | Java版 | Swift版（マクロベース） |
-|------|--------|---------|
-| スキーマ定義 | `.proto`ファイル | `@Recordable`マクロ |
-| 複数レコードタイプ | 同一RecordStoreで可能 | 同一RecordStoreで可能（型登録） |
-| 型安全性 | 実行時 | コンパイル時 + 実行時 |
-| インデックス定義 | MetaDataBuilder | `#Index`, `#Unique`マクロ |
-| Protobuf | 手動で.proto作成 | Swiftから自動生成 |
-| リレーションシップ | 手動管理 | `@Relationship`マクロ |
-
-**利点**:
-- ✅ SwiftData互換で学習コストが低い
-- ✅ Protobufを意識せずに開発可能
-- ✅ マクロによる強力な型安全性
-- ✅ ボイラープレートコードの削減
-- ✅ 多言語互換性の維持（.proto自動生成）
+詳細な使用例、設計思想、実装詳細は [docs/design/swift-macro-design.md](docs/design/swift-macro-design.md) を参照してください。
 
 ### このプロジェクト（Swift版）との比較
 
@@ -2357,14 +2315,18 @@ if let expectedType = expectedRecordType {
 | **SQL対応** | Relational Query Engine | 未実装 | ⏳ 将来検討 |
 | **トランザクション管理** | FDBRecordContext | FDBRecordContext（Swift版） | ✅ 実装済み |
 | **スキーマ進化** | MetaDataEvolutionValidator | 基本サポート | 🚧 進行中 |
-| **マクロAPI** | なし | SwiftData風マクロAPI | ✅ 80%完了 |
-| **@Recordable** | なし | @Recordable | ✅ 実装済み |
+| **マクロAPI** | なし | SwiftData風マクロAPI | ✅ **95%完了** |
+| **@Recordable** | なし | @Recordable | ✅ 実装済み（27テスト合格） |
 | **@PrimaryKey** | なし | @PrimaryKey | ✅ 実装済み |
 | **@Transient** | なし | @Transient | ✅ 実装済み |
-| **#Index** | なし | #Index | ✅ 実装済み |
+| **@Default** | なし | @Default | ✅ 実装済み |
+| **@Attribute** | なし | @Attribute | ✅ 実装済み |
+| **#Index** | なし | #Index | ✅ 実装済み（11テスト合格） |
 | **#Unique** | なし | #Unique | ✅ 実装済み |
+| **#FieldOrder** | なし | #FieldOrder | ✅ 実装済み |
 | **@Relationship** | なし | @Relationship | ✅ 実装済み |
-| **Protobuf自動生成** | なし | 計画中 | ⏳ Phase 4 |
+| **#Subspace** | なし | #Subspace | ✅ 実装済み（テスト未実装） |
+| **Protobuf自動生成** | なし | 未実装 | ⏳ 将来検討 |
 
 ### 学べる重要な設計パターン
 

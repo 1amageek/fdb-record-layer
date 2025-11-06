@@ -6,34 +6,64 @@ import SwiftDiagnostics
 
 /// Implementation of the #Subspace macro
 ///
-/// This freestanding declaration macro is a marker for the @Recordable macro.
-/// The @Recordable macro directly reads the #Subspace macro call and its arguments
-/// to generate appropriate store() methods.
+/// This freestanding declaration macro validates the subspace path syntax and serves as
+/// a marker for the @Recordable macro. The @Recordable macro reads the #Subspace call
+/// from the AST to generate partition-aware store() methods.
 ///
-/// **Important Constraint**: Placeholder names in the path template must exactly match
-/// the field names in the struct. For example:
-/// - Template: `"accounts/{accountID}/users"` → Field must be named `accountID`
-/// - Template: `"posts/{postID}/comments"` → Field must be named `postID`
+/// **Path Elements**: The path is an array where each element can be:
+/// - String literal: `"app"`, `"accounts"`, `"users"` (static path segments)
+/// - KeyPath expression: `\.accountID`, `\.channelID` (dynamic partition keys)
 ///
 /// Usage:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     #Subspace<User>("accounts/{accountID}/users")
+///     #Subspace<User>(["app", "accounts", \.accountID, "users"])
 ///
 ///     @PrimaryKey var userID: Int64
-///     var accountID: String  // ← Must match placeholder name
+///     var accountID: String  // ← Corresponds to \.accountID KeyPath
 ///     var email: String
 /// }
 /// ```
 ///
-/// The @Recordable macro will generate:
+/// **Multi-level partitioning**:
 /// ```swift
-/// extension User {
-///     static func store(in container: RecordContainer, path: String) -> RecordStore<User>
-///     static func store(in container: RecordContainer, accountID: String) -> RecordStore<User>
+/// @Recordable
+/// struct Message {
+///     #Subspace<Message>(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])
+///
+///     @PrimaryKey var messageID: Int64
+///     var accountID: String  // First partition key
+///     var channelID: String  // Second partition key
+///     var content: String
 /// }
 /// ```
+///
+/// **Generated code** (by @Recordable macro):
+/// ```swift
+/// // Single partition key
+/// extension User {
+///     static func store(
+///         accountID: String,
+///         partitionManager: PartitionManager
+///     ) async throws -> RecordStore<User>
+/// }
+///
+/// // Multiple partition keys
+/// extension Message {
+///     static func store(
+///         accountID: String,
+///         channelID: String,
+///         partitionManager: PartitionManager
+///     ) async throws -> RecordStore<Message>
+/// }
+/// ```
+///
+/// **Validation**:
+/// - Generic type parameter `<T>` is required
+/// - Path must be an array literal
+/// - Array elements must be string literals or KeyPath expressions
+/// - KeyPath fields must exist in the struct and match the generic type parameter
 public struct SubspaceMacro: DeclarationMacro {
 
     public static func expansion(
@@ -53,23 +83,45 @@ public struct SubspaceMacro: DeclarationMacro {
             ])
         }
 
-        // Extract the path template argument
-        guard let pathTemplateArg = node.arguments.first else {
+        // Extract the path array argument
+        guard let pathArg = node.arguments.first else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
                     node: Syntax(node),
-                    message: MacroExpansionErrorMessage("#Subspace requires a path template string argument")
+                    message: MacroExpansionErrorMessage("#Subspace requires a path array argument")
                 )
             ])
         }
 
-        // Validate that the path template is a string literal
-        guard let stringLiteral = pathTemplateArg.expression.as(StringLiteralExprSyntax.self),
-              stringLiteral.segments.first?.as(StringSegmentSyntax.self) != nil else {
+        // Validate that the path is an array expression
+        guard let arrayExpr = pathArg.expression.as(ArrayExprSyntax.self) else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
-                    node: Syntax(pathTemplateArg.expression),
-                    message: MacroExpansionErrorMessage("Path template must be a string literal")
+                    node: Syntax(pathArg.expression),
+                    message: MacroExpansionErrorMessage("Path must be an array literal (e.g., [\"app\", \"accounts\", \\.accountID, \"users\"])")
+                )
+            ])
+        }
+
+        // Validate array elements (string literals or KeyPath expressions)
+        for element in arrayExpr.elements {
+            let expr = element.expression
+
+            // Check if it's a string literal
+            if expr.is(StringLiteralExprSyntax.self) {
+                continue
+            }
+
+            // Check if it's a KeyPath expression (\.propertyName)
+            if expr.is(KeyPathExprSyntax.self) {
+                continue
+            }
+
+            // Invalid element type
+            throw DiagnosticsError(diagnostics: [
+                Diagnostic(
+                    node: Syntax(expr),
+                    message: MacroExpansionErrorMessage("Path elements must be string literals (\"literal\") or KeyPath expressions (\\.propertyName)")
                 )
             ])
         }

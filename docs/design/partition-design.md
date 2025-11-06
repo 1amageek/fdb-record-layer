@@ -96,14 +96,14 @@ let users = try await userStore.fetch()
 ```swift
 @Recordable
 struct User {
-    #Subspace(["app", "users"])  // 明示的に指定
+    #Subspace<User>(["app", "users"])  // 配列形式で指定
 
     @PrimaryKey var userID: Int64
     var name: String
 }
 
-// ✅ /app/users/1 に保存
-//    （"users"の後に"user"は追加されない）
+// ✅ app/users/R/User/1 に保存
+//    RecordStore内部でR/（Records）とI/（Indexes）に分離
 ```
 
 ---
@@ -118,12 +118,12 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    #Subspace(["app", "accounts", \.accountID, "users"])  // ⏳ Phase 2a-3で実装予定
-    //                              ^^^^^^^^^^  ^^^^^
-    //                              パーティション  コレクション名
+    #Subspace<User>(["app", "accounts", \.accountID, "users"])  // ⏳ Phase 2a-3で実装予定
+    //                                   ^^^^^^^^^^^  ^^^^^
+    //                                   KeyPath      コレクション名
 
     @PrimaryKey var userID: Int64
-    var accountID: String  // パーティションキー
+    var accountID: String  // KeyPathと対応するフィールド
     var name: String
     var email: String
 }
@@ -194,9 +194,9 @@ let users = try await userStore.fetch()
 ```swift
 @Recordable
 struct Message {
-    #Subspace(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])  // ⏳ Phase 2a-3で実装予定
-    //                              ^^^^^^^^^^              ^^^^^^^^^^   ^^^^^^^^
-    //                              パーティション1          パーティション2  コレクション
+    #Subspace<Message>(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])  // ⏳ Phase 2a-3で実装予定
+    //                                      ^^^^^^^^^^^              ^^^^^^^^^^^   ^^^^^^^^
+    //                                      KeyPath1                 KeyPath2      コレクション
 
     @PrimaryKey var messageID: Int64
     var accountID: String
@@ -449,7 +449,7 @@ FoundationDBは**順序付きKey-Valueストア**であり、以下の特性が�
 ```swift
 @Recordable
 struct Order {
-    #Subspace(["app", "accounts", \.accountID, "orders"])
+    #Subspace<Order>(["app", "accounts", \.accountID, "orders"])
     #ShardingStrategy(.hash(fieldCount: 2))  // 先頭2バイトをハッシュ化
 
     @PrimaryKey var orderID: Int64
@@ -545,18 +545,25 @@ public func save(_ record: Record) async throws {
 
 ```swift
 @attached(peer)
-public macro Subspace(_ path: [SubspacePathElement]) = #externalMacro(
+public macro Subspace<T>(_ path: [SubspacePathElement<T>]) = #externalMacro(
     module: "FDBRecordLayerMacros",
     type: "SubspaceMacro"
 )
 
-// パス要素の定義
-// 使用例: #Subspace(["app", "accounts", \.accountID, "users"])
+// パス要素の定義（Sources/FDBRecordLayer/Macros/Macros.swift）
+public enum SubspacePathElement<T> {
+    case literal(String)
+    case keyPath(PartialKeyPath<T>)
+}
+
+// 使用例:
+// #Subspace<User>(["app", "accounts", \.accountID, "users"])
+// #Subspace<Message>(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])
 ```
 
 **タスク**:
 - パス解析（文字列リテラル vs KeyPath）
-- パーティションキー抽出（\.accountID）
+- パーティションキー抽出（\.accountID, \.channelIDなど）
 - `static func store() -> RecordStore<Record>`生成
 - `hasCustomSubspace`プロパティ生成
 - 多階層パーティション対応
@@ -613,7 +620,7 @@ struct PartitionTests {
     func testExplicitSubspace() async throws {
         @Recordable
         struct TestUser {
-            #Subspace(["app", "accounts", \.accountID, "users"])
+            #Subspace<TestUser>(["app", "accounts", \.accountID, "users"])
             @PrimaryKey var userID: Int64
             var accountID: String
             var name: String

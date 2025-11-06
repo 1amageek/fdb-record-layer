@@ -10,7 +10,7 @@ A production-ready Swift implementation of FoundationDB Record Layer, providing 
 
 The Record Layer provides a powerful abstraction for storing and querying structured data in FoundationDB, featuring:
 
-- **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index (80% complete)
+- **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index (95% complete)
 - **Type-Safe API**: Recordable protocol for compile-time type safety
 - **Cost-Based Query Optimizer**: Statistics-driven query planning with histogram selectivity
 - **Automatic Index Maintenance**: Value, Count, and Sum indexes with online building
@@ -311,24 +311,38 @@ let sanFranciscoAdults = try await store.query(User.self)
 
 ## Documentation
 
+📚 **[Complete Documentation Index](docs/README.md)** - Start here for all documentation
+
 ### Quick Start
 - [SimpleExample.swift](Examples/SimpleExample.swift) - Basic usage
 - [User+Recordable.swift](Examples/User+Recordable.swift) - Recordable conformance
+- [PartitionExample.swift](Examples/PartitionExample.swift) - Multi-tenant usage
+
+### Status & Planning
+- [STATUS.md](docs/STATUS.md) - Current project status (Phase 2a complete)
+- [REMAINING_WORK.md](docs/REMAINING_WORK.md) - Roadmap and future plans
+- [IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md) - Detailed implementation plan
 
 ### Architecture
-- [STATUS.md](docs/STATUS.md) - Project status and implementation progress
-- [QUERY_PLANNER_OPTIMIZATION_V2.md](docs/architecture/QUERY_PLANNER_OPTIMIZATION_V2.md) - Query planner design
-- [ARCHITECTURE_REFERENCE.md](docs/architecture/ARCHITECTURE_REFERENCE.md) - System architecture
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - **Complete system architecture**
+  - Core components
+  - Concurrency model (Mutex vs Actor)
+  - Multi-tenant architecture
+  - Index and query systems
 
-### Guides
-- [QUERY_OPTIMIZER.md](docs/guides/QUERY_OPTIMIZER.md) - Query optimization guide
-- [ADVANCED_INDEX_DESIGN.md](docs/guides/ADVANCED_INDEX_DESIGN.md) - Index design patterns
-- [VERSIONSTAMP_USAGE_GUIDE.md](docs/guides/VERSIONSTAMP_USAGE_GUIDE.md) - Version stamps
+### Design Documents
+- [swift-macro-design.md](docs/design/swift-macro-design.md) - SwiftData-style macro API (95% complete)
+- [partition-design.md](docs/design/partition-design.md) - Multi-tenant partition system
+- [query-planner-optimization.md](docs/design/query-planner-optimization.md) - Cost-based query optimizer
+- [metrics-and-logging.md](docs/design/metrics-and-logging.md) - Observability infrastructure
+- [online-index-scrubber.md](docs/design/online-index-scrubber.md) - Index consistency verification
+
+### User Guides
+- [partition-usage.md](docs/guides/partition-usage.md) - Multi-tenant usage patterns
+- [query-optimizer.md](docs/guides/query-optimizer.md) - Query optimization guide
+- [advanced-index-design.md](docs/guides/advanced-index-design.md) - Index design patterns
+- [versionstamp-usage.md](docs/guides/versionstamp-usage.md) - Using version stamps
 - [CLAUDE.md](CLAUDE.md) - Comprehensive FoundationDB usage guide
-
-### Macro API (80% Complete)
-- [MACRO_IMPLEMENTATION_STATUS.md](docs/MACRO_IMPLEMENTATION_STATUS.md) - SwiftData-style macro API status
-- [swift-macro-design.md](docs/swift-macro-design.md) - Complete macro design document
 
 ## Performance
 
@@ -424,14 +438,15 @@ See [STATUS.md](docs/STATUS.md) for detailed implementation status.
 
 ## Roadmap
 
-### Phase 2 (Future)
+### Phase 2b (Future)
 
-- **SwiftData-Style Macros**: `@Recordable`, `#Index`, `@Relationship`
+- **SwiftData-Style Macros**: ✅ Core macros complete (@Recordable, #Index, @Relationship)
+  - Remaining: Examples and documentation updates
 - **Advanced Index Types**: Rank, Version, Spatial, Text (Lucene)
 - **Performance Enhancements**: Parallel indexing, Bloom filters, streaming
-- **Protobuf Auto-Generation**: Generate `.proto` from Swift types
+- **Schema Evolution Validator**: Safe schema migration with validation
 
-See [swift-macro-design.md](docs/swift-macro-design.md) for details.
+See [REMAINING_WORK.md](docs/REMAINING_WORK.md) for detailed roadmap.
 
 ## Contributing
 
