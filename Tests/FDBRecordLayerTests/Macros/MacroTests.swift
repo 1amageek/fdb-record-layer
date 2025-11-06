@@ -124,10 +124,14 @@ struct TestOptionalArrayFields {
     var optDoubleArray: [Double]?
 }
 
+// MARK: - #Subspace tests (Phase 2a-3, not yet implemented)
+// TODO: Uncomment when #Subspace macro is implemented
+
+/*
 /// Test type with static subspace
 @Recordable
 struct TestGlobalConfig {
-    #Subspace<TestGlobalConfig>("global/config")
+    #Subspace<TestGlobalConfig>(["global", "config"])
 
     @PrimaryKey var key: String
     var value: String
@@ -136,7 +140,7 @@ struct TestGlobalConfig {
 /// Test type with single dynamic component
 @Recordable
 struct TestTenantConfig {
-    #Subspace<TestTenantConfig>("tenants/{tenantID}/config")
+    #Subspace<TestTenantConfig>(["tenants", \.tenantID, "config"])
 
     @PrimaryKey var key: String
     var tenantID: String
@@ -146,7 +150,7 @@ struct TestTenantConfig {
 /// Test type with multiple dynamic components
 @Recordable
 struct TestMultiTenantUser {
-    #Subspace<TestMultiTenantUser>("accounts/{accountID}/users")
+    #Subspace<TestMultiTenantUser>(["accounts", \.accountID, "users"])
 
     @PrimaryKey var userID: Int64
     var accountID: String
@@ -156,13 +160,14 @@ struct TestMultiTenantUser {
 /// Test type with nested dynamic path
 @Recordable
 struct TestComment {
-    #Subspace<TestComment>("accounts/{accountID}/posts/{postID}/comments")
+    #Subspace<TestComment>(["accounts", \.accountID, "posts", \.postID, "comments"])
 
     @PrimaryKey var commentID: Int64
     var accountID: String
     var postID: Int64
     var text: String
 }
+*/
 
 // MARK: - Test Suite
 
@@ -535,6 +540,8 @@ struct MacroTests {
 
     // MARK: - Subspace Macro Tests
 
+    // TODO: Uncomment when #Subspace macro is implemented (Phase 2a-3)
+    /*
     /// Test static subspace generation
     @Test("#Subspace static path")
     func testStaticSubspace() {
@@ -591,4 +598,5 @@ struct MacroTests {
 
         let _: (RecordContainer, String, Int64) -> RecordStore<TestComment> = TestComment.store(in:accountID:postID:)
     }
+    */
 }

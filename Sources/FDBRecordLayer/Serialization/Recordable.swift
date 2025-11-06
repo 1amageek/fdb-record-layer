@@ -204,6 +204,25 @@ extension Recordable {
 
         return description
     }
+
+    /// Convert PartialKeyPath to field name string
+    ///
+    /// This method is used by IndexDefinition to convert KeyPaths to field names.
+    public static func fieldName(for keyPath: PartialKeyPath<Self>) -> String {
+        // Try to find a match using the generated fieldName<Value> method
+        // by iterating through all fields
+        // This is a fallback - the macro-generated implementation is more efficient
+
+        let description = "\(keyPath)"
+
+        // KeyPathの文字列表現から最後の要素を取得
+        // 例: "\MyApp.User.email" -> "email"
+        if let lastComponent = description.split(separator: ".").last {
+            return String(lastComponent)
+        }
+
+        return description
+    }
 }
 
 // MARK: - Default Implementations (Backward Compatibility)

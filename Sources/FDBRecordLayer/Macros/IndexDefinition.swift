@@ -17,7 +17,7 @@ public struct IndexDefinition: Sendable {
     /// Whether this index enforces uniqueness
     public let unique: Bool
 
-    /// Initialize an index definition
+    /// Initialize an index definition with field name strings
     ///
     /// - Parameters:
     ///   - name: The name of the index
@@ -28,6 +28,39 @@ public struct IndexDefinition: Sendable {
         self.name = name
         self.recordType = recordType
         self.fields = fields
+        self.unique = unique
+    }
+
+    /// Initialize an index definition with KeyPaths (type-safe)
+    ///
+    /// This initializer uses `PartialKeyPath` to provide compile-time type safety.
+    ///
+    /// - Parameters:
+    ///   - name: The name of the index
+    ///   - keyPaths: The key paths to the fields included in this index
+    ///   - unique: Whether this index enforces uniqueness
+    ///
+    /// Example:
+    /// ```swift
+    /// let emailIndex = IndexDefinition(
+    ///     name: "User_email_index",
+    ///     keyPaths: [\User.email] as [PartialKeyPath<User>],
+    ///     unique: false
+    /// )
+    /// ```
+    public init<Record: Recordable>(
+        name: String,
+        keyPaths: [PartialKeyPath<Record>],
+        unique: Bool
+    ) {
+        self.name = name
+        self.recordType = Record.recordName
+
+        // Convert KeyPaths to field name strings using Record's fieldName method
+        self.fields = keyPaths.map { keyPath in
+            Record.fieldName(for: keyPath)
+        }
+
         self.unique = unique
     }
 }

@@ -72,7 +72,7 @@ public struct AttributeMacro: PeerMacro {
 
         // Extract the original name from the string literal
         guard let stringLiteral = originalNameArg.expression.as(StringLiteralExprSyntax.self),
-              let segment = stringLiteral.segments.first?.as(StringSegmentSyntax.self) else {
+              let segment = stringLiteral.segments.first?.cast(StringSegmentSyntax.self) else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
                     node: originalNameArg.expression,

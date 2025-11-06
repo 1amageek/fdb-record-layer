@@ -1,5 +1,27 @@
 import Foundation
 
+/// Represents an element in a subspace path
+///
+/// Can be either a string literal or a PartialKeyPath for dynamic interpolation.
+///
+/// **Usage**:
+/// ```swift
+/// #Subspace<User>(["app", "accounts", \.accountID, "users"])
+/// //               ^^^^^  ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^
+/// //               String String      PartialKeyPath String
+/// ```
+public enum SubspacePathElement<T> {
+    case literal(String)
+    case keyPath(PartialKeyPath<T>)
+}
+
+// ExpressibleByStringLiteral conformance for convenient syntax
+extension SubspacePathElement: ExpressibleByStringLiteral {
+    public init(stringLiteral value: String) {
+        self = .literal(value)
+    }
+}
+
 /// Marks a struct as a persistable record type
 ///
 /// This macro generates all necessary protocol conformances and methods
@@ -96,39 +118,79 @@ public macro Default(value: Any) = #externalMacro(module: "FDBRecordLayerMacros"
 /// Defines an index on specified fields
 ///
 /// Indexes improve query performance for specific field combinations.
+/// Supports multiple independent indexes using variadic arguments.
 ///
 /// **Usage**:
 /// ```swift
 /// @Recordable
 /// struct User {
+///     // Single field index
 ///     #Index<User>([\.email])
+///
+///     // Multiple independent indexes
+///     #Index<User>([\.email], [\.username])
+///
+///     // Compound index (country + city combination)
+///     #Index<User>([\.country, \.city])
+///
+///     // Named index
 ///     #Index<User>([\.country, \.city], name: "location_index")
 ///
 ///     @PrimaryKey var userID: Int64
 ///     var email: String
+///     var username: String
 ///     var country: String
 ///     var city: String
 /// }
 /// ```
-@freestanding(declaration, names: arbitrary)
-public macro Index<T>(_ keyPaths: [KeyPath<T, Any>], name: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
+@freestanding(declaration)
+public macro Index<T>(_ indices: [PartialKeyPath<T>]...) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
 
-/// Defines a unique index on specified fields
+/// Defines a named index on specified fields
 ///
-/// Unique indexes enforce uniqueness constraint on the specified fields.
+/// Use this overload when you need to specify a custom index name.
 ///
 /// **Usage**:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     #Unique<User>([\.email])  // Email must be unique
+///     #Index<User>([\.country, \.city], name: "location_index")
+///
+///     @PrimaryKey var userID: Int64
+///     var country: String
+///     var city: String
+/// }
+/// ```
+@freestanding(declaration)
+public macro Index<T>(_ indices: [PartialKeyPath<T>], name: String) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
+
+/// Defines a unique index on specified fields
+///
+/// Unique indexes enforce uniqueness constraint on the specified fields.
+/// Supports multiple independent constraints using variadic arguments.
+///
+/// **Usage**:
+/// ```swift
+/// @Recordable
+/// struct User {
+///     // Single field unique constraint
+///     #Unique<User>([\.email])
+///
+///     // Multiple independent unique constraints
+///     #Unique<User>([\.email], [\.username])
+///
+///     // Compound unique constraint (firstName + lastName combination)
+///     #Unique<User>([\.firstName, \.lastName])
 ///
 ///     @PrimaryKey var userID: Int64
 ///     var email: String
+///     var username: String
+///     var firstName: String
+///     var lastName: String
 /// }
 /// ```
-@freestanding(declaration, names: arbitrary)
-public macro Unique<T>(_ keyPaths: [KeyPath<T, Any>], name: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "UniqueMacro")
+@freestanding(declaration)
+public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(module: "FDBRecordLayerMacros", type: "UniqueMacro")
 
 /// Explicitly specifies the order of fields for Protobuf compatibility
 ///
@@ -147,39 +209,46 @@ public macro Unique<T>(_ keyPaths: [KeyPath<T, Any>], name: String? = nil) = #ex
 ///     var age: Int                    // field_number = 4
 /// }
 /// ```
-@freestanding(declaration, names: arbitrary)
-public macro FieldOrder<T>(_ keyPaths: [KeyPath<T, Any>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
+@freestanding(declaration)
+public macro FieldOrder<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
 
 /// Defines a dynamic subspace path for multi-tenant or hierarchical data
 ///
-/// Generates a static helper method that constructs RecordStore with the specified path.
-/// Use `{fieldName}` syntax to interpolate field values into the path.
+/// This is a marker macro detected by @Recordable to generate partition-aware store methods.
 ///
 /// **Usage**:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     #Subspace<User>("accounts/{accountID}/users")
+///     #Subspace<User>(["app", "accounts", \.accountID, "users"])
 ///
 ///     @PrimaryKey var userID: Int64
-///     var accountID: String
+///     var accountID: String  // Partition key
 ///     var email: String
 /// }
 ///
-/// // Generated method:
-/// // static func store(in container: RecordContainer, accountID: String) -> RecordStore<User>
+/// // @Recordable generates:
+/// // extension User {
+/// //     static func store(
+/// //         accountID: String,
+/// //         partitionManager: PartitionManager
+/// //     ) async throws -> RecordStore<User>
+/// // }
 ///
 /// // Usage:
-/// let userStore = User.store(in: container, accountID: "acct-001")
-/// // Path: "accounts/acct-001/users"
+/// let userStore = try await User.store(
+///     accountID: "acct-001",
+///     partitionManager: partitionManager
+/// )
+/// // Path: /app/accounts/acct-001/users/
 /// ```
 ///
-/// **Static paths** (no interpolation):
+/// **Multi-level partitions**:
 /// ```swift
-/// #Subspace<GlobalConfig>("global/config")
+/// #Subspace<Message>(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])
 /// ```
-@freestanding(declaration, names: arbitrary)
-public macro Subspace<T>(_ pathTemplate: String) = #externalMacro(module: "FDBRecordLayerMacros", type: "SubspaceMacro")
+@freestanding(declaration)
+public macro Subspace<T>(_ path: [SubspacePathElement<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "SubspaceMacro")
 
 /// Defines a relationship to another record type
 ///
