@@ -406,19 +406,20 @@ extension RecordMetaData {
     /// **使用例**:
     /// ```swift
     /// let metaData = RecordMetaData()
-    /// try metaData.registerRecordType(User.self)
-    /// try metaData.registerRecordType(Order.self)
+    /// metaData.registerRecordType(User.self)
+    /// metaData.registerRecordType(Order.self)
     /// ```
     ///
     /// - Parameter type: 登録するRecordable型
-    /// - Throws: RecordLayerError if the type is already registered
-    public func registerRecordType<T: Recordable>(_ type: T.Type) throws {
+    /// - Note: Idempotent - if the type is already registered, this is a no-op
+    public func registerRecordType<T: Recordable>(_ type: T.Type) {
         let typeName = T.recordTypeName
 
-        // Already registered check
-        try _recordTypes.withLock { recordTypes in
+        // Idempotent registration
+        _recordTypes.withLock { recordTypes in
+            // Already registered → skip
             guard recordTypes[typeName] == nil else {
-                throw RecordLayerError.internalError("Record type '\(typeName)' is already registered")
+                return
             }
 
             // Create registration

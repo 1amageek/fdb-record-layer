@@ -72,25 +72,113 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             return []
         }
 
-        let typeName = structDecl.name.text
+        let structName = structDecl.name.text
         let members = structDecl.memberBlock.members
+
+        // Extract recordName from macro arguments (if provided)
+        let recordTypeName = extractRecordName(from: node) ?? structName
 
         // Extract field information
         let fields = try extractFields(from: members, context: context)
         let primaryKeyFields = fields.filter { $0.isPrimaryKey }
         let persistentFields = fields.filter { !$0.isTransient }
 
+        // Detect #Subspace metadata
+        let subspaceMetadata = extractSubspaceMetadata(from: members)
+
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
-            typeName: typeName,
+            typeName: structName,
+            recordTypeName: recordTypeName,
             fields: persistentFields,
-            primaryKeyFields: primaryKeyFields
+            primaryKeyFields: primaryKeyFields,
+            subspaceMetadata: subspaceMetadata
         )
 
         return [recordableExtension]
     }
 
     // MARK: - Helper Methods
+
+    /// Extracts recordName from @Recordable macro arguments
+    /// Returns nil if not specified (defaults to struct name)
+    private static func extractRecordName(from node: AttributeSyntax) -> String? {
+        guard let arguments = node.arguments,
+              case .argumentList(let argumentList) = arguments else {
+            return nil
+        }
+
+        for argument in argumentList {
+            // Look for recordName argument
+            if let label = argument.label?.text, label == "recordName",
+               let stringLiteral = argument.expression.as(StringLiteralExprSyntax.self),
+               let segment = stringLiteral.segments.first?.as(StringSegmentSyntax.self) {
+                return segment.content.text
+            }
+        }
+
+        return nil
+    }
+
+    /// Subspace metadata extracted from #Subspace macro
+    private struct SubspaceMetadata {
+        let pathTemplate: String
+        let placeholders: [String]
+    }
+
+    /// Extracts #Subspace metadata from struct members by looking for #Subspace macro calls
+    private static func extractSubspaceMetadata(
+        from members: MemberBlockItemListSyntax
+    ) -> SubspaceMetadata? {
+        for member in members {
+            // Look for #Subspace macro expansion
+            guard let macroExpansion = member.decl.as(MacroExpansionDeclSyntax.self),
+                  macroExpansion.macroName.text == "Subspace" else {
+                continue
+            }
+
+            // Extract the path template argument
+            guard let pathArg = macroExpansion.arguments.first,
+                  let stringLiteral = pathArg.expression.as(StringLiteralExprSyntax.self),
+                  let segment = stringLiteral.segments.first?.as(StringSegmentSyntax.self) else {
+                continue
+            }
+
+            let pathTemplate = segment.content.text
+
+            // Parse placeholders from the template
+            let placeholders = extractPlaceholders(from: pathTemplate)
+
+            return SubspaceMetadata(pathTemplate: pathTemplate, placeholders: placeholders)
+        }
+
+        return nil
+    }
+
+    /// Extracts placeholder names from a path template
+    /// Example: "accounts/{accountID}/users/{userID}" -> ["accountID", "userID"]
+    private static func extractPlaceholders(from template: String) -> [String] {
+        var placeholders: [String] = []
+        var currentPlaceholder = ""
+        var insidePlaceholder = false
+
+        for char in template {
+            if char == "{" {
+                insidePlaceholder = true
+                currentPlaceholder = ""
+            } else if char == "}" {
+                if insidePlaceholder && !currentPlaceholder.isEmpty {
+                    placeholders.append(currentPlaceholder)
+                }
+                insidePlaceholder = false
+                currentPlaceholder = ""
+            } else if insidePlaceholder {
+                currentPlaceholder.append(char)
+            }
+        }
+
+        return placeholders
+    }
 
     private static func extractFields(
         from members: MemberBlockItemListSyntax,
@@ -149,10 +237,104 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         """
     }
 
-    private static func generateRecordableExtension(
+    /// Generates store() methods based on #Subspace metadata
+    private static func generateStoreMethods(
         typeName: String,
         fields: [FieldInfo],
-        primaryKeyFields: [FieldInfo]
+        subspaceMetadata: SubspaceMetadata?
+    ) -> String {
+        var methods: [String] = []
+
+        // Always generate basic store(in:path:) method
+        methods.append("""
+
+            /// Creates a RecordStore for this type with a custom path
+            ///
+            /// - Parameters:
+            ///   - container: The RecordContainer
+            ///   - path: Custom subspace path (e.g., "users" or "accounts/acct-001/users")
+            /// - Returns: RecordStore configured with the specified path
+            public static func store(
+                in container: RecordContainer,
+                path: String
+            ) -> RecordStore<\(typeName)> {
+                return container.store(for: \(typeName).self, path: path)
+            }
+        """)
+
+        // Generate type-safe method if #Subspace metadata exists
+        if let metadata = subspaceMetadata {
+            if metadata.placeholders.isEmpty {
+                // Static path - no parameters
+                methods.append("""
+
+                /// Creates a RecordStore for this type using the defined subspace path
+                ///
+                /// Subspace path: "\(metadata.pathTemplate)"
+                ///
+                /// - Parameter container: The RecordContainer
+                /// - Returns: RecordStore configured with the subspace path
+                public static func store(
+                    in container: RecordContainer
+                ) -> RecordStore<\(typeName)> {
+                    return container.store(for: \(typeName).self, path: "\(metadata.pathTemplate)")
+                }
+                """)
+            } else {
+                // Dynamic path - generate parameters with field types
+                // Match placeholder names to field types
+                let parameters = metadata.placeholders.map { placeholder -> String in
+                    if let field = fields.first(where: { $0.name == placeholder }) {
+                        return "\(placeholder): \(field.type)"
+                    } else {
+                        // Fallback to String if field not found
+                        return "\(placeholder): String"
+                    }
+                }.joined(separator: ", ")
+
+                // Convert template to Swift string interpolation
+                var interpolatedPath = metadata.pathTemplate
+                for placeholder in metadata.placeholders {
+                    interpolatedPath = interpolatedPath.replacingOccurrences(
+                        of: "{\(placeholder)}",
+                        with: "\\(\(placeholder))"
+                    )
+                }
+
+                let paramDocs = metadata.placeholders.map {
+                    "    ///   - \($0): Path component value"
+                }.joined(separator: "\n")
+
+                methods.append("""
+
+                /// Creates a RecordStore for this type using the defined subspace path
+                ///
+                /// Subspace path template: "\(metadata.pathTemplate)"
+                ///
+                /// - Parameters:
+                ///   - container: The RecordContainer
+                \(paramDocs)
+                /// - Returns: RecordStore configured with the interpolated subspace path
+                public static func store(
+                    in container: RecordContainer,
+                    \(parameters)
+                ) -> RecordStore<\(typeName)> {
+                    let path = "\(interpolatedPath)"
+                    return container.store(for: \(typeName).self, path: path)
+                }
+                """)
+            }
+        }
+
+        return methods.joined(separator: "\n")
+    }
+
+    private static func generateRecordableExtension(
+        typeName: String,
+        recordTypeName: String,
+        fields: [FieldInfo],
+        primaryKeyFields: [FieldInfo],
+        subspaceMetadata: SubspaceMetadata?
     ) throws -> ExtensionDeclSyntax {
 
         let fieldNames = fields.map { "\"\($0.name)\"" }.joined(separator: ", ")
@@ -203,9 +385,12 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             return "self.\(field.name)"
         }.joined(separator: ", ")
 
+        // Generate store() methods based on #Subspace metadata
+        let storeMethods = generateStoreMethods(typeName: typeName, fields: fields, subspaceMetadata: subspaceMetadata)
+
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
-            public static var recordTypeName: String { "\(raw: typeName)" }
+            public static var recordTypeName: String { "\(raw: recordTypeName)" }
 
             public static var primaryKeyFields: [String] { [\(raw: primaryKeyNames)] }
 
@@ -377,6 +562,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             public func extractPrimaryKey() -> Tuple {
                 return Tuple([\(raw: primaryKeyExtraction)])
             }
+
+            \(raw: storeMethods)
         }
         """
 

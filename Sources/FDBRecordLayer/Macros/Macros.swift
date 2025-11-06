@@ -13,7 +13,16 @@ import Foundation
 ///     var email: String
 ///     var name: String
 /// }
+///
+/// // With custom record name:
+/// @Recordable(recordName: "UserRecord")
+/// struct User {
+///     @PrimaryKey var userID: Int64
+/// }
 /// ```
+///
+/// **Parameters**:
+/// - `recordName`: Optional custom name for the record type. Defaults to the struct name.
 ///
 /// **Generated Code**:
 /// - `Recordable` protocol conformance
@@ -21,8 +30,8 @@ import Foundation
 /// - Field extraction methods
 /// - Primary key extraction
 @attached(member, names: named(recordTypeName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName))
-@attached(extension, conformances: Recordable, names: named(recordTypeName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName))
-public macro Recordable() = #externalMacro(module: "FDBRecordLayerMacros", type: "RecordableMacro")
+@attached(extension, conformances: Recordable, names: named(recordTypeName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName), named(store))
+public macro Recordable(recordName: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "RecordableMacro")
 
 /// Marks a property as the primary key
 ///
@@ -140,6 +149,37 @@ public macro Unique<T>(_ keyPaths: [KeyPath<T, Any>], name: String? = nil) = #ex
 /// ```
 @freestanding(declaration, names: arbitrary)
 public macro FieldOrder<T>(_ keyPaths: [KeyPath<T, Any>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
+
+/// Defines a dynamic subspace path for multi-tenant or hierarchical data
+///
+/// Generates a static helper method that constructs RecordStore with the specified path.
+/// Use `{fieldName}` syntax to interpolate field values into the path.
+///
+/// **Usage**:
+/// ```swift
+/// @Recordable
+/// struct User {
+///     #Subspace<User>("accounts/{accountID}/users")
+///
+///     @PrimaryKey var userID: Int64
+///     var accountID: String
+///     var email: String
+/// }
+///
+/// // Generated method:
+/// // static func store(in container: RecordContainer, accountID: String) -> RecordStore<User>
+///
+/// // Usage:
+/// let userStore = User.store(in: container, accountID: "acct-001")
+/// // Path: "accounts/acct-001/users"
+/// ```
+///
+/// **Static paths** (no interpolation):
+/// ```swift
+/// #Subspace<GlobalConfig>("global/config")
+/// ```
+@freestanding(declaration, names: arbitrary)
+public macro Subspace<T>(_ pathTemplate: String) = #externalMacro(module: "FDBRecordLayerMacros", type: "SubspaceMacro")
 
 /// Defines a relationship to another record type
 ///

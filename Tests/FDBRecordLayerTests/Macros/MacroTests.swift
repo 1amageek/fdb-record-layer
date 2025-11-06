@@ -124,6 +124,46 @@ struct TestOptionalArrayFields {
     var optDoubleArray: [Double]?
 }
 
+/// Test type with static subspace
+@Recordable
+struct TestGlobalConfig {
+    #Subspace<TestGlobalConfig>("global/config")
+
+    @PrimaryKey var key: String
+    var value: String
+}
+
+/// Test type with single dynamic component
+@Recordable
+struct TestTenantConfig {
+    #Subspace<TestTenantConfig>("tenants/{tenantID}/config")
+
+    @PrimaryKey var key: String
+    var tenantID: String
+    var value: String
+}
+
+/// Test type with multiple dynamic components
+@Recordable
+struct TestMultiTenantUser {
+    #Subspace<TestMultiTenantUser>("accounts/{accountID}/users")
+
+    @PrimaryKey var userID: Int64
+    var accountID: String
+    var email: String
+}
+
+/// Test type with nested dynamic path
+@Recordable
+struct TestComment {
+    #Subspace<TestComment>("accounts/{accountID}/posts/{postID}/comments")
+
+    @PrimaryKey var commentID: Int64
+    var accountID: String
+    var postID: Int64
+    var text: String
+}
+
 // MARK: - Test Suite
 
 /// Test suite for macro-generated code
@@ -491,5 +531,64 @@ struct MacroTests {
         #expect(decoded.optStringArray == nil)
         #expect(decoded.optFloatArray == nil)
         #expect(decoded.optDoubleArray == nil)
+    }
+
+    // MARK: - Subspace Macro Tests
+
+    /// Test static subspace generation
+    @Test("#Subspace static path")
+    func testStaticSubspace() {
+        // Verify that TestGlobalConfig has a store(in:) method
+        // Note: This is a compile-time test - if it compiles, the macro worked
+
+        // The macro should generate (inside the struct):
+        // static func store(in container: RecordContainer) -> RecordStore<TestGlobalConfig>
+
+        // We can't actually test the runtime behavior without a RecordContainer,
+        // but we can verify the method signature exists by checking it compiles
+        let _: (RecordContainer) -> RecordStore<TestGlobalConfig> = TestGlobalConfig.store(in:)
+    }
+
+    /// Test single dynamic component
+    @Test("#Subspace single dynamic component")
+    func testSingleDynamicSubspace() {
+        // Verify that TestTenantConfig has a store(in:tenantID:) method
+
+        // The macro should generate (inside the struct):
+        // static func store(
+        //     in container: RecordContainer,
+        //     tenantID: String
+        // ) -> RecordStore<TestTenantConfig>
+
+        let _: (RecordContainer, String) -> RecordStore<TestTenantConfig> = TestTenantConfig.store(in:tenantID:)
+    }
+
+    /// Test multiple dynamic components
+    @Test("#Subspace multiple dynamic components")
+    func testMultipleDynamicSubspace() {
+        // Verify that TestMultiTenantUser has a store(in:accountID:) method
+
+        // The macro should generate (inside the struct):
+        // static func store(
+        //     in container: RecordContainer,
+        //     accountID: String
+        // ) -> RecordStore<TestMultiTenantUser>
+
+        let _: (RecordContainer, String) -> RecordStore<TestMultiTenantUser> = TestMultiTenantUser.store(in:accountID:)
+    }
+
+    /// Test nested dynamic path
+    @Test("#Subspace nested dynamic path")
+    func testNestedDynamicSubspace() {
+        // Verify that TestComment has a store(in:accountID:postID:) method
+
+        // The macro should generate (inside the struct):
+        // static func store(
+        //     in container: RecordContainer,
+        //     accountID: String,
+        //     postID: Int64
+        // ) -> RecordStore<TestComment>
+
+        let _: (RecordContainer, String, Int64) -> RecordStore<TestComment> = TestComment.store(in:accountID:postID:)
     }
 }
