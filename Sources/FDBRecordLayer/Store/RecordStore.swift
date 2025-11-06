@@ -2,35 +2,98 @@ import Foundation
 import FoundationDB
 import Logging
 
-/// Record store for managing multiple record types
+/// Record store for managing a specific record type
 ///
-/// RecordStore は複数のレコード型を管理できます。
-/// Recordableプロトコルに準拠した型を登録し、型安全なAPIで操作できます。
+/// RecordStore は単一のレコード型を管理します。
+/// 型パラメータによって、コンパイル時に型安全性を保証します。
 ///
-/// **使用例**:
+/// **基本的な使用例**:
 /// ```swift
 /// // RecordMetaDataに型を登録
 /// let metaData = RecordMetaData()
 /// try metaData.registerRecordType(User.self)
-/// try metaData.registerRecordType(Order.self)
 ///
-/// // RecordStoreを初期化
-/// let store = RecordStore(
+/// // 型付きRecordStoreを初期化
+/// let userStore = RecordStore<User>(
 ///     database: database,
 ///     subspace: subspace,
-///     metaData: metaData
+///     metaData: metaData,
+///     statisticsManager: statisticsManager
 /// )
 ///
-/// // 型安全な保存
-/// try await store.save(user)
-/// try await store.save(order)
+/// // 型安全な保存（型パラメータ不要）
+/// try await userStore.save(user)
 ///
-/// // 型安全な取得
-/// if let user = try await store.fetch(User.self, by: 1) {
+/// // 型安全な取得（User.self不要）
+/// if let user = try await userStore.fetch(by: 1) {
 ///     print(user.name)
 /// }
+///
+/// // 型安全なクエリ（User.self不要）
+/// let users = try await userStore.query()
+///     .where(\.name == "Alice")
+///     .execute()
 /// ```
-public final class RecordStore: Sendable {
+///
+/// **複合主キーの使用例**:
+///
+/// 複合主キーは複数のフィールドの組み合わせで一意性を保証します。
+/// 2つの方法でサポートされています：
+///
+/// 1. **Tuple型を使用する方法**:
+/// ```swift
+/// struct OrderItem: Recordable {
+///     // 複合主キー: (orderID, itemID)
+///     static var primaryKey: KeyPath<OrderItem, Tuple> = \.compositeKey
+///
+///     let orderID: String
+///     let itemID: String
+///     var quantity: Int
+///
+///     var compositeKey: Tuple {
+///         Tuple(orderID, itemID)
+///     }
+/// }
+///
+/// // 保存
+/// let item = OrderItem(orderID: "order-001", itemID: "item-456", quantity: 2)
+/// try await store.save(item)
+///
+/// // 取得: Tupleを使用
+/// let key = Tuple("order-001", "item-456")
+/// if let item = try await store.fetch(by: key) {
+///     print("Found: \(item.quantity)")
+/// }
+///
+/// // 削除: Tupleを使用
+/// try await store.delete(by: Tuple("order-001", "item-456"))
+/// ```
+///
+/// 2. **可変長引数を使用する方法（推奨）**:
+/// ```swift
+/// // 取得: 可変長引数（より簡潔）
+/// if let item = try await store.fetch(by: "order-001", "item-456") {
+///     print("Found: \(item.quantity)")
+/// }
+///
+/// // 削除: 可変長引数
+/// try await store.delete(by: "order-001", "item-456")
+///
+/// // トランザクション内でも使用可能
+/// try await store.transaction { transaction in
+///     if let item = try await transaction.fetch(by: "order-001", "item-456") {
+///         var updated = item
+///         updated.quantity += 1
+///         try await transaction.save(updated)
+///     }
+/// }
+/// ```
+///
+/// **重要な注意事項**:
+/// - 単一主キーと複合主キーで内部キー形式が統一されています
+/// - `fetchInternal`/`deleteInternal`は自動的にキーを正規化します
+/// - 可変長引数版は、単一キー・複合キーの両方に対応しています
+public final class RecordStore<Record: Recordable>: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
@@ -105,51 +168,130 @@ public final class RecordStore: Sendable {
     /// - Note: For testing or environments where statistics are not needed,
     ///         you can pass `NullStatisticsManager()` instead.
 
+    // MARK: - Internal Methods (shared by RecordStore and RecordTransaction)
+
+    /// 内部保存ロジック（RecordStoreとRecordTransactionで共有）
+    ///
+    /// - Parameters:
+    ///   - record: 保存するレコード
+    ///   - context: トランザクションコンテキスト
+    /// - Throws: RecordLayerError if save fails
+    internal func saveInternal(_ record: Record, context: RecordContext) async throws {
+        let recordAccess = GenericRecordAccess<Record>()
+        let bytes = try recordAccess.serialize(record)
+        let primaryKey = recordAccess.extractPrimaryKey(from: record)
+
+        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
+        // TODO: Phase 2a-3で#Subspace対応を追加
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+        let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
+
+        let tr = context.getTransaction()
+
+        // Load old record if it exists (for index updates)
+        let oldRecord: Record?
+        if let existingBytes = try await tr.getValue(for: key, snapshot: false) {
+            oldRecord = try recordAccess.deserialize(existingBytes)
+        } else {
+            oldRecord = nil
+        }
+
+        // Save the record
+        tr.setValue(bytes, for: key)
+
+        // Update indexes
+        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        try await indexManager.updateIndexes(
+            for: record,
+            primaryKey: primaryKey,
+            oldRecord: oldRecord,
+            context: context,
+            recordSubspace: recordSubspace
+        )
+    }
+
+    /// 内部取得ロジック（RecordStoreとRecordTransactionで共有）
+    ///
+    /// - Parameters:
+    ///   - primaryKey: プライマリキー値
+    ///   - context: トランザクションコンテキスト
+    /// - Returns: レコード（存在しない場合は nil）
+    /// - Throws: RecordLayerError if fetch fails
+    internal func fetchInternal(by primaryKey: any TupleElement, context: RecordContext) async throws -> Record? {
+        let recordAccess = GenericRecordAccess<Record>()
+
+        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+
+        // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
+        let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
+        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+
+        let tr = context.getTransaction()
+        guard let bytes = try await tr.getValue(for: key, snapshot: false) else {
+            return nil
+        }
+
+        return try recordAccess.deserialize(bytes)
+    }
+
+    /// 内部削除ロジック（RecordStoreとRecordTransactionで共有）
+    ///
+    /// - Parameters:
+    ///   - primaryKey: プライマリキー値
+    ///   - context: トランザクションコンテキスト
+    /// - Throws: RecordLayerError if delete fails
+    internal func deleteInternal(by primaryKey: any TupleElement, context: RecordContext) async throws {
+        let recordAccess = GenericRecordAccess<Record>()
+
+        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+
+        // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
+        let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
+        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+
+        let tr = context.getTransaction()
+
+        // Load the record before deletion (needed for index updates)
+        guard let existingBytes = try await tr.getValue(for: key, snapshot: false) else {
+            // Record doesn't exist, nothing to delete
+            return
+        }
+
+        // Deserialize the record
+        let record = try recordAccess.deserialize(existingBytes)
+
+        // Delete the record
+        tr.clear(key: key)
+
+        // Delete index entries
+        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        try await indexManager.deleteIndexes(
+            oldRecord: record,
+            primaryKey: keyTuple,
+            context: context,
+            recordSubspace: recordSubspace
+        )
+    }
+
     // MARK: - Save
 
     /// レコードを保存（型安全）
     ///
     /// - Parameter record: 保存するレコード
     /// - Throws: RecordLayerError if save fails
-    public func save<T: Recordable>(_ record: T) async throws {
+    public func save(_ record: Record) async throws {
         let start = DispatchTime.now()
 
         do {
-            let recordAccess = GenericRecordAccess<T>()
-            let bytes = try recordAccess.serialize(record)
-            let primaryKey = recordAccess.extractPrimaryKey(from: record)
-
-            // FDBに保存
+            // トランザクション作成
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            // レコードタイプごとのサブスペース: /R/<TypeName>/<PrimaryKey>
-            let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
-            let key = typeSubspace.subspace(primaryKey).pack(Tuple())
-
-            let tr = context.getTransaction()
-
-            // Load old record if it exists (for index updates)
-            let oldRecord: T?
-            if let existingBytes = try await tr.getValue(for: key, snapshot: false) {
-                oldRecord = try recordAccess.deserialize(existingBytes)
-            } else {
-                oldRecord = nil
-            }
-
-            // Save the record
-            tr.setValue(bytes, for: key)
-
-            // Update indexes
-            let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
-            try await indexManager.updateIndexes(
-                for: record,
-                primaryKey: primaryKey,
-                oldRecord: oldRecord,
-                context: context,
-                recordSubspace: recordSubspace
-            )
+            // 共通ロジックを使用
+            try await saveInternal(record, context: context)
 
             try await context.commit()
 
@@ -159,7 +301,7 @@ public final class RecordStore: Sendable {
 
             // Structured logging with record-type details
             logger.trace("Record saved", metadata: [
-                "recordType": "\(T.recordTypeName)",
+                "recordType": "\(Record.recordTypeName)",
                 "duration_ns": "\(duration)",
                 "operation": "save"
             ])
@@ -172,7 +314,7 @@ public final class RecordStore: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to save record", metadata: [
-                "recordType": "\(T.recordTypeName)",
+                "recordType": "\(Record.recordTypeName)",
                 "operation": "save",
                 "error": "\(error)"
             ])
@@ -185,55 +327,33 @@ public final class RecordStore: Sendable {
 
     /// プライマリキーでレコードを取得
     ///
-    /// - Parameters:
-    ///   - type: レコード型
-    ///   - primaryKey: プライマリキー値
+    /// - Parameter primaryKey: プライマリキー値
     /// - Returns: レコード（存在しない場合は nil）
     /// - Throws: RecordLayerError if fetch fails
-    public func fetch<T: Recordable>(
-        _ type: T.Type,
+    public func fetch(
         by primaryKey: any TupleElement
-    ) async throws -> T? {
+    ) async throws -> Record? {
         let start = DispatchTime.now()
 
         do {
-            let recordAccess = GenericRecordAccess<T>()
-
+            // トランザクション作成
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
-            let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
-
-            let tr = context.getTransaction()
-            guard let bytes = try await tr.getValue(for: key, snapshot: true) else {
-                // Record success metrics even for nil result
-                let duration = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
-                metricsRecorder.recordFetch(duration: duration)
-
-                // Structured logging
-                logger.trace("Record fetch (not found)", metadata: [
-                    "recordType": "\(T.recordTypeName)",
-                    "duration_ns": "\(duration)",
-                    "operation": "fetch",
-                    "found": "false"
-                ])
-                return nil
-            }
-
-            let result = try recordAccess.deserialize(bytes)
+            // 共通ロジックを使用
+            let result = try await fetchInternal(by: primaryKey, context: context)
 
             // Record success metrics
             let duration = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
             metricsRecorder.recordFetch(duration: duration)
 
             // Structured logging
-            logger.trace("Record fetched", metadata: [
-                "recordType": "\(T.recordTypeName)",
+            logger.trace("Record fetch completed", metadata: [
+                "recordType": "\(Record.recordTypeName)",
                 "duration_ns": "\(duration)",
                 "operation": "fetch",
-                "found": "true"
+                "found": "\(result != nil)"
             ])
 
             return result
@@ -246,7 +366,7 @@ public final class RecordStore: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to fetch record", metadata: [
-                "recordType": "\(T.recordTypeName)",
+                "recordType": "\(Record.recordTypeName)",
                 "operation": "fetch",
                 "error": "\(error)"
             ])
@@ -255,16 +375,44 @@ public final class RecordStore: Sendable {
         }
     }
 
+    /// 複合主キーでレコードを取得（可変長引数版）
+    ///
+    /// **使用例**:
+    /// ```swift
+    /// // 単一キー
+    /// let user = try await store.fetch(by: 123)
+    ///
+    /// // 複合キー（可変長引数）
+    /// let orderItem = try await store.fetch(by: "order-001", "item-456")
+    /// ```
+    ///
+    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Returns: レコード（存在しない場合は nil）
+    /// - Throws: RecordLayerError if fetch fails
+    public func fetch(
+        by keys: any TupleElement...
+    ) async throws -> Record? {
+        // Validate arguments
+        guard !keys.isEmpty else {
+            throw RecordLayerError.invalidArgument(
+                "fetch(by:) requires at least one key element"
+            )
+        }
+
+        // Convert variadic arguments to Tuple
+        let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
+        return try await fetch(by: primaryKey)
+    }
+
     // MARK: - Query
 
-    /// クエリビルダーを作成
+    /// クエリビルダーを作成（型パラメータ不要）
     ///
-    /// - Parameter type: レコード型
     /// - Returns: クエリビルダー
-    public func query<T: Recordable>(_ type: T.Type) -> QueryBuilder<T> {
+    public func query() -> QueryBuilder<Record> {
         return QueryBuilder(
             store: self,
-            recordType: type,
+            recordType: Record.self,
             metaData: metaData,
             database: database,
             subspace: subspace,
@@ -276,59 +424,21 @@ public final class RecordStore: Sendable {
 
     /// レコードを削除
     ///
-    /// - Parameters:
-    ///   - type: レコード型
-    ///   - primaryKey: プライマリキー値
+    /// - Parameter primaryKey: プライマリキー値
     /// - Throws: RecordLayerError if delete fails
-    public func delete<T: Recordable>(
-        _ type: T.Type,
+    public func delete(
         by primaryKey: any TupleElement
     ) async throws {
         let start = DispatchTime.now()
 
         do {
-            let recordAccess = GenericRecordAccess<T>()
-
+            // トランザクション作成
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            let typeSubspace = recordSubspace.subspace(Tuple([T.recordTypeName]))
-            let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
-
-            let tr = context.getTransaction()
-
-            // Load the record before deletion (needed for index updates)
-            guard let existingBytes = try await tr.getValue(for: key, snapshot: false) else {
-                // Record doesn't exist, nothing to delete
-                // Record success metrics even for no-op
-                let duration = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
-                metricsRecorder.recordDelete(duration: duration)
-
-                // Structured logging
-                logger.trace("Record delete (not found)", metadata: [
-                    "recordType": "\(T.recordTypeName)",
-                    "duration_ns": "\(duration)",
-                    "operation": "delete",
-                    "found": "false"
-                ])
-                return
-            }
-
-            // Deserialize the record
-            let record = try recordAccess.deserialize(existingBytes)
-
-            // Delete the record
-            tr.clear(key: key)
-
-            // Delete index entries
-            let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
-            try await indexManager.deleteIndexes(
-                oldRecord: record,
-                primaryKey: Tuple([primaryKey]),
-                context: context,
-                recordSubspace: recordSubspace
-            )
+            // 共通ロジックを使用
+            try await deleteInternal(by: primaryKey, context: context)
 
             try await context.commit()
 
@@ -337,8 +447,8 @@ public final class RecordStore: Sendable {
             metricsRecorder.recordDelete(duration: duration)
 
             // Structured logging
-            logger.trace("Record deleted", metadata: [
-                "recordType": "\(T.recordTypeName)",
+            logger.trace("Record delete completed", metadata: [
+                "recordType": "\(Record.recordTypeName)",
                 "duration_ns": "\(duration)",
                 "operation": "delete"
             ])
@@ -351,13 +461,41 @@ public final class RecordStore: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to delete record", metadata: [
-                "recordType": "\(T.recordTypeName)",
+                "recordType": "\(Record.recordTypeName)",
                 "operation": "delete",
                 "error": "\(error)"
             ])
 
             throw error
         }
+    }
+
+    /// 複合主キーでレコードを削除（可変長引数版）
+    ///
+    /// **使用例**:
+    /// ```swift
+    /// // 単一キー
+    /// try await store.delete(by: 123)
+    ///
+    /// // 複合キー（可変長引数）
+    /// try await store.delete(by: "order-001", "item-456")
+    /// ```
+    ///
+    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Throws: RecordLayerError if delete fails
+    public func delete(
+        by keys: any TupleElement...
+    ) async throws {
+        // Validate arguments
+        guard !keys.isEmpty else {
+            throw RecordLayerError.invalidArgument(
+                "delete(by:) requires at least one key element"
+            )
+        }
+
+        // Convert variadic arguments to Tuple
+        let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
+        try await delete(by: primaryKey)
     }
 
     // MARK: - Transaction
@@ -368,13 +506,13 @@ public final class RecordStore: Sendable {
     /// - Returns: ブロックの戻り値
     /// - Throws: ブロックがスローしたエラー
     public func transaction<T>(
-        _ block: (RecordTransaction) async throws -> T
+        _ block: (RecordTransaction<Record>) async throws -> T
     ) async throws -> T {
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
         defer { context.cancel() }
 
-        let recordTransaction = RecordTransaction(
+        let recordTransaction = RecordTransaction<Record>(
             store: self,
             context: context
         )
@@ -391,60 +529,96 @@ public final class RecordStore: Sendable {
 /// トランザクション内で使用するRecordStoreのラッパー
 ///
 /// トランザクション内でレコード操作を行うために使用します。
-public struct RecordTransaction {
-    private let store: RecordStore
+public struct RecordTransaction<Record: Recordable> {
+    private let store: RecordStore<Record>
     internal let context: RecordContext
 
-    internal init(store: RecordStore, context: RecordContext) {
+    internal init(store: RecordStore<Record>, context: RecordContext) {
         self.store = store
         self.context = context
     }
 
     /// レコードを保存
-    public func save<T: Recordable>(_ record: T) async throws {
-        let recordAccess = GenericRecordAccess<T>()
-        let bytes = try recordAccess.serialize(record)
-        let primaryKey = recordAccess.extractPrimaryKey(from: record)
-
-        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
-        let key = typeSubspace.subspace(primaryKey).pack(Tuple())
-
-        let tr = context.getTransaction()
-        tr.setValue(bytes, for: key)
-
-        // TODO: IndexManager integration
+    public func save(_ record: Record) async throws {
+        // 共通ロジックを使用
+        try await store.saveInternal(record, context: context)
     }
 
     /// レコードを取得
-    public func fetch<T: Recordable>(
-        _ type: T.Type,
+    public func fetch(
         by primaryKey: any TupleElement
-    ) async throws -> T? {
-        let recordAccess = GenericRecordAccess<T>()
+    ) async throws -> Record? {
+        // 共通ロジックを使用
+        return try await store.fetchInternal(by: primaryKey, context: context)
+    }
 
-        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
-        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
-
-        let tr = context.getTransaction()
-        guard let bytes = try await tr.getValue(for: key, snapshot: false) else {
-            return nil
+    /// 複合主キーでレコードを取得（可変長引数版）
+    ///
+    /// **使用例**:
+    /// ```swift
+    /// try await store.transaction { transaction in
+    ///     // 単一キー
+    ///     let user = try await transaction.fetch(by: 123)
+    ///
+    ///     // 複合キー（可変長引数）
+    ///     let orderItem = try await transaction.fetch(by: "order-001", "item-456")
+    /// }
+    /// ```
+    ///
+    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Returns: レコード（存在しない場合は nil）
+    /// - Throws: RecordLayerError if fetch fails
+    public func fetch(
+        by keys: any TupleElement...
+    ) async throws -> Record? {
+        // Validate arguments
+        guard !keys.isEmpty else {
+            throw RecordLayerError.invalidArgument(
+                "fetch(by:) requires at least one key element"
+            )
         }
 
-        return try recordAccess.deserialize(bytes)
+        // Convert variadic arguments to Tuple
+        let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
+        return try await fetch(by: primaryKey)
     }
 
     /// レコードを削除
-    public func delete<T: Recordable>(
-        _ type: T.Type,
+    public func delete(
         by primaryKey: any TupleElement
     ) async throws {
-        let typeSubspace = store.recordSubspace.subspace(Tuple([T.recordTypeName]))
-        let key = typeSubspace.subspace(Tuple([primaryKey])).pack(Tuple())
+        // 共通ロジックを使用
+        try await store.deleteInternal(by: primaryKey, context: context)
+    }
 
-        let tr = context.getTransaction()
-        tr.clear(key: key)
+    /// 複合主キーでレコードを削除（可変長引数版）
+    ///
+    /// **使用例**:
+    /// ```swift
+    /// try await store.transaction { transaction in
+    ///     // 単一キー
+    ///     try await transaction.delete(by: 123)
+    ///
+    ///     // 複合キー（可変長引数）
+    ///     try await transaction.delete(by: "order-001", "item-456")
+    /// }
+    /// ```
+    ///
+    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Throws: RecordLayerError if delete fails
+    public func delete(
+        by keys: any TupleElement...
+    ) async throws {
+        // Validate arguments
+        guard !keys.isEmpty else {
+            throw RecordLayerError.invalidArgument(
+                "delete(by:) requires at least one key element"
+            )
+        }
 
-        // TODO: IndexManager integration
+        // Convert variadic arguments to Tuple
+        let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
+        try await delete(by: primaryKey)
     }
 }
 

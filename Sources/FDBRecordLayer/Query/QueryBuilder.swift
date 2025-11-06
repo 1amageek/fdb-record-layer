@@ -8,20 +8,22 @@ import FoundationDB
 ///
 /// **使用例**:
 /// ```swift
+/// let userStore: RecordStore<User> = ...
+///
 /// // 単純な等価比較
-/// let users = try await store.query(User.self)
+/// let users = try await userStore.query()
 ///     .where(\.email, .equals, "alice@example.com")
 ///     .execute()
 ///
 /// // 複数条件
-/// let tokyoUsers = try await store.query(User.self)
+/// let tokyoUsers = try await userStore.query()
 ///     .where(\.country, .equals, "Japan")
 ///     .where(\.city, .equals, "Tokyo")
 ///     .limit(10)
 ///     .execute()
 /// ```
 public final class QueryBuilder<T: Recordable> {
-    private let store: RecordStore
+    private let store: RecordStore<T>
     private let recordType: T.Type
     private let metaData: RecordMetaData
     private let database: any DatabaseProtocol
@@ -31,7 +33,7 @@ public final class QueryBuilder<T: Recordable> {
     private var limitValue: Int?
 
     internal init(
-        store: RecordStore,
+        store: RecordStore<T>,
         recordType: T.Type,
         metaData: RecordMetaData,
         database: any DatabaseProtocol,
