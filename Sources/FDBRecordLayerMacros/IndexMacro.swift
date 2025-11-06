@@ -3,6 +3,7 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 import SwiftDiagnostics
+import Foundation
 
 /// Implementation of the #Index macro
 ///
@@ -35,13 +36,13 @@ public struct IndexMacro: DeclarationMacro {
     ) throws -> [DeclSyntax] {
 
         // #Index is a marker macro - it generates no code
-        // The @Recordable macro will detect this call and generate the IndexDefinition
+        // The @Recordable macro will detect the UNEXPANDED macro call (MacroExpansionDeclSyntax)
+        // and extract the KeyPath information directly from it
         //
-        // Why this works:
-        // - Freestanding macros expand DURING type declaration → circular reference with KeyPaths
-        // - Attached macros (@Recordable) expand AFTER type is complete → can use KeyPaths
-        // - @Recordable scans the struct body for #Index calls and extracts KeyPath information
-        // - @Recordable generates IndexDefinitions in the extension
+        // This works because:
+        // - @Recordable's expansion() receives the ORIGINAL syntax tree before other macros expand
+        // - It can see MacroExpansionDeclSyntax nodes for #Index/#Unique
+        // - It extracts arguments and generates IndexDefinition properties in the extension
 
         return []
     }

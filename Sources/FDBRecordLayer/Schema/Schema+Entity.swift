@@ -195,10 +195,20 @@ extension Schema {
             self.relationshipsByName = [:]
 
             // Indices & uniqueness constraints
-            // Future: Extract from @Index macro
-            // For now, empty (IndexManager will build from definitions)
-            self.indices = []
-            self.uniquenessConstraints = []
+            // Extract from type's indexDefinitions
+            var regularIndices: [[String]] = []
+            var uniqueConstraints: [[String]] = []
+
+            for indexDef in type.indexDefinitions {
+                if indexDef.unique {
+                    uniqueConstraints.append(indexDef.fields)
+                } else {
+                    regularIndices.append(indexDef.fields)
+                }
+            }
+
+            self.indices = regularIndices
+            self.uniquenessConstraints = uniqueConstraints
 
             // Inheritance (future implementation)
             self.superentity = nil

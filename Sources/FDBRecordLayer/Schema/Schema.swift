@@ -139,12 +139,11 @@ public final class Schema: Sendable {
         self.version = version
         self.encodingVersion = version
 
-        // Build entities directly from Recordable types
+        // Build entities
         var entities: [Entity] = []
         var entitiesByName: [String: Entity] = [:]
 
         for type in types {
-            // Create Entity directly from Recordable.Type (no RecordType wrapper)
             let entity = Entity(from: type)
             entities.append(entity)
             entitiesByName[entity.name] = entity
@@ -153,7 +152,7 @@ public final class Schema: Sendable {
         self.entities = entities
         self.entitiesByName = entitiesByName
 
-        // ✅ Collect indexes from types (macro-defined #Index/#Unique)
+        // Collect indexes from types
         var allIndexes: [Index] = []
 
         for type in types {

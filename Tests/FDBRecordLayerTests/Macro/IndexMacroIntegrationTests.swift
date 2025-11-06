@@ -106,7 +106,6 @@ struct IndexMacroIntegrationTests {
     func testIndexDefinitionProperties() {
         // Verify that @Recordable generated indexDefinitions from #Index and #Unique
         let indexDefs = IndexMacroUser.indexDefinitions
-
         // Find email unique index
         let userEmailIndex = indexDefs.first { $0.name == "IndexMacroUser_email_unique" }!
         #expect(userEmailIndex.name == "IndexMacroUser_email_unique")
