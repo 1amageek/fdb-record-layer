@@ -70,6 +70,14 @@ public final class RecordContext: Sendable {
         }
     }
 
+    /// Mark the context as closed without cancelling the transaction
+    ///
+    /// This is used when the transaction is managed externally (e.g., by withTransaction)
+    /// and we want to prevent the deinit from cancelling it.
+    internal func markClosed() {
+        isClosed.withLock { $0 = true }
+    }
+
     /// Get the underlying transaction
     ///
     /// - Returns: The wrapped transaction
@@ -105,6 +113,42 @@ public final class RecordContext: Sendable {
         _ = metadata.withLock { dict in
             dict.removeValue(forKey: key)
         }
+    }
+
+    // MARK: - Transaction Options
+
+    /// Set transaction timeout
+    ///
+    /// Sets a timeout in milliseconds which, when elapsed, will cause the transaction
+    /// automatically to be cancelled.
+    ///
+    /// - Parameter milliseconds: Timeout in milliseconds (0 = disable all timeouts)
+    /// - Throws: FDB errors if setting the option fails
+    public func setTimeout(milliseconds: Int) throws {
+        guard milliseconds >= 0 else {
+            throw RecordLayerError.invalidArgument("Timeout must be non-negative")
+        }
+
+        // Convert Int to Bytes (little-endian 64-bit integer)
+        var value = Int64(milliseconds)
+        let bytes = withUnsafeBytes(of: &value) { Array($0) }
+
+        try transaction.setOption(to: bytes, forOption: .timeout)
+    }
+
+    /// Disable read-your-writes isolation for this transaction
+    ///
+    /// Reads performed by this transaction will not see any prior mutations that occurred
+    /// in that transaction, instead seeing the value which was in the database at the
+    /// transaction's read version.
+    ///
+    /// This option may provide a small performance benefit and reduces memory usage for
+    /// transactions that read and write many keys.
+    ///
+    /// - Throws: FDB errors if setting the option fails
+    /// - Warning: Must be called before performing any reads or writes
+    public func disableReadYourWrites() throws {
+        try transaction.setOption(to: nil, forOption: .readYourWritesDisable)
     }
 
     // MARK: - Deinitialization

@@ -23,7 +23,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     private let recordType: RecordType
     private let index: Index
     private let recordAccess: any RecordAccess<Record>
-    private let serializer: any RecordSerializer<Record>
     private let indexStateManager: IndexStateManager
     private let rangeSetSubspace: Subspace
     private let logger: Logger
@@ -56,7 +55,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         recordType: RecordType,
         index: Index,
         recordAccess: any RecordAccess<Record>,
-        serializer: any RecordSerializer<Record>,
         indexStateManager: IndexStateManager,
         batchSize: Int = 1000,
         throttleDelayMs: UInt64 = 10,
@@ -68,7 +66,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         self.recordType = recordType
         self.index = index
         self.recordAccess = recordAccess
-        self.serializer = serializer
         self.indexStateManager = indexStateManager
         self.batchSize = batchSize
         self.throttleDelayMs = throttleDelayMs
@@ -286,7 +283,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
 
             for try await (key, value) in sequence {
                 // Deserialize record
-                let record = try self.serializer.deserialize(value)
+                let record = try self.recordAccess.deserialize(value)
 
                 // Extract primary key
                 let primaryKey = try recordSubspace.unpack(key)

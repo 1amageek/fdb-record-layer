@@ -19,6 +19,14 @@ let package = Package(
             from: "1.6.4"
         ),
         .package(
+            url: "https://github.com/apple/swift-metrics.git",
+            from: "2.5.0"
+        ),
+        .package(
+            url: "https://github.com/MrLotU/SwiftPrometheus.git",
+            from: "1.0.0"
+        ),
+        .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
             branch: "feature/versionstamp-subspace-support"
         ),
@@ -52,6 +60,8 @@ let package = Package(
             dependencies: [
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "SwiftPrometheus", package: "SwiftPrometheus"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Collections", package: "swift-collections"),
                 "FDBRecordLayerMacros",

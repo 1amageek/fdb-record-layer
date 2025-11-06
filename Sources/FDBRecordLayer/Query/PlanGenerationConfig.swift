@@ -54,20 +54,36 @@ public struct PlanGenerationConfig: Sendable {
     /// - Full scan threshold checks
     public let enableHeuristicPruning: Bool
 
+    /// Maximum number of values in IN predicate for IN join optimization
+    ///
+    /// When IN predicate has more values than this limit, falls back to full scan
+    /// with filter instead of using IN join plan.
+    ///
+    /// **Rationale**: Too many IN values leads to:
+    /// - Many index scans (one per value)
+    /// - Large deduplication set
+    /// - Worse performance than full scan
+    ///
+    /// Java Record Layer uses 100 as default, which is a good balance.
+    public let maxInValues: Int
+
     /// Initialize with custom configuration
     ///
     /// - Parameters:
     ///   - maxCandidatePlans: Maximum candidate plans (1-100)
     ///   - maxDNFBranches: Maximum DNF branches (1-50)
     ///   - enableHeuristicPruning: Enable heuristic pruning
+    ///   - maxInValues: Maximum IN values (2-1000, default: 100)
     public init(
         maxCandidatePlans: Int,
         maxDNFBranches: Int,
-        enableHeuristicPruning: Bool
+        enableHeuristicPruning: Bool,
+        maxInValues: Int = 100
     ) {
         self.maxCandidatePlans = max(1, min(100, maxCandidatePlans))
         self.maxDNFBranches = max(1, min(50, maxDNFBranches))
         self.enableHeuristicPruning = enableHeuristicPruning
+        self.maxInValues = max(2, min(1000, maxInValues))
     }
 
     // MARK: - Presets
@@ -80,10 +96,12 @@ public struct PlanGenerationConfig: Sendable {
     /// - Max candidates: 20
     /// - Max DNF branches: 10
     /// - Heuristic pruning: enabled
+    /// - Max IN values: 100
     public static let `default` = PlanGenerationConfig(
         maxCandidatePlans: 20,
         maxDNFBranches: 10,
-        enableHeuristicPruning: true
+        enableHeuristicPruning: true,
+        maxInValues: 100
     )
 
     /// Aggressive configuration
@@ -94,10 +112,12 @@ public struct PlanGenerationConfig: Sendable {
     /// - Max candidates: 50
     /// - Max DNF branches: 20
     /// - Heuristic pruning: enabled
+    /// - Max IN values: 200 (allow more IN values)
     public static let aggressive = PlanGenerationConfig(
         maxCandidatePlans: 50,
         maxDNFBranches: 20,
-        enableHeuristicPruning: true
+        enableHeuristicPruning: true,
+        maxInValues: 200
     )
 
     /// Conservative configuration
@@ -108,10 +128,12 @@ public struct PlanGenerationConfig: Sendable {
     /// - Max candidates: 10
     /// - Max DNF branches: 5
     /// - Heuristic pruning: enabled
+    /// - Max IN values: 50 (stricter limit)
     public static let conservative = PlanGenerationConfig(
         maxCandidatePlans: 10,
         maxDNFBranches: 5,
-        enableHeuristicPruning: true
+        enableHeuristicPruning: true,
+        maxInValues: 50
     )
 
     /// Minimal configuration (fastest planning)
@@ -122,10 +144,12 @@ public struct PlanGenerationConfig: Sendable {
     /// - Max candidates: 5
     /// - Max DNF branches: 3
     /// - Heuristic pruning: enabled
+    /// - Max IN values: 20 (strict limit)
     public static let minimal = PlanGenerationConfig(
         maxCandidatePlans: 5,
         maxDNFBranches: 3,
-        enableHeuristicPruning: true
+        enableHeuristicPruning: true,
+        maxInValues: 20
     )
 
     /// Exhaustive configuration (slowest planning, best plans)
@@ -136,9 +160,11 @@ public struct PlanGenerationConfig: Sendable {
     /// - Max candidates: 100
     /// - Max DNF branches: 50
     /// - Heuristic pruning: disabled (explore all)
+    /// - Max IN values: 500 (very high limit)
     public static let exhaustive = PlanGenerationConfig(
         maxCandidatePlans: 100,
         maxDNFBranches: 50,
-        enableHeuristicPruning: false
+        enableHeuristicPruning: false,
+        maxInValues: 500
     )
 }

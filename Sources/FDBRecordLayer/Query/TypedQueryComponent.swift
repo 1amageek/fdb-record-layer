@@ -64,70 +64,22 @@ public struct TypedFieldQueryComponent<Record: Sendable>: TypedQueryComponent {
 
         switch comparison {
         case .equals:
-            return areEqual(fieldValue, value)
+            return TupleComparison.areEqual(fieldValue, value)
         case .notEquals:
-            return !areEqual(fieldValue, value)
+            return !TupleComparison.areEqual(fieldValue, value)
         case .lessThan:
-            return compareLessThan(fieldValue, value)
+            return TupleComparison.isLessThan(fieldValue, value)
         case .lessThanOrEquals:
-            return compareLessThan(fieldValue, value) || areEqual(fieldValue, value)
+            return TupleComparison.isLessThan(fieldValue, value) || TupleComparison.areEqual(fieldValue, value)
         case .greaterThan:
-            return !compareLessThan(fieldValue, value) && !areEqual(fieldValue, value)
+            return !TupleComparison.isLessThan(fieldValue, value) && !TupleComparison.areEqual(fieldValue, value)
         case .greaterThanOrEquals:
-            return !compareLessThan(fieldValue, value)
+            return !TupleComparison.isLessThan(fieldValue, value)
         case .startsWith:
-            return checkStartsWith(fieldValue, value)
+            return TupleComparison.startsWith(fieldValue, value)
         case .contains:
-            return checkContains(fieldValue, value)
+            return TupleComparison.contains(fieldValue, value)
         }
-    }
-
-    // MARK: - Private Helpers
-
-    private func areEqual(_ lhs: any TupleElement, _ rhs: any TupleElement) -> Bool {
-        if let lhsStr = lhs as? String, let rhsStr = rhs as? String {
-            return lhsStr == rhsStr
-        } else if let lhsInt = lhs as? Int64, let rhsInt = rhs as? Int64 {
-            return lhsInt == rhsInt
-        } else if let lhsInt = lhs as? Int, let rhsInt = rhs as? Int64 {
-            return Int64(lhsInt) == rhsInt
-        } else if let lhsBool = lhs as? Bool, let rhsBool = rhs as? Bool {
-            return lhsBool == rhsBool
-        } else if let lhsDouble = lhs as? Double, let rhsDouble = rhs as? Double {
-            return lhsDouble == rhsDouble
-        } else if let lhsFloat = lhs as? Float, let rhsFloat = rhs as? Float {
-            return lhsFloat == rhsFloat
-        }
-        return false
-    }
-
-    private func compareLessThan(_ lhs: any TupleElement, _ rhs: any TupleElement) -> Bool {
-        if let lhsStr = lhs as? String, let rhsStr = rhs as? String {
-            return lhsStr < rhsStr
-        } else if let lhsInt = lhs as? Int64, let rhsInt = rhs as? Int64 {
-            return lhsInt < rhsInt
-        } else if let lhsInt = lhs as? Int, let rhsInt = rhs as? Int64 {
-            return Int64(lhsInt) < rhsInt
-        } else if let lhsDouble = lhs as? Double, let rhsDouble = rhs as? Double {
-            return lhsDouble < rhsDouble
-        } else if let lhsFloat = lhs as? Float, let rhsFloat = rhs as? Float {
-            return lhsFloat < rhsFloat
-        }
-        return false
-    }
-
-    private func checkStartsWith(_ lhs: any TupleElement, _ rhs: any TupleElement) -> Bool {
-        if let lhsStr = lhs as? String, let rhsStr = rhs as? String {
-            return lhsStr.hasPrefix(rhsStr)
-        }
-        return false
-    }
-
-    private func checkContains(_ lhs: any TupleElement, _ rhs: any TupleElement) -> Bool {
-        if let lhsStr = lhs as? String, let rhsStr = rhs as? String {
-            return lhsStr.contains(rhsStr)
-        }
-        return false
     }
 }
 
@@ -206,5 +158,64 @@ extension TypedFieldQueryComponent {
     /// Create a greater than comparison
     public static func greaterThan(_ fieldName: String, _ value: any TupleElement) -> TypedFieldQueryComponent<Record> {
         return TypedFieldQueryComponent(fieldName: fieldName, comparison: .greaterThan, value: value)
+    }
+}
+
+// MARK: - IN Component
+
+/// IN component (field value in set)
+///
+/// Represents: field IN (value1, value2, value3, ...)
+///
+/// **Usage**:
+/// ```swift
+/// // age IN (20, 25, 30, 35)
+/// let filter = TypedInQueryComponent<User>(
+///     fieldName: "age",
+///     values: [Int64(20), Int64(25), Int64(30), Int64(35)]
+/// )
+///
+/// // Or using the convenience method
+/// let filter = TypedInQueryComponent<User>.in("age", [20, 25, 30, 35])
+/// ```
+public struct TypedInQueryComponent<Record: Sendable>: TypedQueryComponent {
+    public let fieldName: String
+    public let values: [any TupleElement]
+
+    public init(fieldName: String, values: [any TupleElement]) {
+        self.fieldName = fieldName
+        self.values = values
+    }
+
+    public func matches(
+        record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        let fieldValues = try recordAccess.extractField(from: record, fieldName: fieldName)
+
+        // For repeated/multi-valued fields, check if ANY extracted value is in the IN set
+        // Example: tags IN ("swift", "fdb") → true if tags contains "swift" OR "fdb"
+        for fieldValue in fieldValues {
+            // Check if this field value matches any of the IN values
+            for inValue in values {
+                if TupleComparison.areEqual(fieldValue, inValue) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+}
+
+extension TypedInQueryComponent {
+    /// Create an IN comparison
+    ///
+    /// - Parameters:
+    ///   - fieldName: The field to check
+    ///   - values: The values to match against
+    /// - Returns: TypedInQueryComponent
+    public static func `in`(_ fieldName: String, _ values: [any TupleElement]) -> TypedInQueryComponent<Record> {
+        return TypedInQueryComponent(fieldName: fieldName, values: values)
     }
 }

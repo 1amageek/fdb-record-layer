@@ -88,6 +88,7 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
     private let transaction: any TransactionProtocol
     private let filter: (any TypedQueryComponent<Record>)?
     private let primaryKeyLength: Int
+    private let snapshot: Bool
 
     init(
         indexSequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>,
@@ -95,7 +96,8 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol,
         filter: (any TypedQueryComponent<Record>)?,
-        primaryKeyLength: Int
+        primaryKeyLength: Int,
+        snapshot: Bool
     ) {
         self.indexSequence = indexSequence
         self.recordSubspace = recordSubspace
@@ -103,6 +105,7 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
         self.transaction = transaction
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
+        self.snapshot = snapshot
     }
 
     public struct AsyncIterator: AsyncIteratorProtocol {
@@ -112,6 +115,7 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
         let transaction: any TransactionProtocol
         let filter: (any TypedQueryComponent<Record>)?
         let primaryKeyLength: Int
+        let snapshot: Bool
 
         public mutating func next() async throws -> Record? {
             while true {
@@ -137,7 +141,7 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
 
                 // Fetch the actual record
                 let recordKey = recordSubspace.pack(primaryKeyTuple)
-                guard let recordBytes = try await transaction.getValue(for: recordKey) else {
+                guard let recordBytes = try await transaction.getValue(for: recordKey, snapshot: snapshot) else {
                     continue
                 }
 
@@ -163,7 +167,8 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
             recordAccess: recordAccess,
             transaction: transaction,
             filter: filter,
-            primaryKeyLength: primaryKeyLength
+            primaryKeyLength: primaryKeyLength,
+            snapshot: snapshot
         )
     }
 }
@@ -204,6 +209,59 @@ public struct LimitedTypedCursor<C: TypedRecordCursor>: TypedRecordCursor {
         return AsyncIterator(
             sourceIterator: source.makeAsyncIterator(),
             limit: limit
+        )
+    }
+}
+
+// MARK: - Filtered Cursor
+
+/// Cursor that applies filtering to source records
+///
+/// FilteredTypedCursor wraps another cursor and applies a filter predicate
+/// to each record, only returning records that match the filter.
+public struct FilteredTypedCursor<C: TypedRecordCursor>: TypedRecordCursor {
+    public typealias Record = C.Record
+    public typealias Element = C.Record
+
+    private let source: C
+    private let filter: any TypedQueryComponent<C.Record>
+    private let recordAccess: any RecordAccess<C.Record>
+
+    init(
+        source: C,
+        filter: any TypedQueryComponent<C.Record>,
+        recordAccess: any RecordAccess<C.Record>
+    ) {
+        self.source = source
+        self.filter = filter
+        self.recordAccess = recordAccess
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var sourceIterator: C.AsyncIterator
+        let filter: any TypedQueryComponent<C.Record>
+        let recordAccess: any RecordAccess<C.Record>
+
+        public mutating func next() async throws -> C.Record? {
+            while true {
+                guard let record = try await sourceIterator.next() else {
+                    return nil
+                }
+
+                // Apply filter
+                if try filter.matches(record: record, recordAccess: recordAccess) {
+                    return record
+                }
+                // If doesn't match, continue to next record
+            }
+        }
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        return AsyncIterator(
+            sourceIterator: source.makeAsyncIterator(),
+            filter: filter,
+            recordAccess: recordAccess
         )
     }
 }

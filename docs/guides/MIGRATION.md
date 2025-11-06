@@ -139,11 +139,10 @@ let rdfStore = try await RDFStore(
 )
 
 // Record Layer (After)
-let recordStore = RecordStore<RecordTypeUnion>(
+let recordStore = RecordStore(
     database: database,
     subspace: Subspace(rootPrefix: "my-app"),
-    metaData: metaData,
-    serializer: ProtobufRecordSerializer<RecordTypeUnion>()
+    metaData: metaData
 )
 ```
 

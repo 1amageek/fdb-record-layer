@@ -105,6 +105,65 @@ extension RecordLayerError {
     public static func invalidIndexingPolicy(_ message: String) -> RecordLayerError {
         return .internalError("Invalid indexing policy: \(message)")
     }
+
+    /// スクラバーのリトライが上限に達した
+    ///
+    /// - Parameters:
+    ///   - phase: 失敗したフェーズ（"Phase 1", "Phase 2"）
+    ///   - operation: 失敗した操作（"scrubIndexEntriesBatch", "scrubRecordsBatch"）
+    ///   - keyRange: 処理中のキー範囲
+    ///   - attempts: 試行回数
+    ///   - lastError: 最後のエラー
+    ///   - recommendation: 推奨される対処方法
+    public static func scrubberRetryExhausted(
+        phase: String,
+        operation: String,
+        keyRange: String,
+        attempts: Int,
+        lastError: Error,
+        recommendation: String
+    ) -> RecordLayerError {
+        let message = """
+            ❌ Scrubber retry exhausted during \(phase)
+
+            📍 Operation: \(operation)
+            📍 Key Range: \(keyRange)
+            📍 Attempts: \(attempts)
+            📍 Last Error: \(lastError)
+
+            💡 Recommendation:
+            \(recommendation)
+            """
+        return .internalError(message)
+    }
+
+    /// キースキップ処理が失敗した
+    ///
+    /// - Parameters:
+    ///   - key: スキップしようとしたキー
+    ///   - reason: 失敗理由
+    ///   - attempts: 試行回数
+    public static func scrubberSkipFailed(
+        key: String,
+        reason: Error,
+        attempts: Int
+    ) -> RecordLayerError {
+        let message = """
+            ❌ Failed to skip problematic key after \(attempts) attempts
+
+            📍 Key: \(key)
+            📍 Reason: \(reason)
+
+            💡 Recommendation:
+            This key is blocking progress. Consider:
+            1. Increase 'maxRetries' in ScrubberConfiguration
+            2. Manually inspect and remove this key
+            3. Check FoundationDB cluster health
+
+            ⚠️  The scrubber cannot proceed past this key until it is resolved.
+            """
+        return .internalError(message)
+    }
 }
 
 // MARK: - Keyspace Identifiers

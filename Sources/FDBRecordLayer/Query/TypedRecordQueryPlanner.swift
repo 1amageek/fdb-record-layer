@@ -305,11 +305,26 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         var indexPlans: [any TypedQueryPlan<Record>] = []
 
+        // Try to generate IN join plan if filter is an IN predicate
+        if let inPlan = try generateInJoinPlan(filter: filter) {
+            indexPlans.append(inPlan)
+        }
+
         let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
 
         for index in applicableIndexes {
-            if let plan = try matchFilterWithIndex(filter: filter, index: index) {
-                indexPlans.append(plan)
+            if let matchResult = try matchFilterWithIndex(filter: filter, index: index) {
+                // Wrap with TypedFilterPlan if there are remaining predicates
+                let finalPlan: any TypedQueryPlan<Record>
+                if let remainingFilter = matchResult.remainingFilter {
+                    finalPlan = TypedFilterPlan(
+                        child: matchResult.plan,
+                        filter: remainingFilter
+                    )
+                } else {
+                    finalPlan = matchResult.plan
+                }
+                indexPlans.append(finalPlan)
             }
         }
 
@@ -382,8 +397,16 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
 
         for index in applicableIndexes {
-            if let plan = try matchFilterWithIndex(filter: branch, index: index) {
-                return plan
+            if let matchResult = try matchFilterWithIndex(filter: branch, index: index) {
+                // Wrap with TypedFilterPlan if there are remaining predicates
+                if let remainingFilter = matchResult.remainingFilter {
+                    return TypedFilterPlan(
+                        child: matchResult.plan,
+                        filter: remainingFilter
+                    )
+                } else {
+                    return matchResult.plan
+                }
             }
         }
 
@@ -397,14 +420,52 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     }
 
     /// Generate intersection plan for AND filter
+    ///
+    /// Strategy:
+    /// 1. First, try to match the entire AND filter with compound indexes
+    /// 2. If partial match with simple remaining predicates, return single index + filter plan
+    /// 3. Otherwise, fall back to single-field matching and create intersection plan
     private func generateIntersectionPlan(
         _ andFilter: TypedAndQueryComponent<Record>
     ) async throws -> (any TypedQueryPlan<Record>)? {
-        // Extract field filters
+        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+
+        // Phase 1: Try to match entire AND filter with compound indexes
+        // This maximizes compound index utilization
+        for index in applicableIndexes {
+            if let matchResult = try matchFilterWithIndex(filter: andFilter, index: index) {
+                // Check if we have a partial match with remaining predicates
+                if let remainingFilter = matchResult.remainingFilter {
+                    // Count how many field filters remain
+                    let remainingFieldCount = countFieldFilters(in: remainingFilter)
+
+                    // If only 0-1 field filters remain, use single index + filter plan
+                    // This is better than creating an intersection plan
+                    if remainingFieldCount < 2 {
+                        return TypedFilterPlan(
+                            child: matchResult.plan,
+                            filter: remainingFilter
+                        )
+                    }
+                    // Otherwise, continue to try other compound indexes or fall back
+                } else {
+                    // Complete match: return the index plan directly
+                    return matchResult.plan
+                }
+            }
+        }
+
+        // Phase 2: Fall back to single-field matching for intersection plan
+        // Separate field filters from other complex predicates
         var fieldFilters: [TypedFieldQueryComponent<Record>] = []
+        var nonFieldPredicates: [any TypedQueryComponent<Record>] = []
+
         for child in andFilter.children {
             if let fieldFilter = child as? TypedFieldQueryComponent<Record> {
                 fieldFilters.append(fieldFilter)
+            } else {
+                // Collect non-field predicates (NOT, nested AND/OR) for post-filtering
+                nonFieldPredicates.append(child)
             }
         }
 
@@ -415,55 +476,115 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         // Try to find index for each field filter
         var childPlans: [any TypedQueryPlan<Record>] = []
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        var unmatchedFieldFilters: [TypedFieldQueryComponent<Record>] = []
 
         for fieldFilter in fieldFilters {
             // Find matching index
             var found = false
             for index in applicableIndexes {
-                if let plan = try matchFilterWithIndex(filter: fieldFilter, index: index) {
-                    childPlans.append(plan)
+                if let matchResult = try matchFilterWithIndex(filter: fieldFilter, index: index) {
+                    childPlans.append(matchResult.plan)
+
+                    // If the match has remaining predicates, add them to non-field predicates
+                    if let remainingFilter = matchResult.remainingFilter {
+                        nonFieldPredicates.append(remainingFilter)
+                    }
+
                     found = true
                     break
                 }
             }
 
             if !found {
-                // Cannot find index for this field, abort intersection
-                return nil
+                // Cannot find index for this field, add to unmatched
+                unmatchedFieldFilters.append(fieldFilter)
             }
         }
 
         // Create intersection plan if we have at least 2 indexes
-        if childPlans.count >= 2 {
-            // Get primary key expression from record type
-            do {
-                let recordType = try metaData.getRecordType(recordTypeName)
-                return TypedIntersectionPlan(childPlans: childPlans, primaryKeyExpression: recordType.primaryKey)
-            } catch {
-                logger.warning("Record type not found", metadata: ["recordType": "\(recordTypeName)"])
-                return nil
-            }
+        guard childPlans.count >= 2 else {
+            return nil
         }
 
-        return nil
+        // Get primary key expression from record type
+        let recordType: RecordType
+        do {
+            recordType = try metaData.getRecordType(recordTypeName)
+        } catch {
+            logger.warning("Record type not found", metadata: ["recordType": "\(recordTypeName)"])
+            return nil
+        }
+
+        let intersectionPlan = TypedIntersectionPlan(
+            childPlans: childPlans,
+            primaryKeyExpression: recordType.primaryKey
+        )
+
+        // Combine all remaining predicates (non-field predicates + unmatched field filters)
+        var allRemainingPredicates: [any TypedQueryComponent<Record>] = nonFieldPredicates
+        allRemainingPredicates.append(contentsOf: unmatchedFieldFilters)
+
+        // Wrap with TypedFilterPlan if there are remaining predicates
+        if !allRemainingPredicates.isEmpty {
+            let remainingFilter: any TypedQueryComponent<Record> = {
+                if allRemainingPredicates.count == 1 {
+                    return allRemainingPredicates[0]
+                } else {
+                    return TypedAndQueryComponent(children: allRemainingPredicates)
+                }
+            }()
+
+            return TypedFilterPlan(
+                child: intersectionPlan,
+                filter: remainingFilter
+            )
+        }
+
+        return intersectionPlan
+    }
+
+    /// Count the number of field filters in a query component
+    private func countFieldFilters(in component: any TypedQueryComponent<Record>) -> Int {
+        if component is TypedFieldQueryComponent<Record> {
+            return 1
+        } else if let andComponent = component as? TypedAndQueryComponent<Record> {
+            return andComponent.children.reduce(0) { count, child in
+                count + countFieldFilters(in: child)
+            }
+        } else if let orComponent = component as? TypedOrQueryComponent<Record> {
+            return orComponent.children.reduce(0) { count, child in
+                count + countFieldFilters(in: child)
+            }
+        } else if let notComponent = component as? TypedNotQueryComponent<Record> {
+            return countFieldFilters(in: notComponent.child)
+        }
+        return 0
     }
 
     // MARK: - Index Matching
 
+    /// Result of matching a filter with an index
+    ///
+    /// Contains the generated plan and any remaining predicates that were not satisfied by the index.
+    private struct IndexMatchResult {
+        let plan: any TypedQueryPlan<Record>
+        let remainingFilter: (any TypedQueryComponent<Record>)?
+    }
+
     /// Try to match a filter with a specific index
     ///
     /// Supports both simple and compound indexes with prefix matching.
+    /// Returns both the index scan plan and any predicates that were not satisfied by the index.
     ///
     /// - Parameters:
     ///   - filter: The query filter
     ///   - index: The index to match against
-    /// - Returns: Index scan plan if filter matches index, nil otherwise
+    /// - Returns: IndexMatchResult containing plan and remaining predicates, or nil if no match
     /// - Throws: RecordLayerError if matching fails
     private func matchFilterWithIndex(
         filter: any TypedQueryComponent<Record>,
         index: Index
-    ) throws -> (any TypedQueryPlan<Record>)? {
+    ) throws -> IndexMatchResult? {
         // Try simple field filter first
         if let fieldFilter = filter as? TypedFieldQueryComponent<Record> {
             return try matchSimpleFilter(fieldFilter: fieldFilter, index: index)
@@ -482,7 +603,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     private func matchSimpleFilter(
         fieldFilter: TypedFieldQueryComponent<Record>,
         index: Index
-    ) throws -> (any TypedQueryPlan<Record>)? {
+    ) throws -> IndexMatchResult? {
         // Check if index is on the same field (simple index)
         if let fieldExpr = index.rootExpression as? FieldKeyExpression {
             guard fieldExpr.fieldName == fieldFilter.fieldName else {
@@ -496,14 +617,17 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
             let primaryKeyLength = getPrimaryKeyLength()
 
-            return TypedIndexScanPlan(
+            let plan = TypedIndexScanPlan<Record>(
                 indexName: index.name,
                 indexSubspaceTupleKey: index.subspaceTupleKey,
                 beginValues: beginValues,
                 endValues: endValues,
-                filter: fieldFilter,
+                filter: nil,  // Filter handled by index
                 primaryKeyLength: primaryKeyLength
             )
+
+            // No remaining filter - fully matched by index
+            return IndexMatchResult(plan: plan, remainingFilter: nil)
         }
 
         // Check if index is compound and first field matches
@@ -520,14 +644,17 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
             let primaryKeyLength = getPrimaryKeyLength()
 
-            return TypedIndexScanPlan(
+            let plan = TypedIndexScanPlan<Record>(
                 indexName: index.name,
                 indexSubspaceTupleKey: index.subspaceTupleKey,
                 beginValues: beginValues,
                 endValues: endValues,
-                filter: fieldFilter,
+                filter: nil,  // Filter handled by index
                 primaryKeyLength: primaryKeyLength
             )
+
+            // No remaining filter - fully matched by index
+            return IndexMatchResult(plan: plan, remainingFilter: nil)
         }
 
         return nil
@@ -537,20 +664,22 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     private func matchCompoundFilter(
         andFilter: TypedAndQueryComponent<Record>,
         index: Index
-    ) throws -> (any TypedQueryPlan<Record>)? {
+    ) throws -> IndexMatchResult? {
         // Only compound indexes can match AND filters
         guard let concatExpr = index.rootExpression as? ConcatenateKeyExpression else {
             return nil
         }
 
-        // Extract field filters from AND children
+        // Separate field filters from other complex predicates
         var fieldFilters: [TypedFieldQueryComponent<Record>] = []
+        var nonFieldPredicates: [any TypedQueryComponent<Record>] = []
+
         for child in andFilter.children {
             if let fieldFilter = child as? TypedFieldQueryComponent<Record> {
                 fieldFilters.append(fieldFilter)
             } else {
-                // Complex child (nested AND/OR) not supported for compound matching
-                return nil
+                // Collect non-field predicates (NOT, nested AND/OR) for post-filtering
+                nonFieldPredicates.append(child)
             }
         }
 
@@ -625,21 +754,31 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             }
         }
 
-        // Create combined filter for unmatched fields
-        let combinedFilter: (any TypedQueryComponent<Record>)? = unmatchedFilters.isEmpty ? nil :
-            (unmatchedFilters.count == 1 ? unmatchedFilters[0] :
-                TypedAndQueryComponent(children: unmatchedFilters))
+        // Combine unmatched field filters with non-field predicates for post-filtering
+        var allRemainingPredicates = unmatchedFilters + nonFieldPredicates
+
+        let remainingFilter: (any TypedQueryComponent<Record>)? = {
+            if allRemainingPredicates.isEmpty {
+                return nil
+            } else if allRemainingPredicates.count == 1 {
+                return allRemainingPredicates[0]
+            } else {
+                return TypedAndQueryComponent(children: allRemainingPredicates)
+            }
+        }()
 
         let primaryKeyLength = getPrimaryKeyLength()
 
-        return TypedIndexScanPlan(
+        let plan = TypedIndexScanPlan<Record>(
             indexName: index.name,
             indexSubspaceTupleKey: index.subspaceTupleKey,
             beginValues: beginValues,
             endValues: endValues,
-            filter: combinedFilter,
+            filter: nil,  // Filter handled by remainingFilter
             primaryKeyLength: primaryKeyLength
         )
+
+        return IndexMatchResult(plan: plan, remainingFilter: remainingFilter)
     }
 
     /// Generate key range for a field filter
@@ -788,6 +927,84 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         return nil
     }
 
+    /// Generate IN join plan if applicable
+    ///
+    /// If filter is an IN predicate on a field with an index, return a TypedInJoinPlan.
+    /// This executes multiple index scans (one per IN value) and unions the results.
+    ///
+    /// **Supported index types**:
+    /// - Simple field index: `field`
+    /// - Compound index prefix match: `(field, other_field, ...)` where field is the first component
+    ///
+    /// **Value count constraints**:
+    /// - Minimum: 2 values (single value uses regular index scan)
+    /// - Maximum: config.maxInValues (default: 100)
+    /// - Exceeding max falls back to full scan with filter
+    ///
+    /// - Parameter filter: The query filter
+    /// - Returns: IN join plan if found, nil otherwise
+    /// - Throws: RecordLayerError if matching fails
+    private func generateInJoinPlan(
+        filter: any TypedQueryComponent<Record>
+    ) throws -> (any TypedQueryPlan<Record>)? {
+        // Check if filter is an IN predicate
+        guard let inFilter = filter as? TypedInQueryComponent<Record> else {
+            return nil
+        }
+
+        // Need at least 2 values to make IN join worthwhile
+        guard inFilter.values.count >= 2 else {
+            return nil
+        }
+
+        // Check max IN values limit (too many values → full scan is better)
+        guard inFilter.values.count <= config.maxInValues else {
+            logger.debug("IN predicate has too many values, falling back to full scan", metadata: [
+                "valueCount": "\(inFilter.values.count)",
+                "maxInValues": "\(config.maxInValues)",
+                "recommendation": "Consider using config.aggressive for higher limit, or refactor query"
+            ])
+            return nil
+        }
+
+        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+
+        // Find an index on the IN field (simple or compound with prefix match)
+        for index in applicableIndexes {
+            let matchesField: Bool
+
+            if let fieldExpr = index.rootExpression as? FieldKeyExpression {
+                // Simple field index
+                matchesField = fieldExpr.fieldName == inFilter.fieldName
+            } else if let concatExpr = index.rootExpression as? ConcatenateKeyExpression {
+                // Compound index: check if first field matches
+                if let firstField = concatExpr.children.first as? FieldKeyExpression {
+                    matchesField = firstField.fieldName == inFilter.fieldName
+                } else {
+                    matchesField = false
+                }
+            } else {
+                matchesField = false
+            }
+
+            guard matchesField else {
+                continue
+            }
+
+            // Found index with IN field - create IN join plan
+            return TypedInJoinPlan<Record>(
+                fieldName: inFilter.fieldName,
+                values: inFilter.values,
+                indexName: index.name,
+                indexSubspaceTupleKey: index.subspaceTupleKey,
+                primaryKeyLength: getPrimaryKeyLength(),
+                recordTypeName: recordTypeName
+            )
+        }
+
+        return nil
+    }
+
     /// Find first matching index plan
     ///
     /// Returns the first index that matches the filter, without cost comparison.
@@ -804,8 +1021,16 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
 
         for index in applicableIndexes {
-            if let plan = try matchFilterWithIndex(filter: filter, index: index) {
-                return plan
+            if let matchResult = try matchFilterWithIndex(filter: filter, index: index) {
+                // Wrap with TypedFilterPlan if there are remaining predicates
+                if let remainingFilter = matchResult.remainingFilter {
+                    return TypedFilterPlan(
+                        child: matchResult.plan,
+                        filter: remainingFilter
+                    )
+                } else {
+                    return matchResult.plan
+                }
             }
         }
 

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import FoundationDB
+@testable import FoundationDB
 @testable import FDBRecordLayer
 
 /// Tests for IndexStateManager
@@ -9,6 +9,16 @@ import FoundationDB
 /// Unit tests can run without FDB
 @Suite("IndexStateManager Tests")
 struct IndexStateManagerTests {
+
+    // MARK: - Initialization
+
+    init() {
+        do {
+            try FDBNetwork.shared.initialize(version: 710)
+        } catch {
+            // Network already initialized - this is fine
+        }
+    }
 
     // MARK: - State Queries (Integration Tests)
 

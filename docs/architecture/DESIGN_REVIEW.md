@@ -2,7 +2,15 @@
 
 **Version:** 2.0 (Updated)
 **Date:** 2025-01-31
-**Status:** ✅ Ready for Implementation
+**Status:** ⚠️ **Partially Outdated**
+
+> **注意**: このドキュメントの一部は古くなっています。
+>
+> **最新のAPI情報**: [API-MIGRATION-GUIDE.md](../API-MIGRATION-GUIDE.md) を参照してください。
+>
+> **主な変更点**:
+> - `RecordSerializer` プロトコルは削除されました
+> - `GenericRecordAccess<T: Recordable>` が新しい標準APIです
 
 ---
 

@@ -113,4 +113,17 @@ public enum TupleHelpers {
     public static func bytesToUInt64(_ bytes: FDB.Bytes) -> UInt64 {
         return bytes.withUnsafeBytes { $0.load(as: UInt64.self).littleEndian }
     }
+
+    /// Convert a Tuple to an array of TupleElements
+    /// - Parameter tuple: The tuple to convert
+    /// - Returns: Array of tuple elements
+    public static func toArray(_ tuple: Tuple) -> [any TupleElement] {
+        var elements: [any TupleElement] = []
+        for i in 0..<tuple.count {
+            if let element = tuple[i] {
+                elements.append(element)
+            }
+        }
+        return elements
+    }
 }

@@ -24,9 +24,9 @@ fdb-record-layer/
 │       │   └── Types.swift                  # Common types and errors
 │       │
 │       ├── Serialization/
-│       │   ├── RecordSerializer.swift       # Serializer protocol
-│       │   ├── ProtobufSerializer.swift     # Protobuf implementation
-│       │   └── TransformedSerializer.swift  # Compression/encryption
+│       │   ├── RecordAccess.swift           # Record access protocol
+│       │   ├── GenericRecordAccess.swift    # Generic implementation (recommended)
+│       │   └── Recordable.swift             # Recordable protocol
 │       │
 │       ├── Transaction/
 │       │   ├── RecordContext.swift          # Transaction context
@@ -68,8 +68,7 @@ fdb-record-layer/
 │   │   │   └── KeyExpressionTests.swift
 │   │   │
 │   │   ├── Serialization/
-│   │   │   ├── ProtobufSerializerTests.swift
-│   │   │   └── TransformedSerializerTests.swift
+│   │   │   └── RecordableTests.swift
 │   │   │
 │   │   ├── Store/
 │   │   │   ├── RecordStoreTests.swift
@@ -145,10 +144,10 @@ Foundation types and metadata management:
 
 ### Serialization Module
 
-Record serialization and transformation:
-- `RecordSerializer`: Protocol for serializers
-- `ProtobufSerializer`: Protobuf implementation
-- `TransformedSerializer`: Compression and encryption
+Record access and serialization:
+- `RecordAccess`: Protocol for record access and serialization
+- `GenericRecordAccess`: Generic implementation for Recordable types (recommended)
+- `Recordable`: Protocol for defining record types with field extraction
 
 ### Transaction Module
 

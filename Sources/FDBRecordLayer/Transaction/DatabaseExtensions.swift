@@ -15,6 +15,11 @@ extension DatabaseProtocol {
     ) async throws -> T {
         return try await withTransaction { transaction in
             let context = RecordContext(transaction: transaction)
+            defer {
+                // Mark context as closed so deinit won't cancel the transaction
+                // (withTransaction handles the commit/cancel)
+                context.markClosed()
+            }
             return try await block(context)
         }
     }

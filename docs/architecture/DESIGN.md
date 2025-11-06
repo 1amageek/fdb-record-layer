@@ -1,5 +1,10 @@
 # FDB Record Layer 改善設計書
 
+> **⚠️ 注意**: このドキュメントは古い設計書です。
+> 実装が進むにつれて設計が変更されています。
+>
+> **最新のAPI情報**: [API-MIGRATION-GUIDE.md](../API-MIGRATION-GUIDE.md) を参照してください。
+
 ## 目次
 
 1. [概要](#概要)

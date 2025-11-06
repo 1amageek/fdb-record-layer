@@ -49,6 +49,10 @@ public final class RecordMetaData: Sendable {
     /// 内部的には mutable だが、外部からは immutable として扱う
     private let _indexes: SendableBox<[String: Index]>
 
+    /// Former indexes (removed indexes, keyed by name)
+    /// Used for schema evolution validation
+    private let _formerIndexes: SendableBox<[String: FormerIndex]>
+
     /// Recordable型の登録情報（内部使用）
     private let _recordableRegistrations: SendableBox<[String: any RecordableTypeRegistration]>
 
@@ -62,16 +66,23 @@ public final class RecordMetaData: Sendable {
         return _indexes.withLock { $0 }
     }
 
+    /// Thread-safe access to former indexes
+    public var formerIndexes: [String: FormerIndex] {
+        return _formerIndexes.withLock { $0 }
+    }
+
     // MARK: - Initialization
 
     internal init(
         version: Int,
         recordTypes: [String: RecordType],
-        indexes: [String: Index]
+        indexes: [String: Index],
+        formerIndexes: [String: FormerIndex] = [:]
     ) {
         self.version = version
         self._recordTypes = SendableBox(recordTypes)
         self._indexes = SendableBox(indexes)
+        self._formerIndexes = SendableBox(formerIndexes)
         self._recordableRegistrations = SendableBox([:])
     }
 
@@ -82,6 +93,7 @@ public final class RecordMetaData: Sendable {
         self.version = version
         self._recordTypes = SendableBox([:])
         self._indexes = SendableBox([:])
+        self._formerIndexes = SendableBox([:])
         self._recordableRegistrations = SendableBox([:])
     }
 
@@ -91,12 +103,14 @@ public final class RecordMetaData: Sendable {
     ///   - version: Schema version number
     ///   - recordTypes: Array of record types
     ///   - indexes: Array of indexes
+    ///   - formerIndexes: Array of former indexes (optional)
     ///   - unionDescriptor: Protocol buffer union descriptor (optional, for compatibility)
     /// - Throws: RecordLayerError if there are duplicate names
     public init(
         version: Int,
         recordTypes: [RecordType],
         indexes: [Index],
+        formerIndexes: [FormerIndex] = [],
         unionDescriptor: Any? = nil  // For API compatibility, not used
     ) throws {
         // Validate record types are unique
@@ -113,9 +127,17 @@ public final class RecordMetaData: Sendable {
             throw RecordLayerError.internalError("Duplicate index names")
         }
 
+        // Validate former index names are unique
+        let formerIndexNames = formerIndexes.map { $0.name }
+        let uniqueFormerIndexNames = Set(formerIndexNames)
+        guard formerIndexNames.count == uniqueFormerIndexNames.count else {
+            throw RecordLayerError.internalError("Duplicate former index names")
+        }
+
         self.version = version
         self._recordTypes = SendableBox(Dictionary(uniqueKeysWithValues: recordTypes.map { ($0.name, $0) }))
         self._indexes = SendableBox(Dictionary(uniqueKeysWithValues: indexes.map { ($0.name, $0) }))
+        self._formerIndexes = SendableBox(Dictionary(uniqueKeysWithValues: formerIndexes.map { ($0.name, $0) }))
         self._recordableRegistrations = SendableBox([:])
     }
 
@@ -160,6 +182,138 @@ public final class RecordMetaData: Sendable {
             }
         }
     }
+
+    /// Get record types indexed by a specific index
+    ///
+    /// This is the inverse of `getIndexesForRecordType()`. Used by OnlineIndexScrubber
+    /// to determine which record types need to be scanned for a given index.
+    ///
+    /// - Parameter indexName: Name of the index
+    /// - Returns: Array of record type names that are indexed
+    public func getRecordTypesForIndex(_ indexName: String) -> [String] {
+        guard let index = _indexes.withLock({ $0[indexName] }) else {
+            return []
+        }
+
+        // If index has explicit record types, return them
+        if let recordTypes = index.recordTypes, !recordTypes.isEmpty {
+            return Array(recordTypes)
+        }
+
+        // Universal index: return all record types
+        return _recordTypes.withLock { Array($0.keys) }
+    }
+
+    /// Calculate primary key field count for a record type
+    ///
+    /// This is used by OnlineIndexScrubber to extract primary keys from index keys.
+    /// The primary key length is determined by counting the KeyExpression components.
+    ///
+    /// - Parameter recordTypeName: Name of the record type
+    /// - Returns: Number of primary key fields
+    /// - Throws: RecordLayerError.recordTypeNotFound if record type doesn't exist
+    public func getPrimaryKeyFieldCount(_ recordTypeName: String) throws -> Int {
+        let recordType = try getRecordType(recordTypeName)
+        return countKeyExpressionFields(recordType.primaryKey)
+    }
+
+    /// Count the number of fields in a KeyExpression
+    private func countKeyExpressionFields(_ expression: KeyExpression) -> Int {
+        switch expression {
+        case is FieldKeyExpression:
+            return 1
+        case let concat as ConcatenateKeyExpression:
+            return concat.children.reduce(0) { $0 + countKeyExpressionFields($1) }
+        case is EmptyKeyExpression:
+            return 0
+        case let nest as NestExpression:
+            return countKeyExpressionFields(nest.child)
+        default:
+            // For unknown types, assume 1 field
+            return 1
+        }
+    }
+
+    // MARK: - Former Index Management
+
+    /// Get a former index by name
+    /// - Parameter name: The former index name
+    /// - Returns: The former index, or nil if not found
+    public func getFormerIndex(_ name: String) -> FormerIndex? {
+        return _formerIndexes.withLock { $0[name] }
+    }
+
+    /// Check if a name is used by a former index
+    /// - Parameter name: The name to check
+    /// - Returns: True if the name is a former index
+    public func hasFormerIndex(_ name: String) -> Bool {
+        return _formerIndexes.withLock { $0[name] != nil }
+    }
+
+    /// Add a former index
+    ///
+    /// This is typically used during schema evolution when removing an index.
+    /// The former index serves as a marker to prevent name reuse.
+    ///
+    /// - Parameter formerIndex: The former index to add
+    /// - Throws: RecordLayerError if a former index with the same name already exists
+    public func addFormerIndex(_ formerIndex: FormerIndex) throws {
+        try _formerIndexes.withLock { formerIndexes in
+            guard formerIndexes[formerIndex.name] == nil else {
+                throw RecordLayerError.internalError("Former index '\(formerIndex.name)' already exists")
+            }
+            formerIndexes[formerIndex.name] = formerIndex
+        }
+    }
+
+    /// Remove an index and add it as a former index
+    ///
+    /// This is the typical pattern for removing an index during schema evolution:
+    /// 1. Remove from active indexes
+    /// 2. Add to former indexes
+    ///
+    /// **Thread Safety**: This method is thread-safe but performs two separate lock
+    /// acquisitions. In production, prefer using RecordMetaDataBuilder to create
+    /// a new immutable instance with the desired state.
+    ///
+    /// - Parameters:
+    ///   - indexName: The name of the index to remove
+    ///   - addedVersion: The schema version at which the index was originally added
+    ///   - removedVersion: The schema version at which it's being removed
+    /// - Throws: RecordLayerError if the index doesn't exist or FormerIndex already exists
+    public func removeIndexAsFormer(
+        indexName: String,
+        addedVersion: Int,
+        removedVersion: Int
+    ) throws {
+        // Get the index (validates existence)
+        let index = try getIndex(indexName)
+
+        // Create former index
+        let formerIndex = FormerIndex.from(
+            index: index,
+            addedVersion: addedVersion,
+            removedVersion: removedVersion
+        )
+
+        // Perform operations in order to minimize window of inconsistency
+        // 1. First, add FormerIndex (this validates no conflict)
+        try _formerIndexes.withLock { formerIndexes in
+            guard formerIndexes[formerIndex.name] == nil else {
+                throw RecordLayerError.internalError(
+                    "FormerIndex '\(formerIndex.name)' already exists"
+                )
+            }
+            formerIndexes[formerIndex.name] = formerIndex
+        }
+
+        // 2. Then remove from active indexes
+        // If this fails, we have FormerIndex without removal, which is safe
+        // (validation will catch it)
+        _indexes.withLock { indexes in
+            indexes.removeValue(forKey: indexName)
+        }
+    }
 }
 
 // MARK: - RecordMetaData Builder
@@ -171,6 +325,7 @@ public class RecordMetaDataBuilder {
     private var version: Int = 1
     private var recordTypes: [RecordType] = []
     private var indexes: [Index] = []
+    private var formerIndexes: [FormerIndex] = []
 
     public init() {}
 
@@ -198,6 +353,14 @@ public class RecordMetaDataBuilder {
         return self
     }
 
+    /// Add a former index
+    /// - Parameter formerIndex: The former index to add
+    /// - Returns: Self for chaining
+    public func addFormerIndex(_ formerIndex: FormerIndex) -> Self {
+        formerIndexes.append(formerIndex)
+        return self
+    }
+
     /// Build the RecordMetaData
     /// - Returns: The constructed metadata
     /// - Throws: RecordLayerError if validation fails
@@ -205,7 +368,8 @@ public class RecordMetaDataBuilder {
         return try RecordMetaData(
             version: version,
             recordTypes: recordTypes,
-            indexes: indexes
+            indexes: indexes,
+            formerIndexes: formerIndexes
         )
     }
 }

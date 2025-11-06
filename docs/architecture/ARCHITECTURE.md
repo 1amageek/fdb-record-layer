@@ -2,7 +2,17 @@
 
 **Version:** 1.0.0
 **Date:** 2025-10-31
-**Status:** Design Phase
+**Status:** ⚠️ **Outdated Design Document**
+
+> **注意**: このドキュメントは初期設計フェーズのものです。
+> 実装が進むにつれて設計が変更されています。
+>
+> **最新のAPI情報**: [API-MIGRATION-GUIDE.md](../API-MIGRATION-GUIDE.md) を参照してください。
+>
+> **主な変更点**:
+> - `RecordSerializer` プロトコルは削除され、`RecordAccess` プロトコルに統合されました
+> - `ProtobufRecordSerializer` は削除されました
+> - `GenericRecordAccess<T: Recordable>` が推奨APIです
 
 ## Table of Contents
 

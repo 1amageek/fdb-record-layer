@@ -10,6 +10,7 @@ A production-ready Swift implementation of FoundationDB Record Layer, providing 
 
 The Record Layer provides a powerful abstraction for storing and querying structured data in FoundationDB, featuring:
 
+- **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index (80% complete)
 - **Type-Safe API**: Recordable protocol for compile-time type safety
 - **Cost-Based Query Optimizer**: Statistics-driven query planning with histogram selectivity
 - **Automatic Index Maintenance**: Value, Count, and Sum indexes with online building
@@ -324,6 +325,10 @@ let sanFranciscoAdults = try await store.query(User.self)
 - [ADVANCED_INDEX_DESIGN.md](docs/guides/ADVANCED_INDEX_DESIGN.md) - Index design patterns
 - [VERSIONSTAMP_USAGE_GUIDE.md](docs/guides/VERSIONSTAMP_USAGE_GUIDE.md) - Version stamps
 - [CLAUDE.md](CLAUDE.md) - Comprehensive FoundationDB usage guide
+
+### Macro API (80% Complete)
+- [MACRO_IMPLEMENTATION_STATUS.md](docs/MACRO_IMPLEMENTATION_STATUS.md) - SwiftData-style macro API status
+- [swift-macro-design.md](docs/swift-macro-design.md) - Complete macro design document
 
 ## Performance
 

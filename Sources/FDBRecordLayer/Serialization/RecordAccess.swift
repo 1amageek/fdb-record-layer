@@ -17,8 +17,8 @@ import FoundationDB
 /// This is verified at RecordStore initialization time.
 ///
 /// **Implementation:**
-/// - For Protobuf: Use ProtobufRecordAccess with ProtobufFieldExtractor
-/// - For dictionaries: Use DictionaryRecordAccess
+/// - For typed records: Use GenericRecordAccess<T: Recordable> (recommended)
+/// - For custom serialization: Implement RecordAccess protocol directly
 public protocol RecordAccess<Record>: Sendable {
     associatedtype Record: Sendable
 
