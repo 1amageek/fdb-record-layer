@@ -9,8 +9,9 @@ struct SwiftMetricsRecorderTests {
     func testInitialization() {
         let recorder = SwiftMetricsRecorder(component: "test")
 
-        // Test passes if initialization succeeds
-        #expect(recorder != nil)
+        // Test passes if initialization succeeds - verify by calling a metric method
+        recorder.recordSave(duration: 1_000_000)
+        // No crash = success
     }
 
     @Test("SwiftMetricsRecorder can record save metrics")

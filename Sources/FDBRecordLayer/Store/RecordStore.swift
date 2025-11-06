@@ -740,7 +740,7 @@ extension RecordStore {
             // Decode aggregate value
             let aggregateValue = TupleHelpers.bytesToInt64(value)
 
-            results[groupKeyString] = aggregateValue as? F.Result
+            results[groupKeyString] = aggregateValue as F.Result
         }
 
         return results

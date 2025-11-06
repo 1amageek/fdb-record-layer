@@ -753,7 +753,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         }
 
         // Combine unmatched field filters with non-field predicates for post-filtering
-        var allRemainingPredicates = unmatchedFilters + nonFieldPredicates
+        let allRemainingPredicates = unmatchedFilters + nonFieldPredicates
 
         let remainingFilter: (any TypedQueryComponent<Record>)? = {
             if allRemainingPredicates.isEmpty {

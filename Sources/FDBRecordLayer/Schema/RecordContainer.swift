@@ -116,7 +116,7 @@ public final class RecordContainer: Sendable {
         self.storeCache = Mutex([:])
 
         // Execute migrations (future implementation)
-        if let migrationPlan = migrationPlan {
+        if migrationPlan != nil {
             // try await runMigrations(plan: migrationPlan)
         }
     }
@@ -232,7 +232,7 @@ public final class RecordContainer: Sendable {
     /// Removes all persisted model data from persistent storage.
     public func deleteAllData() async throws {
         // Delete data for all entities
-        for entity in schema.entities {
+        for _ in schema.entities {
             // Future implementation: Clear data for each entity
         }
     }

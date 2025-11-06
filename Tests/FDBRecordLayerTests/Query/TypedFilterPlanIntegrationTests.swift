@@ -64,8 +64,8 @@ final class TypedFilterPlanIntegrationTests: XCTestCase {
             TestRecord(id: 3, age: 30, city: "London", status: "ACTIVE")
         ]
 
-        // Create a simple cursor
-        let sourceCursor = createTestCursor(records: records)
+        // Create a simple cursor (unused in this test - plan creates its own)
+        _ = createTestCursor(records: records)
 
         // Create a filter: age == 30
         let filter = TypedFieldQueryComponent<TestRecord>.equals("age", Int64(30))
