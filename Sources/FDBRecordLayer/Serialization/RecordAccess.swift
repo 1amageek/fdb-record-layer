@@ -13,7 +13,7 @@ import FoundationDB
 /// - Serialize and deserialize records
 ///
 /// **Consistency:**
-/// RecordAccess implementations must be consistent with RecordMetaData.
+/// RecordAccess implementations must be consistent with RecordMetadata.
 /// This is verified at RecordStore initialization time.
 ///
 /// **Implementation:**
@@ -26,11 +26,11 @@ public protocol RecordAccess<Record>: Sendable {
 
     /// Get the record type name
     ///
-    /// The type name must match one of the record types defined in RecordMetaData.
+    /// The type name must match one of the record types defined in RecordMetadata.
     ///
     /// - Parameter record: The record to get the type name from
     /// - Returns: Record type name (e.g., "User", "Order")
-    func recordTypeName(for record: Record) -> String
+    func recordName(for record: Record) -> String
 
     // MARK: - KeyExpression Evaluation
 

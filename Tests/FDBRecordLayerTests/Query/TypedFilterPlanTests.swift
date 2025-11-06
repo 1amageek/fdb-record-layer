@@ -20,7 +20,7 @@ final class TypedFilterPlanTests: XCTestCase {
     }
 
     struct TestRecordAccess: RecordAccess {
-        func recordTypeName(for record: TestRecord) -> String {
+        func recordName(for record: TestRecord) -> String {
             return "TestRecord"
         }
 

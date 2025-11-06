@@ -21,16 +21,13 @@ import FoundationDB
 /// ```
 public struct GenericSumIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
-    public let recordType: RecordType
     public let subspace: Subspace
 
     public init(
         index: Index,
-        recordType: RecordType,
-        subspace: Subspace
+                subspace: Subspace
     ) {
         self.index = index
-        self.recordType = recordType
         self.subspace = subspace
     }
 

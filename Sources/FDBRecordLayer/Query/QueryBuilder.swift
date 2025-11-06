@@ -25,7 +25,7 @@ import FoundationDB
 public final class QueryBuilder<T: Recordable> {
     private let store: RecordStore<T>
     private let recordType: T.Type
-    private let metaData: RecordMetaData
+    private let schema: Schema
     private let database: any DatabaseProtocol
     private let subspace: Subspace
     private let statisticsManager: any StatisticsManagerProtocol
@@ -35,14 +35,14 @@ public final class QueryBuilder<T: Recordable> {
     internal init(
         store: RecordStore<T>,
         recordType: T.Type,
-        metaData: RecordMetaData,
+        schema: Schema,
         database: any DatabaseProtocol,
         subspace: Subspace,
         statisticsManager: any StatisticsManagerProtocol
     ) {
         self.store = store
         self.recordType = recordType
-        self.metaData = metaData
+        self.schema = schema
         self.database = database
         self.subspace = subspace
         self.statisticsManager = statisticsManager
@@ -98,8 +98,8 @@ public final class QueryBuilder<T: Recordable> {
         // QueryPlanner を使用して最適な実行プランを作成
         // Use real StatisticsManager for cost-based optimization
         let planner = TypedRecordQueryPlanner<T>(
-            metaData: metaData,
-            recordTypeName: T.recordTypeName,
+            schema: schema,
+            recordName: T.recordName,
             statisticsManager: statisticsManager
         )
         let plan = try await planner.plan(query: query)

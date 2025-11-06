@@ -31,12 +31,53 @@ struct OnlineIndexScrubberTests {
     // MARK: - Test Helpers
 
     /// Simple test record
-    struct TestUser: Codable, Equatable {
+    struct TestUser: Codable, Equatable, Recordable {
         let id: Int64
         let name: String
         let email: String
         let age: Int
         let tags: [String]  // Multi-valued field
+
+        // MARK: - Recordable Conformance
+
+        static var recordName: String { "TestUser" }
+        static var primaryKeyFields: [String] { ["id"] }
+        static var allFields: [String] { ["id", "name", "email", "age", "tags"] }
+
+        static func fieldNumber(for fieldName: String) -> Int? {
+            switch fieldName {
+            case "id": return 1
+            case "name": return 2
+            case "email": return 3
+            case "age": return 4
+            case "tags": return 5
+            default: return nil
+            }
+        }
+
+        func toProtobuf() throws -> Data {
+            // Simple JSON encoding for test purposes
+            return try JSONEncoder().encode(self)
+        }
+
+        static func fromProtobuf(_ data: Data) throws -> TestUser {
+            return try JSONDecoder().decode(TestUser.self, from: data)
+        }
+
+        func extractField(_ fieldName: String) -> [any TupleElement] {
+            switch fieldName {
+            case "id": return [id]
+            case "name": return [name]
+            case "email": return [email]
+            case "age": return [age]
+            case "tags": return tags.map { $0 as any TupleElement }
+            default: return []
+            }
+        }
+
+        func extractPrimaryKey() -> Tuple {
+            return Tuple(id)
+        }
     }
 
     /// Simple RecordAccess implementation for testing
@@ -71,7 +112,7 @@ struct OnlineIndexScrubberTests {
             }
         }
 
-        func recordTypeName(for record: TestUser) -> String {
+        func recordName(for record: TestUser) -> String {
             return "TestUser"
         }
     }
@@ -84,10 +125,7 @@ struct OnlineIndexScrubberTests {
         return Subspace(rootPrefix: "test_scrubber_\(UUID().uuidString)")
     }
 
-    func createTestMetadata() throws -> RecordMetaData {
-        let primaryKey = FieldKeyExpression(fieldName: "id")
-        let userType = RecordType(name: "TestUser", primaryKey: primaryKey)
-
+    func createTestSchema() throws -> Schema {
         let emailIndex = Index(
             name: "user_by_email",
             type: .value,
@@ -109,12 +147,11 @@ struct OnlineIndexScrubberTests {
             recordTypes: ["TestUser"]
         )
 
-        return try RecordMetaDataBuilder()
-            .addRecordType(userType)
-            .addIndex(emailIndex)
-            .addIndex(ageIndex)
-            .addIndex(tagsIndex)
-            .build()
+        // Create Schema from Recordable type with indexes
+        return Schema(
+            [TestUser.self],
+            indexes: [emailIndex, ageIndex, tagsIndex]
+        )
     }
 
     func cleanup(database: any DatabaseProtocol, subspace: Subspace) async throws {
@@ -131,7 +168,7 @@ struct OnlineIndexScrubberTests {
     func factoryValidatesIndexType() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
         // Create a COUNT index (not supported for scrubbing)
         let countIndex = Index(
@@ -153,7 +190,7 @@ struct OnlineIndexScrubberTests {
             try await OnlineIndexScrubber<TestUser>.create(
                 database: db,
                 subspace: subspace,
-                metaData: metaData,
+                schema: schema,
                 index: countIndex,
                 recordAccess: recordAccess
             )
@@ -166,9 +203,11 @@ struct OnlineIndexScrubberTests {
     func factoryValidatesIndexState() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as write_only (not ready for scrubbing)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -181,7 +220,7 @@ struct OnlineIndexScrubberTests {
             try await OnlineIndexScrubber<TestUser>.create(
                 database: db,
                 subspace: subspace,
-                metaData: metaData,
+                schema: schema,
                 index: emailIndex,
                 recordAccess: recordAccess
             )
@@ -194,9 +233,11 @@ struct OnlineIndexScrubberTests {
     func factorySucceedsForValidIndex() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -209,7 +250,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess
         )
@@ -259,9 +300,11 @@ struct OnlineIndexScrubberTests {
     func phase1DetectsDanglingEntries() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -285,7 +328,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess,
             configuration: .default
@@ -304,9 +347,11 @@ struct OnlineIndexScrubberTests {
     func phase1RepairsDanglingEntries() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -343,7 +388,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess,
             configuration: config
@@ -377,9 +422,11 @@ struct OnlineIndexScrubberTests {
     func phase2DetectsMissingEntries() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -414,7 +461,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess,
             configuration: .default
@@ -433,9 +480,11 @@ struct OnlineIndexScrubberTests {
     func phase2RepairsMissingEntries() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -482,7 +531,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess,
             configuration: config
@@ -516,9 +565,11 @@ struct OnlineIndexScrubberTests {
     func handlesMultiValuedFields() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let tagsIndex = try metaData.getIndex("user_by_tags")
+        guard let tagsIndex = schema.index(named: "user_by_tags") else {
+            throw RecordLayerError.indexNotFound("user_by_tags")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -573,7 +624,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: tagsIndex,
             recordAccess: recordAccess,
             configuration: config
@@ -608,9 +659,11 @@ struct OnlineIndexScrubberTests {
     func resultAggregatesStatistics() async throws {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
-        let metaData = try createTestMetadata()
+        let schema = try createTestSchema()
 
-        let emailIndex = try metaData.getIndex("user_by_email")
+        guard let emailIndex = schema.index(named: "user_by_email") else {
+            throw RecordLayerError.indexNotFound("user_by_email")
+        }
 
         // Mark index as readable (must enable first, then make readable)
         let indexStateManager = IndexStateManager(database: db, subspace: subspace)
@@ -664,7 +717,7 @@ struct OnlineIndexScrubberTests {
         let scrubber = try await OnlineIndexScrubber<TestUser>.create(
             database: db,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: emailIndex,
             recordAccess: recordAccess,
             configuration: config

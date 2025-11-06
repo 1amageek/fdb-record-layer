@@ -26,7 +26,7 @@ struct TypedInJoinPlanTests {
     }
 
     struct TestRecordAccess: RecordAccess {
-        func recordTypeName(for record: TestRecord) -> String {
+        func recordName(for record: TestRecord) -> String {
             return "TestRecord"
         }
 
@@ -159,14 +159,14 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         #expect(plan.fieldName == "age")
         #expect(plan.values.count == 3)
         #expect(plan.indexName == "test_by_age")
         #expect(plan.primaryKeyLength == 1)
-        #expect(plan.recordTypeName == "TestRecord")
+        #expect(plan.recordName == "TestRecord")
     }
 
     @Test("Generate IN join plan creates IN join plan")
@@ -177,14 +177,14 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         #expect(plan.fieldName == "age")
         #expect(plan.values.count == 3)
         #expect(plan.indexName == "test_by_age")
         #expect(plan.primaryKeyLength == 1)
-        #expect(plan.recordTypeName == "TestRecord")
+        #expect(plan.recordName == "TestRecord")
     }
 
     @Test("Generate IN join plan with string values")
@@ -195,7 +195,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_city",
             indexSubspaceTupleKey: "test_by_city",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         #expect(plan.fieldName == "city")
@@ -249,7 +249,7 @@ struct TypedInJoinPlanTests {
         }
 
         struct TaggedRecordAccess: RecordAccess {
-            func recordTypeName(for record: TaggedRecord) -> String {
+            func recordName(for record: TaggedRecord) -> String {
                 return "TaggedRecord"
             }
 
@@ -308,7 +308,7 @@ struct TypedInJoinPlanTests {
         }
 
         struct TaggedRecordAccess: RecordAccess {
-            func recordTypeName(for record: TaggedRecord) -> String {
+            func recordName(for record: TaggedRecord) -> String {
                 return "TaggedRecord"
             }
 
@@ -360,7 +360,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_status",
             indexSubspaceTupleKey: "test_by_status",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         #expect(plan.fieldName == "status")
@@ -378,10 +378,10 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
-        #expect(plan.recordTypeName == "TestRecord")
+        #expect(plan.recordName == "TestRecord")
     }
 
     // MARK: - Integration Tests (End-to-End)
@@ -421,7 +421,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         let recordContext = try RecordContext(database: database)
@@ -480,7 +480,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_status",
             indexSubspaceTupleKey: "test_by_status",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         let recordContext = try RecordContext(database: database)
@@ -517,7 +517,7 @@ struct TypedInJoinPlanTests {
         }
 
         struct TaggedRecordAccess: RecordAccess {
-            func recordTypeName(for record: TaggedRecord) -> String {
+            func recordName(for record: TaggedRecord) -> String {
                 return "TaggedRecord"
             }
 
@@ -578,7 +578,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_tags",
             indexSubspaceTupleKey: "test_by_tags",
             primaryKeyLength: 1,
-            recordTypeName: "TaggedRecord"
+            recordName: "TaggedRecord"
         )
 
         let recordContext = try RecordContext(database: database)
@@ -642,7 +642,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         let recordContext = try RecordContext(database: database)
@@ -707,7 +707,7 @@ struct TypedInJoinPlanTests {
             indexName: "test_by_age",
             indexSubspaceTupleKey: "test_by_age",
             primaryKeyLength: 1,
-            recordTypeName: "TestRecord"
+            recordName: "TestRecord"
         )
 
         let recordContext = try RecordContext(database: database)

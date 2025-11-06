@@ -8,8 +8,8 @@ public protocol RecordStoreProtocol: Sendable {
     /// The record type this store handles
     associatedtype Record: Sendable
 
-    /// Get the metadata for this store
-    var metaData: RecordMetaData { get }
+    /// Get the schema for this store
+    var schema: Schema { get }
 
     /// Get the subspace for this store
     var subspace: Subspace { get }

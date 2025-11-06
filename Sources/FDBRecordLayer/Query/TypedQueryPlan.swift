@@ -256,7 +256,7 @@ public struct TypedInJoinPlan<Record: Sendable>: TypedQueryPlan {
     public let indexName: String
     public let indexSubspaceTupleKey: any TupleElement
     public let primaryKeyLength: Int
-    public let recordTypeName: String
+    public let recordName: String
 
     public init(
         fieldName: String,
@@ -264,14 +264,14 @@ public struct TypedInJoinPlan<Record: Sendable>: TypedQueryPlan {
         indexName: String,
         indexSubspaceTupleKey: any TupleElement,
         primaryKeyLength: Int,
-        recordTypeName: String
+        recordName: String
     ) {
         self.fieldName = fieldName
         self.values = values
         self.indexName = indexName
         self.indexSubspaceTupleKey = indexSubspaceTupleKey
         self.primaryKeyLength = primaryKeyLength
-        self.recordTypeName = recordTypeName
+        self.recordName = recordName
     }
 
     public func execute(
@@ -286,7 +286,7 @@ public struct TypedInJoinPlan<Record: Sendable>: TypedQueryPlan {
             .subspace(indexSubspaceTupleKey)
 
         // IMPORTANT: Use same layout as TypedIndexScanPlan and TypedFullScanPlan
-        // Record subspace does NOT include recordTypeName
+        // Record subspace does NOT include recordName
         let recordSubspace = subspace
             .subspace(RecordStoreKeyspace.record.rawValue)
 

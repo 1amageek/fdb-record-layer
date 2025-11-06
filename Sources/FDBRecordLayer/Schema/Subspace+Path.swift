@@ -9,13 +9,17 @@ extension Subspace {
     /// Create Subspace from Firestore-style path string
     ///
     /// - Parameter path: Path string (e.g., "accounts/acct-001/users")
-    /// - Returns: Subspace
+    /// - Returns: Subspace with prefix tuple ("accounts", "acct-001", "users")
     ///
     /// **Example usage**:
     /// ```swift
     /// let subspace = Subspace.fromPath("accounts/acct-001/users")
-    /// // → Subspace(["accounts", "acct-001", "users"])
+    /// // → Subspace with prefix: Tuple("accounts", "acct-001", "users")
     /// ```
+    ///
+    /// **Key Structure**: Each path component becomes a TupleElement at the same level:
+    /// - ✅ Correct: `("accounts", "acct-001", "users")`
+    /// - ❌ Wrong: `("", Tuple(["accounts"]), Tuple(["acct-001"]), ...)`
     ///
     /// **Performance**: Path parsing results are cached for efficiency.
     public static func fromPath(_ path: String) -> Subspace {
@@ -24,11 +28,15 @@ extension Subspace {
             return cached
         }
 
-        // Parse path
+        // Parse path components
         let components = path.split(separator: "/").map(String.init)
-        var subspace = Subspace(rootPrefix: "")
+
+        // ✅ Start with empty byte array (not empty string tuple)
+        var subspace = Subspace(prefix: [])
+
+        // ✅ Add each component as a direct TupleElement (not nested Tuple)
         for component in components {
-            subspace = subspace.subspace(Tuple([component]))
+            subspace = subspace.subspace(component)  // String conforms to TupleElement
         }
 
         // Cache result

@@ -102,7 +102,6 @@ extension IndexOptions {
 /// ```
 public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
-    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
@@ -119,12 +118,10 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
     public init(
         index: Index,
-        recordType: RecordType,
-        subspace: Subspace,
+                subspace: Subspace,
         recordSubspace: Subspace
     ) {
         self.index = index
-        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.rankOrder = index.options.rankOrder
@@ -146,7 +143,13 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
                 record: oldRecord,
                 expression: index.rootExpression
             )
-            let oldPrimaryKey = try extractPrimaryKey(oldRecord, recordAccess: recordAccess)
+            // Extract primary key using Recordable protocol
+            let oldPrimaryKey: Tuple
+            if let recordableRecord = oldRecord as? any Recordable {
+                oldPrimaryKey = recordableRecord.extractPrimaryKey()
+            } else {
+                throw RecordLayerError.internalError("Record does not conform to Recordable")
+            }
 
             try await removeRankEntry(
                 values: oldValues,
@@ -161,7 +164,13 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
                 record: newRecord,
                 expression: index.rootExpression
             )
-            let newPrimaryKey = try extractPrimaryKey(newRecord, recordAccess: recordAccess)
+            // Extract primary key using Recordable protocol
+            let newPrimaryKey: Tuple
+            if let recordableRecord = newRecord as? any Recordable {
+                newPrimaryKey = recordableRecord.extractPrimaryKey()
+            } else {
+                throw RecordLayerError.internalError("Record does not conform to Recordable")
+            }
 
             try await addRankEntry(
                 values: newValues,
@@ -327,16 +336,10 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
     // MARK: - Private Methods
 
-    /// Extract primary key from record using RecordAccess
-    private func extractPrimaryKey(
-        _ record: Record,
-        recordAccess: any RecordAccess<Record>
-    ) throws -> Tuple {
-        let keyValues = try recordAccess.evaluate(
-            record: record,
-            expression: recordType.primaryKey
-        )
-        return TupleHelpers.toTuple(keyValues)
+    /// Extract primary key from record
+    private func extractPrimaryKey<T: Recordable>(_ record: T) -> Tuple {
+        // Use Recordable's extractPrimaryKey() method
+        return record.extractPrimaryKey()
     }
 
     /// Add rank entry for a record

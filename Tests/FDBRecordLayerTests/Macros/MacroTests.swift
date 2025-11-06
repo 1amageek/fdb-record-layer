@@ -177,7 +177,7 @@ struct MacroTests {
     @Test("Recordable macro generates basic conformance")
     func testRecordableBasic() throws {
         // Verify record type name
-        #expect(TestUser.recordTypeName == "TestUser")
+        #expect(TestUser.recordName == "TestUser")
 
         // Verify primary key fields
         #expect(TestUser.primaryKeyFields == ["userID"])

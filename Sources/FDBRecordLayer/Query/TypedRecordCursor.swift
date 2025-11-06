@@ -47,7 +47,7 @@ public struct BasicTypedRecordCursor<Record: Sendable>: TypedRecordCursor {
 
                 // Check recordType if expectedRecordType is specified
                 if let expectedType = expectedRecordType {
-                    let actualType = recordAccess.recordTypeName(for: record)
+                    let actualType = recordAccess.recordName(for: record)
                     guard actualType == expectedType else {
                         continue  // Skip records of wrong type
                     }

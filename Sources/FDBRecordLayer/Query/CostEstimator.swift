@@ -27,13 +27,13 @@ public struct CostEstimator: Sendable {
     ///   - plan: The execution plan
     ///   - recordType: The record type name
     ///   - sortKeys: Optional sort requirements to determine if sorting is needed
-    ///   - metaData: Optional metadata to check if plan satisfies sort order
+    ///   - schema: Optional schema to check if plan satisfies sort order
     /// - Returns: Estimated query cost
     public func estimateCost<Record: Sendable>(
         _ plan: any TypedQueryPlan<Record>,
         recordType: String,
         sortKeys: [TypedSortKey<Record>]? = nil,
-        metaData: RecordMetaData? = nil
+        schema: Schema? = nil
     ) async throws -> QueryCost {
         // Fetch statistics once at the top level (async-safe pattern)
         let tableStats = try? await statisticsManager.getTableStatistics(
@@ -45,7 +45,7 @@ public struct CostEstimator: Sendable {
             plan: plan,
             sortKeys: sortKeys,
             recordType: recordType,
-            metaData: metaData
+            schema: schema
         )
 
         return try await estimatePlanCost(
@@ -67,21 +67,21 @@ public struct CostEstimator: Sendable {
     ///   - plan: The query plan
     ///   - sortKeys: Required sort order
     ///   - recordType: Record type name
-    ///   - metaData: Metadata to look up index definitions
+    ///   - schema: Schema to look up index definitions
     /// - Returns: true if plan will need TypedSortPlan wrapper
     private func determineNeedsSort<Record: Sendable>(
         plan: any TypedQueryPlan<Record>,
         sortKeys: [TypedSortKey<Record>]?,
         recordType: String,
-        metaData: RecordMetaData?
+        schema: Schema?
     ) -> Bool {
         // No sort required
         guard let sortKeys = sortKeys, !sortKeys.isEmpty else {
             return false
         }
 
-        // No metadata - assume sorting needed (conservative)
-        guard let metaData = metaData else {
+        // No schema - assume sorting needed (conservative)
+        guard let schema = schema else {
             return true
         }
 
@@ -95,7 +95,7 @@ public struct CostEstimator: Sendable {
             indexName: indexScan.indexName,
             sortKeys: sortKeys,
             recordType: recordType,
-            metaData: metaData
+            schema: schema
         )
     }
 
@@ -104,10 +104,10 @@ public struct CostEstimator: Sendable {
         indexName: String,
         sortKeys: [TypedSortKey<Record>],
         recordType: String,
-        metaData: RecordMetaData
+        schema: Schema
     ) -> Bool {
         // Get index definition
-        guard let index = metaData.getIndexesForRecordType(recordType)
+        guard let index = schema.indexes(for: recordType)
             .first(where: { $0.name == indexName }) else {
             return false
         }

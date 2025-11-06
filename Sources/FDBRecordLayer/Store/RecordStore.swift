@@ -9,15 +9,14 @@ import Logging
 ///
 /// **基本的な使用例**:
 /// ```swift
-/// // RecordMetaDataに型を登録
-/// let metaData = RecordMetaData()
-/// try metaData.registerRecordType(User.self)
+/// // Schemaを作成（型とインデックスを定義）
+/// let schema = Schema([User.self])
 ///
 /// // 型付きRecordStoreを初期化
 /// let userStore = RecordStore<User>(
 ///     database: database,
 ///     subspace: subspace,
-///     metaData: metaData,
+///     schema: schema,
 ///     statisticsManager: statisticsManager
 /// )
 ///
@@ -98,7 +97,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     public let subspace: Subspace
-    public let metaData: RecordMetaData
+    public let schema: Schema
     private let logger: Logger
 
     /// Statistics manager for cost-based query optimization
@@ -118,20 +117,20 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// - Parameters:
     ///   - database: The FDB database
     ///   - subspace: The subspace for this record store
-    ///   - metaData: Record metadata with registered types
+    ///   - schema: Schema with registered types and indexes
     ///   - statisticsManager: Statistics manager for cost-based optimization
     ///   - logger: Optional logger
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
-        metaData: RecordMetaData,
+        schema: Schema,
         statisticsManager: any StatisticsManagerProtocol,
         metricsRecorder: any MetricsRecorder = NullMetricsRecorder(),
         logger: Logger? = nil
     ) {
         self.database = database
         self.subspace = subspace
-        self.metaData = metaData
+        self.schema = schema
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
         self.statisticsManager = statisticsManager
         self.metricsRecorder = metricsRecorder
@@ -160,7 +159,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// let store = RecordStore(
     ///     database: database,
     ///     subspace: subspace,
-    ///     metaData: metaData,
+    ///     schema: schema,
     ///     statisticsManager: statsManager
     /// )
     /// ```
@@ -183,7 +182,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
         // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
         // TODO: Phase 2a-3で#Subspace対応を追加
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
         let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
 
         let tr = context.getTransaction()
@@ -200,7 +199,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         tr.setValue(bytes, for: key)
 
         // Update indexes
-        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        let indexManager = IndexManager(schema: schema, subspace: indexSubspace)
         try await indexManager.updateIndexes(
             for: record,
             primaryKey: primaryKey,
@@ -221,7 +220,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
 
         // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
@@ -245,7 +244,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordTypeName]))
+        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
 
         // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
@@ -266,7 +265,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         tr.clear(key: key)
 
         // Delete index entries
-        let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
+        let indexManager = IndexManager(schema: schema, subspace: indexSubspace)
         try await indexManager.deleteIndexes(
             oldRecord: record,
             primaryKey: keyTuple,
@@ -301,7 +300,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging with record-type details
             logger.trace("Record saved", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "duration_ns": "\(duration)",
                 "operation": "save"
             ])
@@ -314,7 +313,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to save record", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "operation": "save",
                 "error": "\(error)"
             ])
@@ -350,7 +349,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging
             logger.trace("Record fetch completed", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "duration_ns": "\(duration)",
                 "operation": "fetch",
                 "found": "\(result != nil)"
@@ -366,7 +365,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to fetch record", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "operation": "fetch",
                 "error": "\(error)"
             ])
@@ -413,7 +412,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         return QueryBuilder(
             store: self,
             recordType: Record.self,
-            metaData: metaData,
+            schema: schema,
             database: database,
             subspace: subspace,
             statisticsManager: statisticsManager
@@ -448,7 +447,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging
             logger.trace("Record delete completed", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "duration_ns": "\(duration)",
                 "operation": "delete"
             ])
@@ -461,7 +460,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
             // Structured logging for error details
             logger.error("Failed to delete record", metadata: [
-                "recordType": "\(Record.recordTypeName)",
+                "recordType": "\(Record.recordName)",
                 "operation": "delete",
                 "error": "\(error)"
             ])

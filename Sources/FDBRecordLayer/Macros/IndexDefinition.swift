@@ -3,7 +3,7 @@ import Foundation
 /// Definition of an index created by #Index or #Unique macros
 ///
 /// This type holds the metadata for indexes defined using macros.
-/// The RecordMetaData will collect these definitions and register them.
+/// The RecordMetadata will collect these definitions and register them.
 public struct IndexDefinition: Sendable {
     /// The name of the index
     public let name: String

@@ -39,8 +39,8 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
     // MARK: - RecordAccess Implementation
 
     /// Get the record type name
-    public func recordTypeName(for record: Record) -> String {
-        return Record.recordTypeName
+    public func recordName(for record: Record) -> String {
+        return Record.recordName
     }
 
     /// Extract a single field value
@@ -84,8 +84,8 @@ extension GenericRecordAccess {
     /// インスタンスを作成せずにレコードタイプ名を取得できます。
     ///
     /// - Returns: レコードタイプ名
-    public static var recordTypeName: String {
-        return Record.recordTypeName
+    public static var recordName: String {
+        return Record.recordName
     }
 
     /// プライマリキーフィールドのリストを取得

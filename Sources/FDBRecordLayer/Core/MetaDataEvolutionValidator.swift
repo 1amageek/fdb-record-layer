@@ -14,8 +14,8 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// let validator = try MetaDataEvolutionValidator(
-///     oldMetaData: oldMetaData,
-///     newMetaData: newMetaData,
+///     oldSchema: oldSchema,
+///     newSchema: newSchema,
 ///     allowIndexRebuilds: true
 /// )
 ///
@@ -41,7 +41,7 @@ public final class MetaDataEvolutionValidator: Sendable {
         }
 
         public let category: Category
-        public let recordTypeName: String?
+        public let recordName: String?
         public let fieldName: String?
         public let indexName: String?
         public let message: String
@@ -49,8 +49,8 @@ public final class MetaDataEvolutionValidator: Sendable {
         public var description: String {
             var parts = ["[\(category.rawValue)]"]
 
-            if let recordTypeName = recordTypeName {
-                parts.append("RecordType: \(recordTypeName)")
+            if let recordName = recordName {
+                parts.append("RecordType: \(recordName)")
             }
             if let fieldName = fieldName {
                 parts.append("Field: \(fieldName)")
@@ -66,13 +66,13 @@ public final class MetaDataEvolutionValidator: Sendable {
 
         init(
             category: Category,
-            recordTypeName: String? = nil,
+            recordName: String? = nil,
             fieldName: String? = nil,
             indexName: String? = nil,
             message: String
         ) {
             self.category = category
-            self.recordTypeName = recordTypeName
+            self.recordName = recordName
             self.fieldName = fieldName
             self.indexName = indexName
             self.message = message
@@ -94,8 +94,8 @@ public final class MetaDataEvolutionValidator: Sendable {
 
     // MARK: - Properties
 
-    private let oldMetaData: RecordMetaData
-    private let newMetaData: RecordMetaData
+    private let oldSchema: Schema
+    private let newSchema: Schema
     private let allowIndexRebuilds: Bool
 
     // MARK: - Initialization
@@ -103,25 +103,25 @@ public final class MetaDataEvolutionValidator: Sendable {
     /// Initialize a MetaDataEvolutionValidator
     ///
     /// - Parameters:
-    ///   - oldMetaData: The previous schema version
-    ///   - newMetaData: The new schema version to validate
+    ///   - oldSchema: The previous schema version
+    ///   - newSchema: The new schema version to validate
     ///   - allowIndexRebuilds: If true, allows index changes that require rebuilding.
     ///                         If false, any index format change is an error.
     /// - Throws: RecordLayerError if parameters are invalid
     public init(
-        oldMetaData: RecordMetaData,
-        newMetaData: RecordMetaData,
+        oldSchema: Schema,
+        newSchema: Schema,
         allowIndexRebuilds: Bool = false
     ) throws {
         // Validate version progression
-        guard newMetaData.version >= oldMetaData.version else {
+        guard newSchema.version >= oldSchema.version else {
             throw RecordLayerError.internalError(
-                "New metadata version (\(newMetaData.version)) must be >= old version (\(oldMetaData.version))"
+                "New metadata version (\(newSchema.version)) must be >= old version (\(oldSchema.version))"
             )
         }
 
-        self.oldMetaData = oldMetaData
-        self.newMetaData = newMetaData
+        self.oldSchema = oldSchema
+        self.newSchema = newSchema
         self.allowIndexRebuilds = allowIndexRebuilds
     }
 
@@ -164,15 +164,15 @@ public final class MetaDataEvolutionValidator: Sendable {
     private func validateRecordTypes() -> [ValidationError] {
         var errors: [ValidationError] = []
 
-        let oldRecordTypes = oldMetaData.recordTypes
-        let newRecordTypes = newMetaData.recordTypes
+        let oldEntities = oldSchema.entitiesByName
+        let newEntities = newSchema.entitiesByName
 
         // Check for removed record types
-        for (oldTypeName, oldType) in oldRecordTypes {
-            guard let newType = newRecordTypes[oldTypeName] else {
+        for (oldTypeName, oldEntity) in oldEntities {
+            guard let newEntity = newEntities[oldTypeName] else {
                 errors.append(ValidationError(
                     category: .recordTypeRemoved,
-                    recordTypeName: oldTypeName,
+                    recordName: oldTypeName,
                     message: "Record type '\(oldTypeName)' was removed. Record types cannot be removed."
                 ))
                 continue
@@ -180,17 +180,17 @@ public final class MetaDataEvolutionValidator: Sendable {
 
             // Validate fields within the record type
             errors.append(contentsOf: validateFields(
-                oldType: oldType,
-                newType: newType,
-                recordTypeName: oldTypeName
+                oldEntity: oldEntity,
+                newEntity: newEntity,
+                recordName: oldTypeName
             ))
 
             // Validate primary key hasn't changed
-            if !areKeyExpressionsCompatible(oldType.primaryKey, newType.primaryKey) {
+            if oldEntity.primaryKeyFields != newEntity.primaryKeyFields {
                 errors.append(ValidationError(
                     category: .primaryKeyChanged,
-                    recordTypeName: oldTypeName,
-                    message: "Primary key structure changed for '\(oldTypeName)'"
+                    recordName: oldTypeName,
+                    message: "Primary key structure changed for '\(oldTypeName)': \(oldEntity.primaryKeyFields) -> \(newEntity.primaryKeyFields)"
                 ))
             }
         }
@@ -201,9 +201,9 @@ public final class MetaDataEvolutionValidator: Sendable {
     // MARK: - Field Validation
 
     private func validateFields(
-        oldType: RecordType,
-        newType: RecordType,
-        recordTypeName: String
+        oldEntity: Schema.Entity,
+        newEntity: Schema.Entity,
+        recordName: String
     ) -> [ValidationError] {
         var errors: [ValidationError] = []
 
@@ -211,18 +211,17 @@ public final class MetaDataEvolutionValidator: Sendable {
         // Full field validation would require Protobuf descriptor comparison,
         // which is more complex and will be implemented in a future phase.
 
-        // Extract field names from primary key
-        let oldPrimaryKeyFields = extractFieldNames(from: oldType.primaryKey)
-        let newPrimaryKeyFields = extractFieldNames(from: newType.primaryKey)
-
         // Check that old primary key fields still exist
-        for oldField in oldPrimaryKeyFields {
-            if !newPrimaryKeyFields.contains(oldField) {
+        let oldPrimaryKeyFieldsSet = Set(oldEntity.primaryKeyFields)
+        let newPrimaryKeyFieldsSet = Set(newEntity.primaryKeyFields)
+
+        for oldField in oldPrimaryKeyFieldsSet {
+            if !newPrimaryKeyFieldsSet.contains(oldField) {
                 errors.append(ValidationError(
                     category: .fieldRemoved,
-                    recordTypeName: recordTypeName,
+                    recordName: recordName,
                     fieldName: oldField,
-                    message: "Primary key field '\(oldField)' was removed from '\(recordTypeName)'"
+                    message: "Primary key field '\(oldField)' was removed from '\(recordName)'"
                 ))
             }
         }
@@ -254,9 +253,9 @@ public final class MetaDataEvolutionValidator: Sendable {
     private func validateIndexes() -> [ValidationError] {
         var errors: [ValidationError] = []
 
-        let oldIndexes = oldMetaData.indexes
-        let newIndexes = newMetaData.indexes
-        let newFormerIndexes = newMetaData.formerIndexes
+        let oldIndexes = oldSchema.indexesByName
+        let newIndexes = newSchema.indexesByName
+        let newFormerIndexes = newSchema.formerIndexes
 
         // Check for removed indexes without FormerIndex
         for (oldIndexName, oldIndex) in oldIndexes {
@@ -279,7 +278,7 @@ public final class MetaDataEvolutionValidator: Sendable {
         }
 
         // Check for new indexes conflicting with former indexes
-        let oldFormerIndexes = oldMetaData.formerIndexes
+        let oldFormerIndexes = oldSchema.formerIndexes
 
         for (newIndexName, _) in newIndexes {
             // Check if this name was a former index in old metadata
@@ -343,9 +342,9 @@ public final class MetaDataEvolutionValidator: Sendable {
     private func validateFormerIndexes() -> [ValidationError] {
         var errors: [ValidationError] = []
 
-        let oldFormerIndexes = oldMetaData.formerIndexes
-        let newIndexes = newMetaData.indexes
-        let newFormerIndexes = newMetaData.formerIndexes
+        let oldFormerIndexes = oldSchema.formerIndexes
+        let newIndexesByName = newSchema.indexesByName
+        let newFormerIndexes = newSchema.formerIndexes
 
         // CRITICAL: Check that all old FormerIndexes are preserved in new metadata
         // FormerIndexes are permanent markers that must never be removed.
@@ -378,7 +377,7 @@ public final class MetaDataEvolutionValidator: Sendable {
 
         // Check that no active index has the same name as a former index in new metadata
         for (formerIndexName, _) in newFormerIndexes {
-            if newIndexes.keys.contains(formerIndexName) {
+            if newIndexesByName.keys.contains(formerIndexName) {
                 errors.append(ValidationError(
                     category: .formerIndexConflict,
                     indexName: formerIndexName,
@@ -459,19 +458,19 @@ extension MetaDataEvolutionValidator {
     /// Create a validator and immediately validate
     ///
     /// - Parameters:
-    ///   - oldMetaData: The previous schema version
-    ///   - newMetaData: The new schema version to validate
+    ///   - oldSchema: The previous schema version
+    ///   - newSchema: The new schema version to validate
     ///   - allowIndexRebuilds: If true, allows index changes that require rebuilding
     /// - Returns: ValidationResult
     /// - Throws: RecordLayerError if parameters are invalid
     public static func validateEvolution(
-        from oldMetaData: RecordMetaData,
-        to newMetaData: RecordMetaData,
+        from oldSchema: Schema,
+        to newSchema: Schema,
         allowIndexRebuilds: Bool = false
     ) throws -> ValidationResult {
         let validator = try MetaDataEvolutionValidator(
-            oldMetaData: oldMetaData,
-            newMetaData: newMetaData,
+            oldSchema: oldSchema,
+            newSchema: newSchema,
             allowIndexRebuilds: allowIndexRebuilds
         )
         return validator.validate()

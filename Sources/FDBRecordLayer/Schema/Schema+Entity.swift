@@ -68,7 +68,7 @@ extension Schema {
             return result
         }
 
-        // MARK: - Constraints
+        // MARK: - Constraints (SwiftData compatible)
 
         /// Indices (array of field names)
         ///
@@ -97,52 +97,108 @@ extension Schema {
         /// Child entities (inheritance)
         public let subentities: Set<Entity>
 
-        // MARK: - Internal
+        // MARK: - FoundationDB extension (schema definition only)
 
-        /// Internal: RecordType (compatibility with existing implementation)
-        internal let recordType: RecordType
+        /// Primary key fields (field names only, no KeyExpression)
+        public let primaryKeyFields: [String]
 
-        /// Internal: Associated Index objects
-        internal let indexObjects: [Index]
+        /// Primary key expression (built from primaryKeyFields)
+        ///
+        /// This is the canonical KeyExpression used for:
+        /// - Union/Intersection plans
+        /// - Primary key extraction
+        /// - Query planning
+        ///
+        /// **IMPORTANT**: This must match the structure returned by Recordable.extractPrimaryKey()
+        public let primaryKeyExpression: KeyExpression
 
         // MARK: - Initialization
 
-        internal init(
-            name: String,
-            recordType: RecordType,
-            metaData: RecordMetaData
-        ) {
-            self.name = name
-            self.recordType = recordType
+        /// Initialize Entity from Recordable type
+        ///
+        /// Builds Entity with schema definition only (no Index implementation objects).
+        /// Tries to use the new type-safe API (`primaryKeyPaths`) first, then falls back
+        /// to the old API (`primaryKeyFields`) for backward compatibility.
+        internal init<T: Recordable>(from type: T.Type) {
+            self.name = type.recordName
 
-            // Attributes (simplified - no field extraction for now)
-            // Future: Extract actual field information from Recordable type
-            self.attributes = []
-            self.attributesByName = [:]
+            // Try new API first (Phase 3: Migration to type-safe primary keys)
+            if let primaryKeyPaths = type.primaryKeyPaths {
+                // ✅ Use KeyPath-based definition (compile-time safe)
+                self.primaryKeyFields = primaryKeyPaths.fieldNames
+                self.primaryKeyExpression = primaryKeyPaths.keyExpression
+
+                // ALWAYS validate consistency (not just DEBUG)
+                // This catches inconsistent implementations in production
+                let allFieldsSet = Set(type.allFields)
+                let invalidFields = primaryKeyFields.filter { !allFieldsSet.contains($0) }
+                if !invalidFields.isEmpty {
+                    fatalError("""
+                        ❌ FATAL: Invalid primary key fields in \(type.recordName)
+                           Primary key fields not in allFields: \(invalidFields)
+                           allFields: \(type.allFields)
+                        """)
+                }
+            } else {
+                // ✅ Fallback to old API (manual definition)
+                self.primaryKeyFields = type.primaryKeyFields
+
+                // Validate that primaryKeyFields are valid (ALWAYS, not just DEBUG)
+                let allFieldsSet = Set(type.allFields)
+                let invalidFields = primaryKeyFields.filter { !allFieldsSet.contains($0) }
+                if !invalidFields.isEmpty {
+                    fatalError("""
+                        ❌ FATAL: Invalid primary key fields in \(type.recordName)
+                           Primary key fields not in allFields: \(invalidFields)
+                           allFields: \(type.allFields)
+                        """)
+                }
+
+                // Validate not empty
+                if primaryKeyFields.isEmpty {
+                    fatalError("""
+                        ❌ FATAL: Empty primary key fields in \(type.recordName)
+                           Must define at least one primary key field.
+                        """)
+                }
+
+                // Build primary key expression from primaryKeyFields
+                // This assumes primary keys are simple FieldKeyExpressions
+                self.primaryKeyExpression = if primaryKeyFields.count == 1 {
+                    FieldKeyExpression(fieldName: primaryKeyFields[0])
+                } else {
+                    ConcatenateKeyExpression(children: primaryKeyFields.map { FieldKeyExpression(fieldName: $0) })
+                }
+            }
+
+            // Build attributes from Recordable.allFields
+            let allFields = type.allFields
+            var attributes: Set<Attribute> = []
+            var attributesByName: [String: Attribute] = [:]
+
+            for fieldName in allFields {
+                let isPrimaryKey = primaryKeyFields.contains(fieldName)
+                let attribute = Attribute(
+                    name: fieldName,
+                    isOptional: false,  // Future: detect from type reflection
+                    isPrimaryKey: isPrimaryKey
+                )
+                attributes.insert(attribute)
+                attributesByName[fieldName] = attribute
+            }
+
+            self.attributes = attributes
+            self.attributesByName = attributesByName
 
             // Relationships (future implementation)
             self.relationships = []
             self.relationshipsByName = [:]
 
-            // Extract indices from metaData
-            let indexes = metaData.getIndexesForRecordType(name)
-            self.indexObjects = indexes
-
-            var indices: [[String]] = []
-            for index in indexes {
-                // Extract field names from KeyExpression
-                let fieldNames = index.rootExpression.fieldNames()
-                indices.append(fieldNames)
-            }
-            self.indices = indices
-
-            // Extract unique constraints
-            var uniquenessConstraints: [[String]] = []
-            for index in indexes where index.options.unique {
-                let fieldNames = index.rootExpression.fieldNames()
-                uniquenessConstraints.append(fieldNames)
-            }
-            self.uniquenessConstraints = uniquenessConstraints
+            // Indices & uniqueness constraints
+            // Future: Extract from @Index macro
+            // For now, empty (IndexManager will build from definitions)
+            self.indices = []
+            self.uniquenessConstraints = []
 
             // Inheritance (future implementation)
             self.superentity = nil
@@ -153,7 +209,7 @@ extension Schema {
         // MARK: - CustomDebugStringConvertible
 
         public var debugDescription: String {
-            return "Schema.Entity(name: \(name), indices: \(indices.count))"
+            return "Entity(name: \(name), primaryKey: \(primaryKeyFields), indices: \(indices.count))"
         }
     }
 

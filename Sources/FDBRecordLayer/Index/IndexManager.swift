@@ -45,7 +45,7 @@ import FoundationDB
 public final class IndexManager: Sendable {
     // MARK: - Properties
 
-    public let metaData: RecordMetaData
+    public let schema: Schema
     public let subspace: Subspace
 
     // MARK: - Initialization
@@ -53,10 +53,10 @@ public final class IndexManager: Sendable {
     /// Initialize IndexManager
     ///
     /// - Parameters:
-    ///   - metaData: The record metadata containing index definitions
+    ///   - schema: The schema containing entity definitions
     ///   - subspace: The subspace for storing index data
-    public init(metaData: RecordMetaData, subspace: Subspace) {
-        self.metaData = metaData
+    public init(schema: Schema, subspace: Subspace) {
+        self.schema = schema
         self.subspace = subspace
     }
 
@@ -80,15 +80,12 @@ public final class IndexManager: Sendable {
         context: RecordContext,
         recordSubspace: Subspace
     ) async throws {
-        let recordTypeName = T.recordTypeName
-        let applicableIndexes = getApplicableIndexes(for: recordTypeName)
+        let recordName = T.recordName
+        let applicableIndexes = getApplicableIndexes(for: recordName)
 
         guard !applicableIndexes.isEmpty else {
             return  // No indexes to maintain
         }
-
-        // Get RecordType from metadata
-        let recordType = try metaData.getRecordType(recordTypeName)
 
         // Create RecordAccess for this record type
         let recordAccess = GenericRecordAccess<T>()
@@ -104,7 +101,6 @@ public final class IndexManager: Sendable {
             // Create maintainer for this index type
             let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
                 for: index,
-                recordType: recordType,
                 indexSubspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -135,15 +131,12 @@ public final class IndexManager: Sendable {
         context: RecordContext,
         recordSubspace: Subspace
     ) async throws {
-        let recordTypeName = T.recordTypeName
-        let applicableIndexes = getApplicableIndexes(for: recordTypeName)
+        let recordName = T.recordName
+        let applicableIndexes = getApplicableIndexes(for: recordName)
 
         guard !applicableIndexes.isEmpty else {
             return  // No indexes to maintain
         }
-
-        // Get RecordType from metadata
-        let recordType = try metaData.getRecordType(recordTypeName)
 
         // Create RecordAccess for this record type
         let recordAccess = GenericRecordAccess<T>()
@@ -159,7 +152,6 @@ public final class IndexManager: Sendable {
             // Create maintainer for this index type
             let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
                 for: index,
-                recordType: recordType,
                 indexSubspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -178,10 +170,10 @@ public final class IndexManager: Sendable {
 
     /// Get indexes that apply to a specific record type
     ///
-    /// - Parameter recordTypeName: The record type name
+    /// - Parameter recordName: The record type name
     /// - Returns: Array of applicable indexes
-    internal func getApplicableIndexes(for recordTypeName: String) -> [Index] {
-        return metaData.getIndexesForRecordType(recordTypeName)
+    internal func getApplicableIndexes(for recordName: String) -> [Index] {
+        return schema.indexes(for: recordName)
     }
 
     /// Get the subspace for a specific index
@@ -198,14 +190,12 @@ public final class IndexManager: Sendable {
     ///
     /// - Parameters:
     ///   - index: The index definition
-    ///   - recordType: The record type
     ///   - indexSubspace: The subspace for this index's data
     ///   - recordSubspace: The subspace for record data
     /// - Returns: Type-erased index maintainer
     /// - Throws: RecordLayerError if index type is not supported
     private func createMaintainer<T: Recordable>(
         for index: Index,
-        recordType: RecordType,
         indexSubspace: Subspace,
         recordSubspace: Subspace
     ) throws -> AnyGenericIndexMaintainer<T> {
@@ -213,7 +203,6 @@ public final class IndexManager: Sendable {
         case .value:
             let maintainer = GenericValueIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -222,7 +211,6 @@ public final class IndexManager: Sendable {
         case .count:
             let maintainer = GenericCountIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
@@ -230,7 +218,6 @@ public final class IndexManager: Sendable {
         case .sum:
             let maintainer = GenericSumIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
@@ -238,7 +225,6 @@ public final class IndexManager: Sendable {
         case .rank:
             let maintainer = RankIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -247,7 +233,6 @@ public final class IndexManager: Sendable {
         case .version:
             let maintainer = VersionIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -256,7 +241,6 @@ public final class IndexManager: Sendable {
         case .permuted:
             let maintainer = try GenericPermutedIndexMaintainer<T>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )

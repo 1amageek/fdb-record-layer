@@ -212,7 +212,6 @@ extension IndexOptions {
 /// ```
 public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
-    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
@@ -221,8 +220,7 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
 
     public init(
         index: Index,
-        recordType: RecordType,
-        subspace: Subspace,
+                subspace: Subspace,
         recordSubspace: Subspace
     ) throws {
         let options = index.options
@@ -236,7 +234,6 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
         }
 
         self.index = index
-        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.baseIndexName = baseIndexName
@@ -256,10 +253,15 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
                 expression: index.rootExpression
             )
             let oldPermuted = try permutation.apply(oldValues)
-            let oldPrimaryKey = try recordAccess.evaluate(
-                record: oldRecord,
-                expression: recordType.primaryKey
-            )
+
+            // Extract primary key using Recordable protocol
+            let oldPrimaryKeyTuple: Tuple
+            if let recordableRecord = oldRecord as? any Recordable {
+                oldPrimaryKeyTuple = recordableRecord.extractPrimaryKey()
+            } else {
+                throw RecordLayerError.internalError("Record does not conform to Recordable")
+            }
+            let oldPrimaryKey = try Tuple.decode(from: oldPrimaryKeyTuple.encode())
 
             let oldKey = buildPermutedKey(
                 permutedValues: oldPermuted,
@@ -275,10 +277,15 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
                 expression: index.rootExpression
             )
             let newPermuted = try permutation.apply(newValues)
-            let newPrimaryKey = try recordAccess.evaluate(
-                record: newRecord,
-                expression: recordType.primaryKey
-            )
+
+            // Extract primary key using Recordable protocol
+            let newPrimaryKeyTuple: Tuple
+            if let recordableRecord = newRecord as? any Recordable {
+                newPrimaryKeyTuple = recordableRecord.extractPrimaryKey()
+            } else {
+                throw RecordLayerError.internalError("Record does not conform to Recordable")
+            }
+            let newPrimaryKey = try Tuple.decode(from: newPrimaryKeyTuple.encode())
 
             let newKey = buildPermutedKey(
                 permutedValues: newPermuted,

@@ -29,8 +29,8 @@ import Foundation
 /// - Protobuf serialization methods
 /// - Field extraction methods
 /// - Primary key extraction
-@attached(member, names: named(recordTypeName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName))
-@attached(extension, conformances: Recordable, names: named(recordTypeName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName), named(store))
+@attached(member, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName))
+@attached(extension, conformances: Recordable, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName), named(store))
 public macro Recordable(recordName: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "RecordableMacro")
 
 /// Marks a property as the primary key

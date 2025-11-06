@@ -1,10 +1,10 @@
 import Foundation
 
-/// Validates consistency between RecordAccess and RecordMetaData
+/// Validates consistency between RecordAccess and RecordMetadata
 ///
 /// RecordAccessValidator performs static validation at RecordStore initialization
 /// to ensure that the RecordAccess implementation is consistent with the
-/// RecordMetaData definitions.
+/// RecordMetadata definitions.
 ///
 /// **Validation Checks:**
 /// 1. Primary key expressions are structurally valid
@@ -24,35 +24,36 @@ import Foundation
 /// try validator.validate()
 /// ```
 public struct RecordAccessValidator {
-    private let metaData: RecordMetaData
+    private let schema: Schema
 
     /// Initialize validator
     ///
     /// - Parameters:
-    ///   - metaData: The RecordMetaData to validate against
+    ///   - schema: The Schema to validate against
     ///   - recordAccess: The RecordAccess implementation (not used for static validation)
-    public init<Access: RecordAccess>(metaData: RecordMetaData, recordAccess: Access) {
-        self.metaData = metaData
+    public init<Access: RecordAccess>(schema: Schema, recordAccess: Access) {
+        self.schema = schema
         // Note: recordAccess is not stored because static validation only checks
         // KeyExpression structure, not actual field access
     }
 
     /// Validate consistency
     ///
-    /// Performs static validation of KeyExpressions in RecordMetaData.
+    /// Performs static validation of KeyExpressions in Schema.
     ///
     /// - Throws: RecordLayerError if validation fails
     public func validate() throws {
-        // 1. Validate primary keys for all record types
-        for (_, recordType) in metaData.recordTypes {
+        // 1. Validate primary keys for all entities
+        for (_, entity) in schema.entitiesByName {
+            // Use canonical primary key expression from entity
             try validateKeyExpression(
-                recordType.primaryKey,
-                context: "Primary key for \(recordType.name)"
+                entity.primaryKeyExpression,
+                context: "Primary key for \(entity.name)"
             )
         }
 
         // 2. Validate index keys
-        for (_, index) in metaData.indexes {
+        for (_, index) in schema.indexesByName {
             try validateKeyExpression(
                 index.rootExpression,
                 context: "Index \(index.name)"

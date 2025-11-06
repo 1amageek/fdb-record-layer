@@ -28,7 +28,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
     private let recordAccess: any RecordAccess<Record>
     private let recordSubspace: Subspace
     private let storeSubspace: Subspace
-    private let metaData: RecordMetaData
+    private let schema: Schema
     private let statisticsManager: any StatisticsManagerProtocol
 
     // MARK: - Initialization
@@ -39,7 +39,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         recordAccess: any RecordAccess<Record>,
         recordSubspace: Subspace,
         storeSubspace: Subspace,
-        metaData: RecordMetaData,
+        schema: Schema,
         statisticsManager: any StatisticsManagerProtocol
     ) {
         self.database = database
@@ -47,7 +47,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         self.recordAccess = recordAccess
         self.recordSubspace = recordSubspace
         self.storeSubspace = storeSubspace
-        self.metaData = metaData
+        self.schema = schema
         self.statisticsManager = statisticsManager
     }
 
@@ -60,7 +60,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             recordAccess: recordAccess,
             recordSubspace: recordSubspace,
             storeSubspace: storeSubspace,
-            metaData: metaData,
+            schema: self.schema,
             statisticsManager: statisticsManager
         )
     }
@@ -71,7 +71,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
         private let recordAccess: any RecordAccess<Record>
         private let recordSubspace: Subspace
         private let storeSubspace: Subspace
-        private let metaData: RecordMetaData
+        private let schema: Schema
         private let statisticsManager: any StatisticsManagerProtocol
 
         private var context: RecordContext?
@@ -85,7 +85,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             recordAccess: any RecordAccess<Record>,
             recordSubspace: Subspace,
             storeSubspace: Subspace,
-            metaData: RecordMetaData,
+            schema: Schema,
             statisticsManager: any StatisticsManagerProtocol
         ) {
             self.database = database
@@ -93,7 +93,7 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
             self.recordAccess = recordAccess
             self.recordSubspace = recordSubspace
             self.storeSubspace = storeSubspace
-            self.metaData = metaData
+            self.schema = schema
             self.statisticsManager = statisticsManager
         }
 
@@ -105,17 +105,17 @@ public struct SnapshotCursor<Record: Sendable>: AsyncSequence, Sendable {
                 self.context = ctx
 
                 // Convert RecordQuery to TypedRecordQuery
-                guard let recordTypeName = query.recordTypes.first else {
+                guard let recordName = query.recordTypes.first else {
                     context?.cancel()
                     return nil
                 }
 
-                let typedQuery: TypedRecordQuery<Record> = try query.toTypedQuery(recordTypeName: recordTypeName)
+                let typedQuery: TypedRecordQuery<Record> = try query.toTypedQuery(recordName: recordName)
 
                 // Use QueryPlanner with real StatisticsManager for cost-based optimization
                 let planner = TypedRecordQueryPlanner<Record>(
-                    metaData: metaData,
-                    recordTypeName: recordTypeName,
+                    schema: self.schema,
+                    recordName: recordName,
                     statisticsManager: statisticsManager
                 )
                 let plan = try await planner.plan(query: typedQuery)

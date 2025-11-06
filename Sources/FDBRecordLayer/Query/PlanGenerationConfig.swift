@@ -11,7 +11,7 @@ import Foundation
 /// // Default configuration (balanced)
 /// let planner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
-///     recordTypeName: "User",
+///     recordName: "User",
 ///     statisticsManager: statsManager,
 ///     config: .default
 /// )
@@ -19,7 +19,7 @@ import Foundation
 /// // Aggressive optimization (slower planning, better plans)
 /// let aggressivePlanner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
-///     recordTypeName: "User",
+///     recordName: "User",
 ///     statisticsManager: statsManager,
 ///     config: .aggressive
 /// )
@@ -27,7 +27,7 @@ import Foundation
 /// // Conservative optimization (faster planning, good enough plans)
 /// let conservativePlanner = TypedRecordQueryPlanner(
 ///     metaData: metaData,
-///     recordTypeName: "User",
+///     recordName: "User",
 ///     statisticsManager: statsManager,
 ///     config: .conservative
 /// )

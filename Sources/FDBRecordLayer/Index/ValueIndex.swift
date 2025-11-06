@@ -22,18 +22,15 @@ import FoundationDB
 /// ```
 public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
-    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
     public init(
         index: Index,
-        recordType: RecordType,
         subspace: Subspace,
         recordSubspace: Subspace
     ) {
         self.index = index
-        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
     }
@@ -81,11 +78,14 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
             expression: index.rootExpression
         )
 
-        // Extract primary key values
-        let primaryKeyValues = try recordAccess.evaluate(
-            record: record,
-            expression: recordType.primaryKey
-        )
+        // Extract primary key values using Recordable protocol
+        let primaryKeyTuple: Tuple
+        if let recordableRecord = record as? any Recordable {
+            primaryKeyTuple = recordableRecord.extractPrimaryKey()
+        } else {
+            throw RecordLayerError.internalError("Record does not conform to Recordable")
+        }
+        let primaryKeyValues = try Tuple.decode(from: primaryKeyTuple.encode())
 
         // Combine indexed values with primary key for uniqueness
         let allValues = indexedValues + primaryKeyValues

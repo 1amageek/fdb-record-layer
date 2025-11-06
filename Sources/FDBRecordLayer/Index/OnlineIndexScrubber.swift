@@ -29,7 +29,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
-    private let metaData: RecordMetaData
+    private let schema: Schema
     private let index: Index
     private let recordAccess: any RecordAccess<Record>
     private let configuration: ScrubberConfiguration
@@ -70,14 +70,14 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     private init(
         database: any DatabaseProtocol,
         subspace: Subspace,
-        metaData: RecordMetaData,
+        schema: Schema,
         index: Index,
         recordAccess: any RecordAccess<Record>,
         configuration: ScrubberConfiguration
     ) {
         self.database = database
         self.subspace = subspace
-        self.metaData = metaData
+        self.schema = schema
         self.index = index
         self.recordAccess = recordAccess
         self.configuration = configuration
@@ -140,7 +140,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     /// - Parameters:
     ///   - database: FoundationDB database
     ///   - subspace: Record store subspace
-    ///   - metaData: Record metadata
+    ///   - schema: Schema definition
     ///   - index: Index to scrub
     ///   - recordAccess: Record access for field extraction
     ///   - configuration: Scrubber configuration
@@ -149,7 +149,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     public static func create(
         database: any DatabaseProtocol,
         subspace: Subspace,
-        metaData: RecordMetaData,
+        schema: Schema,
         index: Index,
         recordAccess: any RecordAccess<Record>,
         configuration: ScrubberConfiguration = .default
@@ -175,7 +175,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         return OnlineIndexScrubber(
             database: database,
             subspace: subspace,
-            metaData: metaData,
+            schema: schema,
             index: index,
             recordAccess: recordAccess,
             configuration: configuration
@@ -373,7 +373,13 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
 
         // ✅ Get record types for this index (needed to check each record type)
-        let recordTypeNames = metaData.getRecordTypesForIndex(index.name)
+        let recordNames: [String]
+        if let indexRecordTypes = index.recordTypes {
+            recordNames = Array(indexRecordTypes)
+        } else {
+            // Universal index - applies to all entities
+            recordNames = Array(schema.entitiesByName.keys)
+        }
 
         let (beginKey, endKey) = indexSubspace.range()
         var continuation: FDB.Bytes? = beginKey
@@ -404,7 +410,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         context: context,
                         indexSubspace: indexSubspace,
                         recordSubspace: recordSubspace,
-                        recordTypeNames: recordTypeNames,
+                        recordNames: recordNames,
                         startKey: currentKey,
                         endKey: endKey,
                         warningCount: &warningCount
@@ -588,7 +594,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         context: RecordContext,
         indexSubspace: Subspace,
         recordSubspace: Subspace,
-        recordTypeNames: [String],
+        recordNames: [String],
         startKey: FDB.Bytes,
         endKey: FDB.Bytes,
         warningCount: inout Int
@@ -635,11 +641,11 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             var recordFound = false
 
             // Check each record type (since index may apply to multiple types)
-            for recordTypeName in recordTypeNames {
+            for recordName in recordNames {
                 guard let primaryKey = try extractPrimaryKey(
                     from: indexKey,
                     indexSubspace: indexSubspace,
-                    recordTypeName: recordTypeName
+                    recordName: recordName
                 ) else {
                     // Primary key extraction failed (tuple decode issue or record type mismatch)
                     warningCount += 1
@@ -651,7 +657,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     if warningCount % 100 == 0 {
                         logger.warning("Primary key extraction failed (sampled 1/100)", metadata: [
                             "index_key": "\(indexKey.safeLogRepresentation)",
-                            "record_type": "\(recordTypeName)",
+                            "record_type": "\(recordName)",
                             "phase": "phase1"
                         ])
                     }
@@ -659,7 +665,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 }
 
                 // Build record key with record type name
-                let typeSubspace = recordSubspace.subspace(recordTypeName)
+                let typeSubspace = recordSubspace.subspace(recordName)
                 let recordKey = typeSubspace.pack(TupleHelpers.toTuple(primaryKey))
 
                 // Check if record exists (use configured snapshot setting)
@@ -677,7 +683,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 let primaryKey = try extractPrimaryKey(
                     from: indexKey,
                     indexSubspace: indexSubspace,
-                    recordTypeName: recordTypeNames.first ?? ""
+                    recordName: recordNames.first ?? ""
                 ) ?? []
 
                 let issue = ScrubberIssue(
@@ -738,21 +744,19 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     /// - Parameters:
     ///   - indexKey: The index key to extract from
     ///   - indexSubspace: The index subspace (used to remove prefix)
-    ///   - recordTypeName: Record type name (used to get primary key length)
+    ///   - recordName: Record type name (used to get primary key length)
     /// - Returns: Primary key elements, or nil if extraction fails
     private func extractPrimaryKey(
         from indexKey: FDB.Bytes,
         indexSubspace: Subspace,
-        recordTypeName: String
+        recordName: String
     ) throws -> [any TupleElement]? {
-        // ✅ Get primary key length from RecordMetaData
-        let primaryKeyLength: Int
-        do {
-            primaryKeyLength = try metaData.getPrimaryKeyFieldCount(recordTypeName)
-        } catch {
+        // ✅ Get primary key length from Schema
+        guard let entity = schema.entity(named: recordName) else {
             // If record type not found, skip
             return nil
         }
+        let primaryKeyLength = entity.primaryKeyFields.count
 
         // Remove index subspace prefix and decode tuple
         // Note: Subspace.unpack() returns Tuple, but we need to extract elements
@@ -806,9 +810,15 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         }
 
         // Get record types indexed by this index
-        let recordTypeNames = metaData.getRecordTypesForIndex(index.name)
+        let recordNames: [String]
+        if let indexRecordTypes = index.recordTypes {
+            recordNames = Array(indexRecordTypes)
+        } else {
+            // Universal index - applies to all entities
+            recordNames = Array(schema.entitiesByName.keys)
+        }
 
-        guard !recordTypeNames.isEmpty else {
+        guard !recordNames.isEmpty else {
             logger.warning("No record types found for index", metadata: [
                 "index": "\(index.name)"
             ])
@@ -819,15 +829,15 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         var totalScanned = 0
 
         // Scan each record type separately (avoid scanning irrelevant types)
-        for recordTypeName in recordTypeNames {
+        for recordName in recordNames {
             if configuration.enableProgressLogging {
                 logger.info("Phase 2: Scanning records", metadata: [
-                    "record_type": "\(recordTypeName)"
+                    "record_type": "\(recordName)"
                 ])
             }
 
             let (issues, scannedCount) = try await scrubRecordsForType(
-                recordTypeName: recordTypeName,
+                recordName: recordName,
                 progress: progress
             )
 
@@ -846,12 +856,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     ///
     /// - Returns: Tuple of (issues, totalScanned)
     private func scrubRecordsForType(
-        recordTypeName: String,
+        recordName: String,
         progress: ScrubberProgress
     ) async throws -> ([ScrubberIssue], Int) {
         let recordSubspace = subspace
             .subspace(RecordStoreKeyspace.record.rawValue)
-            .subspace(recordTypeName)
+            .subspace(recordName)
 
         // ✅ Use index.subspaceTupleKey (consistent with Phase 1)
         let indexSubspace = subspace
@@ -887,7 +897,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         context: context,
                         recordSubspace: recordSubspace,
                         indexSubspace: indexSubspace,
-                        recordTypeName: recordTypeName,
+                        recordName: recordName,
                         startKey: currentKey,
                         endKey: endKey,
                         warningCount: &warningCount
@@ -1065,7 +1075,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         context: RecordContext,
         recordSubspace: Subspace,
         indexSubspace: Subspace,
-        recordTypeName: String,
+        recordName: String,
         startKey: FDB.Bytes,
         endKey: FDB.Bytes,
         warningCount: inout Int
@@ -1088,8 +1098,11 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         var issues: [ScrubberIssue] = []
         var lastProcessedKey: FDB.Bytes?
 
-        // ✅ Get primary key length from metadata
-        let primaryKeyLength = try metaData.getPrimaryKeyFieldCount(recordTypeName)
+        // ✅ Get primary key length from Schema
+        guard let entity = schema.entity(named: recordName) else {
+            throw RecordLayerError.recordTypeNotFound(recordName)
+        }
+        let primaryKeyLength = entity.primaryKeyFields.count
 
         let sequence = transaction.getRange(
             begin: startKey,

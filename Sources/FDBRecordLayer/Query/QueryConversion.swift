@@ -12,17 +12,17 @@ extension RecordQuery {
     /// Convert to TypedRecordQuery
     ///
     /// - Parameters:
-    ///   - recordTypeName: The expected record type name
+    ///   - recordName: The expected record type name
     /// - Returns: TypedRecordQuery for the specified record type
     /// - Throws: RecordLayerError if query references multiple record types
     public func toTypedQuery<Record: Sendable>(
-        recordTypeName: String
+        recordName: String
     ) throws -> TypedRecordQuery<Record> {
         // Verify this query is for a single record type
-        guard recordTypes.count == 1, recordTypes.contains(recordTypeName) else {
+        guard recordTypes.count == 1, recordTypes.contains(recordName) else {
             throw RecordLayerError.internalError(
                 "Cannot convert multi-type query to TypedRecordQuery. " +
-                "Query types: \(recordTypes), expected: \(recordTypeName)"
+                "Query types: \(recordTypes), expected: \(recordName)"
             )
         }
 

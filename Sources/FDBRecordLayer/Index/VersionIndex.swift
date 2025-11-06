@@ -103,7 +103,6 @@ public enum VersionHistoryStrategy: Sendable {
 /// ```
 public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
-    public let recordType: RecordType
     public let subspace: Subspace
     public let recordSubspace: Subspace
 
@@ -117,14 +116,12 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
     public init(
         index: Index,
-        recordType: RecordType,
-        subspace: Subspace,
+                subspace: Subspace,
         recordSubspace: Subspace,
         versionField: String = "_version",
         historyStrategy: VersionHistoryStrategy = .keepAll
     ) {
         self.index = index
-        self.recordType = recordType
         self.subspace = subspace
         self.recordSubspace = recordSubspace
         self.versionField = versionField
@@ -141,8 +138,14 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     ) async throws {
         guard let record = newRecord ?? oldRecord else { return }
 
-        // Extract primary key using RecordAccess
-        let primaryKey = try extractPrimaryKey(record, recordAccess: recordAccess)
+        // Extract primary key using Recordable protocol
+        let primaryKey: Tuple
+        if let recordableRecord = record as? any Recordable {
+            primaryKey = recordableRecord.extractPrimaryKey()
+        } else {
+            // Fallback: this shouldn't happen if Record conforms to Sendable properly
+            throw RecordLayerError.internalError("Record does not conform to Recordable")
+        }
 
         if newRecord != nil {
             // Insert: create new version entry using FDB versionstamp
@@ -283,18 +286,10 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
     // MARK: - Private Methods
 
-    /// Extract primary key from record using RecordAccess
-    private func extractPrimaryKey(
-        _ record: Record,
-        recordAccess: any RecordAccess<Record>
-    ) throws -> Tuple {
-        // Use RecordAccess to evaluate the primary key expression
-        let keyValues = try recordAccess.evaluate(
-            record: record,
-            expression: recordType.primaryKey
-        )
-
-        return TupleHelpers.toTuple(keyValues)
+    /// Extract primary key from record
+    private func extractPrimaryKey<T: Recordable>(_ record: T) -> Tuple {
+        // Use Recordable's extractPrimaryKey() method
+        return record.extractPrimaryKey()
     }
 
     /// Clean up old versions based on strategy

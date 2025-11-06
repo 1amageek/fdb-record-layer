@@ -170,7 +170,7 @@ public final class RecordContainer: Sendable {
         path: String
     ) -> RecordStore<Record> {
         let subspace = Subspace.fromPath(path)
-        let cacheKey = StoreCacheKey(subspace: subspace, typeName: Record.recordTypeName)
+        let cacheKey = StoreCacheKey(subspace: subspace, typeName: Record.recordName)
 
         // Check cache (fast path)
         if let cached = storeCache.withLock({ $0[cacheKey] as? RecordStore<Record> }) {
@@ -181,7 +181,7 @@ public final class RecordContainer: Sendable {
         let store = RecordStore<Record>(
             database: database,
             subspace: subspace,
-            metaData: schema.recordMetaData,
+            schema: schema,
             statisticsManager: statisticsManager ?? NullStatisticsManager(),
             metricsRecorder: metricsRecorder,
             logger: logger
@@ -202,7 +202,7 @@ public final class RecordContainer: Sendable {
         for type: Record.Type,
         subspace: Subspace
     ) -> RecordStore<Record> {
-        let cacheKey = StoreCacheKey(subspace: subspace, typeName: Record.recordTypeName)
+        let cacheKey = StoreCacheKey(subspace: subspace, typeName: Record.recordName)
 
         // Check cache
         if let cached = storeCache.withLock({ $0[cacheKey] as? RecordStore<Record> }) {
@@ -213,7 +213,7 @@ public final class RecordContainer: Sendable {
         let store = RecordStore<Record>(
             database: database,
             subspace: subspace,
-            metaData: schema.recordMetaData,
+            schema: schema,
             statisticsManager: statisticsManager ?? NullStatisticsManager(),
             metricsRecorder: metricsRecorder,
             logger: logger

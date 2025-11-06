@@ -19,8 +19,8 @@ import Logging
 /// **Usage:**
 /// ```swift
 /// let planner = TypedRecordQueryPlanner(
-///     metaData: metaData,
-///     recordTypeName: "User",
+///     schema: schema,
+///     recordName: "User",
 ///     statisticsManager: statsManager
 /// )
 ///
@@ -30,8 +30,8 @@ import Logging
 public struct TypedRecordQueryPlanner<Record: Sendable> {
     // MARK: - Properties
 
-    private let metaData: RecordMetaData
-    private let recordTypeName: String
+    private let schema: Schema
+    private let recordName: String
     private let statisticsManager: any StatisticsManagerProtocol
     private let costEstimator: CostEstimator
     private let planCache: PlanCache<Record>
@@ -43,22 +43,22 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     /// Initialize query planner with cost-based optimization
     ///
     /// - Parameters:
-    ///   - metaData: Record metadata containing index definitions
-    ///   - recordTypeName: The record type being queried
+    ///   - schema: Schema containing entity and index definitions
+    ///   - recordName: The record type being queried
     ///   - statisticsManager: Statistics manager for cost estimation
     ///   - planCache: Optional plan cache (creates default if nil)
     ///   - config: Plan generation configuration (default: .default)
     ///   - logger: Optional logger (creates default if nil)
     public init(
-        metaData: RecordMetaData,
-        recordTypeName: String,
+        schema: Schema,
+        recordName: String,
         statisticsManager: any StatisticsManagerProtocol,
         planCache: PlanCache<Record>? = nil,
         config: PlanGenerationConfig = .default,
         logger: Logger? = nil
     ) {
-        self.metaData = metaData
-        self.recordTypeName = recordTypeName
+        self.schema = schema
+        self.recordName = recordName
         self.statisticsManager = statisticsManager
         self.costEstimator = CostEstimator(statisticsManager: statisticsManager)
         self.planCache = planCache ?? PlanCache<Record>()
@@ -84,17 +84,17 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         // Check cache (synchronous access with Mutex)
         if let cachedPlan = planCache.get(query: query) {
             logger.debug("Plan cache hit", metadata: [
-                "recordType": "\(recordTypeName)"
+                "recordType": "\(recordName)"
             ])
             return cachedPlan
         }
 
         logger.debug("Plan cache miss, generating new plan", metadata: [
-            "recordType": "\(recordTypeName)"
+            "recordType": "\(recordName)"
         ])
 
         // Fetch table statistics
-        let tableStats = try? await statisticsManager.getTableStatistics(recordType: recordTypeName)
+        let tableStats = try? await statisticsManager.getTableStatistics(recordType: recordName)
 
         var basePlan: any TypedQueryPlan<Record>
 
@@ -105,8 +105,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         } else {
             // Path 2: Heuristic-based optimization without statistics
             logger.info("Using heuristic optimization (no statistics)", metadata: [
-                "recordType": "\(recordTypeName)",
-                "recommendation": "Run: StatisticsManager.collectStatistics(recordType: \"\(recordTypeName)\")"
+                "recordType": "\(recordName)",
+                "recommendation": "Run: StatisticsManager.collectStatistics(recordType: \"\(recordName)\")"
             ])
             basePlan = try await planWithHeuristics(query)
         }
@@ -115,7 +115,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         let finalPlan = try addSortIfNeeded(plan: basePlan, query: query)
 
         // Estimate cost for caching
-        let cost = try await costEstimator.estimateCost(finalPlan, recordType: recordTypeName)
+        let cost = try await costEstimator.estimateCost(finalPlan, recordType: recordName)
 
         // Cache result (synchronous access with Mutex)
         planCache.put(query: query, plan: finalPlan, cost: cost)
@@ -156,9 +156,9 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         for plan in candidates {
             let cost = try await costEstimator.estimateCost(
                 plan,
-                recordType: recordTypeName,
+                recordType: recordName,
                 sortKeys: query.sort,
-                metaData: metaData
+                schema: schema
             )
             costsWithPlans.append((plan, cost))
 
@@ -220,7 +220,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         return TypedFullScanPlan(
             filter: query.filter,
-            expectedRecordType: recordTypeName
+            expectedRecordType: recordName
         )
     }
 
@@ -247,7 +247,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         // Always add full scan (baseline)
         candidates.append(TypedFullScanPlan(
             filter: query.filter,
-            expectedRecordType: recordTypeName
+            expectedRecordType: recordName
         ))
 
         // Heuristic pruning: if unique index on equality, skip others
@@ -310,7 +310,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             indexPlans.append(inPlan)
         }
 
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         for index in applicableIndexes {
             if let matchResult = try matchFilterWithIndex(filter: filter, index: index) {
@@ -366,15 +366,15 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
             // If all branches have plans, create union
             if branchPlans.count == orFilter.children.count {
-                // Get primary key expression from record type
-                do {
-                    let recordType = try metaData.getRecordType(recordTypeName)
-                    let unionPlan = TypedUnionPlan(childPlans: branchPlans, primaryKeyExpression: recordType.primaryKey)
-                    multiIndexPlans.append(unionPlan)
-                } catch {
-                    logger.warning("Record type not found", metadata: ["recordType": "\(recordTypeName)"])
+                // Get entity and build primary key expression
+                guard let entity = schema.entity(named: recordName) else {
+                    logger.warning("Entity not found", metadata: ["recordType": "\(recordName)"])
                     return multiIndexPlans
                 }
+
+                // Use canonical primary key expression from entity
+                let unionPlan = TypedUnionPlan(childPlans: branchPlans, primaryKeyExpression: entity.primaryKeyExpression)
+                multiIndexPlans.append(unionPlan)
             }
         }
 
@@ -394,7 +394,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         _ branch: any TypedQueryComponent<Record>
     ) async throws -> (any TypedQueryPlan<Record>)? {
         // Try to match with index (may be compound)
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         for index in applicableIndexes {
             if let matchResult = try matchFilterWithIndex(filter: branch, index: index) {
@@ -428,7 +428,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     private func generateIntersectionPlan(
         _ andFilter: TypedAndQueryComponent<Record>
     ) async throws -> (any TypedQueryPlan<Record>)? {
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         // Phase 1: Try to match entire AND filter with compound indexes
         // This maximizes compound index utilization
@@ -506,18 +506,16 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return nil
         }
 
-        // Get primary key expression from record type
-        let recordType: RecordType
-        do {
-            recordType = try metaData.getRecordType(recordTypeName)
-        } catch {
-            logger.warning("Record type not found", metadata: ["recordType": "\(recordTypeName)"])
+        // Get entity and build primary key expression
+        guard let entity = schema.entity(named: recordName) else {
+            logger.warning("Entity not found", metadata: ["recordType": "\(recordName)"])
             return nil
         }
 
+        // Use canonical primary key expression from entity
         let intersectionPlan = TypedIntersectionPlan(
             childPlans: childPlans,
-            primaryKeyExpression: recordType.primaryKey
+            primaryKeyExpression: entity.primaryKeyExpression
         )
 
         // Combine all remaining predicates (non-field predicates + unmatched field filters)
@@ -901,7 +899,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return nil
         }
 
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         for index in applicableIndexes {
             // Check if index is unique
@@ -967,7 +965,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return nil
         }
 
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         // Find an index on the IN field (simple or compound with prefix match)
         for index in applicableIndexes {
@@ -998,7 +996,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 indexName: index.name,
                 indexSubspaceTupleKey: index.subspaceTupleKey,
                 primaryKeyLength: getPrimaryKeyLength(),
-                recordTypeName: recordTypeName
+                recordName: recordName
             )
         }
 
@@ -1018,7 +1016,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     ) throws -> (any TypedQueryPlan<Record>)? {
         guard let filter = filter else { return nil }
 
-        let applicableIndexes = metaData.getIndexesForRecordType(recordTypeName)
+        let applicableIndexes = schema.indexes(for: recordName)
 
         for index in applicableIndexes {
             if let matchResult = try matchFilterWithIndex(filter: filter, index: index) {
@@ -1082,7 +1080,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         }
 
         // Get index definition
-        guard let index = metaData.getIndexesForRecordType(recordTypeName)
+        guard let index = schema.indexes(for: recordName)
             .first(where: { $0.name == indexScan.indexName }) else {
             return false
         }
@@ -1194,16 +1192,12 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     }
 
     private func getPrimaryKeyLength() -> Int {
-        do {
-            let recordType = try metaData.getRecordType(recordTypeName)
-
-            if let concatExpr = recordType.primaryKey as? ConcatenateKeyExpression {
-                return concatExpr.children.count
-            } else {
-                return 1
-            }
-        } catch {
+        // Get entity from schema
+        guard let entity = schema.entity(named: recordName) else {
             return 1  // Fallback to single-field primary key
         }
+
+        // Return number of primary key fields
+        return entity.primaryKeyFields.count
     }
 }

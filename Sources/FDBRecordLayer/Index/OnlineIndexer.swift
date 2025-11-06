@@ -19,8 +19,8 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
-    private let metaData: RecordMetaData
-    private let recordType: RecordType
+    private let schema: Schema
+    private let entityName: String
     private let index: Index
     private let recordAccess: any RecordAccess<Record>
     private let indexStateManager: IndexStateManager
@@ -51,8 +51,8 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
-        metaData: RecordMetaData,
-        recordType: RecordType,
+        schema: Schema,
+        entityName: String,
         index: Index,
         recordAccess: any RecordAccess<Record>,
         indexStateManager: IndexStateManager,
@@ -62,8 +62,8 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     ) {
         self.database = database
         self.subspace = subspace
-        self.metaData = metaData
-        self.recordType = recordType
+        self.schema = schema
+        self.entityName = entityName
         self.index = index
         self.recordAccess = recordAccess
         self.indexStateManager = indexStateManager
@@ -341,7 +341,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         case .value:
             let maintainer = GenericValueIndexMaintainer<Record>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -350,7 +349,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         case .count:
             let maintainer = GenericCountIndexMaintainer<Record>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
@@ -358,7 +356,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         case .sum:
             let maintainer = GenericSumIndexMaintainer<Record>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
@@ -366,7 +363,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         case .version:
             let maintainer = VersionIndexMaintainer<Record>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -375,7 +371,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         case .rank:
             let maintainer = RankIndexMaintainer<Record>(
                 index: index,
-                recordType: recordType,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
@@ -385,7 +380,6 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
             do {
                 let maintainer = try GenericPermutedIndexMaintainer<Record>(
                     index: index,
-                    recordType: recordType,
                     subspace: indexSubspace,
                     recordSubspace: recordSubspace
                 )
