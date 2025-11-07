@@ -332,7 +332,7 @@ let sanFranciscoAdults = try await store.query(User.self)
 
 ### Design Documents
 - [swift-macro-design.md](docs/design/swift-macro-design.md) - SwiftData-style macro API (95% complete)
-- [partition-design.md](docs/design/partition-design.md) - Multi-tenant partition system
+- [directory-layer-design.md](docs/design/directory-layer-design.md) - Directory Layer and multi-tenant architecture
 - [query-planner-optimization.md](docs/design/query-planner-optimization.md) - Cost-based query optimizer
 - [metrics-and-logging.md](docs/design/metrics-and-logging.md) - Observability infrastructure
 - [online-index-scrubber.md](docs/design/online-index-scrubber.md) - Index consistency verification

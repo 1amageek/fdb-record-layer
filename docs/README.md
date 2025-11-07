@@ -34,7 +34,7 @@ Welcome to the FoundationDB Record Layer documentation! This directory contains 
 Detailed design specifications for major features:
 
 - [design/swift-macro-design.md](design/swift-macro-design.md) - SwiftData-style macro API
-- [design/partition-design.md](design/partition-design.md) - Multi-tenant partition system
+- [design/directory-layer-design.md](design/directory-layer-design.md) - Directory Layer and multi-tenant architecture
 - [design/query-planner-optimization.md](design/query-planner-optimization.md) - Cost-based query optimizer
 - [design/metrics-and-logging.md](design/metrics-and-logging.md) - Observability infrastructure
 - [design/online-index-scrubber.md](design/online-index-scrubber.md) - Index consistency verification
@@ -58,7 +58,7 @@ How-to guides for specific features:
 → Read [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ### "I want to build a multi-tenant application"
-→ Read [guides/partition-usage.md](guides/partition-usage.md) and [design/partition-design.md](design/partition-design.md)
+→ Read [design/directory-layer-design.md](design/directory-layer-design.md) and [guides/partition-usage.md](guides/partition-usage.md)
 
 ### "I want to optimize my queries"
 → Read [guides/query-optimizer.md](guides/query-optimizer.md)
@@ -95,7 +95,7 @@ ARCHITECTURE.md                  - System architecture
 ```
 design/
 ├── swift-macro-design.md        - Macro API
-├── partition-design.md          - Multi-tenant
+├── directory-layer-design.md    - Directory Layer & Multi-tenant
 ├── query-planner-optimization.md - Query optimizer
 ├── metrics-and-logging.md       - Observability
 ├── online-index-scrubber.md     - Index scrubbing
@@ -122,10 +122,10 @@ guides/
 - Status: Core macros complete (@Recordable, @PrimaryKey, #Index, @Relationship)
 - Note: Protobuf definitions are created manually for multi-language compatibility
 
-### Multi-Tenant Partitioning
-- Design: [design/partition-design.md](design/partition-design.md)
+### Directory Layer & Multi-Tenant Architecture
+- Design: [design/directory-layer-design.md](design/directory-layer-design.md)
 - Usage: [guides/partition-usage.md](guides/partition-usage.md)
-- Example: [../Examples/PartitionExample.swift](../Examples/PartitionExample.swift)
+- Status: Using FoundationDB standard Directory Layer with `layer: .partition`
 
 ### Query Optimization
 - Design: [design/query-planner-optimization.md](design/query-planner-optimization.md)

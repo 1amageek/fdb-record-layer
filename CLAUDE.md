@@ -1480,25 +1480,42 @@ let cityAgeIndexSubspace = indexSubspace["user_by_city_age"]
 **対応ファイル**:
 - `Sources/FDBRecordLayer/Core/Subspace.swift`
 
-#### Directory Layer（将来の拡張）
+#### Directory Layer
 
-現在は直接使用していませんが、将来的にマルチテナント対応で活用可能：
+Record Layerでは、FoundationDB標準のDirectory Layerを使用してマルチテナント対応を実現：
 
 ```swift
-// 将来の実装例
-let directoryLayer = DirectoryLayer()
-let tenantDir = try await directoryLayer.createOrOpen(
-    db,
-    path: ["tenants", "tenant-abc"]
+// #Directory マクロで Directory Layer を使用
+@Recordable
+struct Order {
+    #Directory<Order>(
+        ["tenants", \.accountID, "orders"],
+        layer: .partition  // FDB標準の partition を使用
+    )
+
+    @PrimaryKey var orderID: Int64
+    var accountID: String
+}
+
+// 生成されるコード
+let tenantPartition = try await database.directory.createOrOpen(
+    path: ["tenants", accountID],
+    layer: DirectoryLayer.partition.rawValue
 )
 
-let recordStore = RecordStore<RecordTypeUnion>(
+let ordersDir = try await tenantPartition.createOrOpen(
+    path: ["orders"],
+    layer: DirectoryLayer.recordStore.rawValue
+)
+
+let recordStore = RecordStore(
     database: database,
-    subspace: tenantDir,  // Directoryから取得したSubspace
-    metaData: metaData,
-    serializer: serializer
+    subspace: ordersDir,
+    metaData: metaData
 )
 ```
+
+**詳細**: [docs/design/directory-layer-design.md](docs/design/directory-layer-design.md)
 
 ### Record Layerの付加価値
 
