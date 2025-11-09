@@ -63,7 +63,7 @@ struct SimpleExample {
             print("  1. Ensure FoundationDB is running: brew services start foundationdb")
             print("  2. Check status: fdbcli --exec 'status'")
             print("\nNote: This example exits with code 1 to indicate failure (important for CI/scripts).")
-            Foundation.exit(1)
+            exit(1)
         }
     }
 

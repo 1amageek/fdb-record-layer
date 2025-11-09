@@ -19,9 +19,8 @@
 - ✅ 適切なエラーハンドリング（型付きエラー、検証）
 
 **改善推奨事項** (優先度順):
-1. 🔧 [MEDIUM] OnlineIndexer.swiftの不要な`weak self`を削除
-2. 📝 [LOW] 一部のpublic APIにドキュメントを追加
-3. 🧹 [LOW] TODO/FIXMEコメントの整理
+1. 📝 [LOW] 一部のpublic APIにドキュメントを追加
+2. 🧹 [LOW] TODO/FIXMEコメントの整理
 
 ---
 
@@ -340,52 +339,22 @@ public final class RecordStore<Record: Recordable>: Sendable {
 |-----------|---------|--------|------|
 | 1 | Type Safety and Concurrency | 100% | ✅ Excellent |
 | 2 | API Design | 95% | ✅ Good |
-| 3 | Memory Management | 90% | 🔧 Good (weak self改善推奨) |
+| 3 | Memory Management | 100% | ✅ Excellent |
 | 4 | Error Handling | 100% | ✅ Excellent |
 | 5 | Testing | 95% | ✅ Good |
 | 6 | Performance | 100% | ✅ Excellent |
 | 7 | Documentation | 95% | ✅ Excellent |
 | 8 | Code Quality | 95% | ✅ Excellent |
 
-**総合評価**: 97% - ✅ **Excellent**
+**総合評価**: 98% - ✅ **Excellent**
 
 ---
 
 ## 推奨アクションプラン
 
-### Phase 1: 即時対応（優先度: MEDIUM）
+### Phase 1: 継続改善（優先度: LOW）
 
-**1. OnlineIndexer.swiftの`weak self`削除**
-
-**ファイル**: `Sources/FDBRecordLayer/Index/OnlineIndexer.swift`
-**行**: 271
-
-**Before**:
-```swift
-return try await database.withRecordContext { [weak self] context in
-    guard let self = self else { throw RecordLayerError.contextAlreadyClosed }
-    let transaction = context.getTransaction()
-    // ...
-}
-```
-
-**After**:
-```swift
-return try await database.withRecordContext { context in
-    let transaction = context.getTransaction()
-    // ... self を直接使用
-}
-```
-
-**影響**: 最小限（1ファイル、1箇所）
-**テスト**: 既存のOnlineIndexerテストで確認
-**工数**: 5分
-
----
-
-### Phase 2: 継続改善（優先度: LOW）
-
-**2. public APIドキュメントの追加**
+**1. public APIドキュメントの追加**
 
 **対象ファイル**:
 - `RecordContext.swift`: `closed`, `commit()`, `cancel()` など
@@ -430,13 +399,12 @@ public func methodName() throws -> ReturnType
 
 ### 改善の余地
 
-1. 🔧 不要な`weak self`の削除（1箇所）
-2. 📝 一部APIのドキュメント追加
-3. 🧹 TODO/FIXMEの整理
+1. 📝 一部APIのドキュメント追加
+2. 🧹 TODO/FIXMEの整理
 
 ### 総評
 
-**プロジェクトは swift-coding-guidelines.md に97%準拠しており、Excellentと評価します。**
+**プロジェクトは swift-coding-guidelines.md に98%準拠しており、Excellentと評価します。**
 
 改善推奨事項はすべて低優先度であり、現在の実装は本番環境で使用可能な品質に達しています。特に、並行性設計とエラーハンドリングの実装は模範的です。
 

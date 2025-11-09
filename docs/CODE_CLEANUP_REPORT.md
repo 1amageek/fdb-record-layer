@@ -235,31 +235,34 @@ find Sources -name "*.swift" -exec basename {} \; | sort | uniq -d
 
 ### 9.1 追跡されていないファイル
 
-**結果**: `docs/COMPLIANCE_REVIEW.md` のみ
+**結果**: なし（すべてコミット済み）
 
 **確認コマンド**:
 ```bash
-git ls-files --others --exclude-standard
+git status
 ```
 
-**判断**: ✅ 正常（新規作成したレポートのみ）
+**判断**: ✅ クリーン - すべてのファイルがコミット済み
 
 ### 9.2 変更されたファイル
 
-**Modified**:
+**最近のコミットに含まれた変更**:
 1. `Examples/SimpleExample.swift` - Error handling with proper exit codes and FDB network management
 2. `Examples/MultiTypeExample.swift` - Error handling with proper exit codes and FDB network management
 3. `Examples/PartitionExample.swift` - Error handling with proper exit codes and FDB network management
-4. `Sources/FDBRecordLayer/Index/OnlineIndexer.swift` - Removed unnecessary weak self (completed)
+4. `Sources/FDBRecordLayer/Index/OnlineIndexer.swift` - Removed unnecessary weak self
 5. `Sources/FDBRecordLayer/Core/Types.swift` - Converted Japanese comments to English
 6. `Sources/FDBRecordLayer/Serialization/Recordable.swift` - Converted Japanese comments to English
 7. `Sources/FDBRecordLayer/Store/RecordStore.swift` - Converted Japanese comments to English
+8. `Sources/FDBRecordLayerMacros/DirectoryMacro.swift` - Fixed unused variable warning
+9. `Tests/FDBRecordLayerTests/Macros/DirectoryMacroTests.swift` - Fixed unused variable warning
 
-**New Documentation**:
+**新規作成したドキュメント**:
 1. `docs/COMPLIANCE_REVIEW.md` - Swift coding guidelines compliance audit
 2. `docs/CODE_CLEANUP_REPORT.md` - Code cleanup and migration status report (this file)
+3. `docs/TEST_ISOLATION_GUIDE.md` - Test isolation pattern guide
 
-**判断**: ✅ すべて意図的な変更
+**判断**: ✅ すべてコミット済み、意図的な変更
 
 ---
 
