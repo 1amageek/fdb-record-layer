@@ -13,7 +13,7 @@ import Foundation
 /// 5. Multi-record type support
 /// 6. Configuration presets (default, conservative, aggressive)
 /// 7. Progress tracking (separate RangeSets for Phase 1/2)
-@Suite("OnlineIndexScrubber Tests")
+@Suite("OnlineIndexScrubber Tests", .serialized)
 struct OnlineIndexScrubberTests {
 
     // MARK: - Initialization
@@ -162,41 +162,61 @@ struct OnlineIndexScrubberTests {
         }
     }
 
-    // MARK: - Factory Method Validation Tests
-
-    @Test("Factory method validates index type")
-    func factoryValidatesIndexType() async throws {
+    /// Run a test with automatic cleanup (ensures test isolation)
+    ///
+    /// This helper ensures that the test subspace is always cleaned up,
+    /// even if the test throws an error. This prevents test interference.
+    func withTestEnvironment<T>(
+        _ body: (any DatabaseProtocol, Subspace, Schema) async throws -> T
+    ) async throws -> T {
         let db = try createTestDatabase()
         let subspace = createTestSubspace()
         let schema = try createTestSchema()
 
-        // Create a COUNT index (not supported for scrubbing)
-        let countIndex = Index(
-            name: "user_count",
-            type: .count,
-            rootExpression: FieldKeyExpression(fieldName: "age"),
-            recordTypes: ["TestUser"]
-        )
-
-        // Mark index as readable
-        let indexStateManager = IndexStateManager(database: db, subspace: subspace)
-        try await indexStateManager.enable(countIndex.name)
-        try await indexStateManager.makeReadable(countIndex.name)
-
-        let recordAccess = TestUserAccess()
-
-        // Should throw error for unsupported index type
-        await #expect(throws: RecordLayerError.self) {
-            try await OnlineIndexScrubber<TestUser>.create(
-                database: db,
-                subspace: subspace,
-                schema: schema,
-                index: countIndex,
-                recordAccess: recordAccess
-            )
+        // Execute test and ensure cleanup happens even if test fails
+        do {
+            let result = try await body(db, subspace, schema)
+            try await cleanup(database: db, subspace: subspace)
+            return result
+        } catch {
+            // Cleanup even on failure
+            try? await cleanup(database: db, subspace: subspace)
+            throw error
         }
+    }
 
-        try await cleanup(database: db, subspace: subspace)
+    // MARK: - Factory Method Validation Tests
+
+    @Test("Factory method validates index type")
+    func factoryValidatesIndexType() async throws {
+        try await withTestEnvironment { db, subspace, schema in
+            // Create a COUNT index (not supported for scrubbing)
+            let countIndex = Index(
+                name: "user_count",
+                type: .count,
+                rootExpression: FieldKeyExpression(fieldName: "age"),
+                recordTypes: ["TestUser"]
+            )
+
+            // Mark index as readable
+            let indexStateManager = IndexStateManager(database: db, subspace: subspace)
+            try await indexStateManager.enable(countIndex.name)
+            try await indexStateManager.makeReadable(countIndex.name)
+
+            let recordAccess = TestUserAccess()
+
+            // Should throw error for unsupported index type
+            await #expect(throws: RecordLayerError.self) {
+                try await OnlineIndexScrubber<TestUser>.create(
+                    database: db,
+                    subspace: subspace,
+                    schema: schema,
+                    index: countIndex,
+                    recordAccess: recordAccess
+                )
+            }
+        }
+        // Cleanup handled automatically by withTestEnvironment
     }
 
     @Test("Factory method validates index state")

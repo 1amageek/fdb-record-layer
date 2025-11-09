@@ -7,7 +7,7 @@ import Foundation
 ///
 /// NOTE: Integration tests require a running FoundationDB instance
 /// Unit tests can run without FDB
-@Suite("IndexStateManager Tests")
+@Suite("IndexStateManager Tests", .serialized)
 struct IndexStateManagerTests {
 
     // MARK: - Initialization

@@ -100,7 +100,8 @@ public struct DirectoryMacro: DeclarationMacro {
             ])
         }
 
-        let typeName = genericArg.argument.description.trimmingCharacters(in: .whitespaces)
+        // Type name is extracted from generic argument (not currently used but available for future validation)
+        _ = genericArg.argument.description.trimmingCharacters(in: .whitespaces)
 
         // Extract KeyPath fields from the path elements (variadic arguments)
         var keyPathFields: [String] = []

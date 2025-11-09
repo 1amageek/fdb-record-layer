@@ -106,15 +106,15 @@ extension RecordLayerError {
         return .internalError("Invalid indexing policy: \(message)")
     }
 
-    /// スクラバーのリトライが上限に達した
+    /// Scrubber retry exhausted
     ///
     /// - Parameters:
-    ///   - phase: 失敗したフェーズ（"Phase 1", "Phase 2"）
-    ///   - operation: 失敗した操作（"scrubIndexEntriesBatch", "scrubRecordsBatch"）
-    ///   - keyRange: 処理中のキー範囲
-    ///   - attempts: 試行回数
-    ///   - lastError: 最後のエラー
-    ///   - recommendation: 推奨される対処方法
+    ///   - phase: Failed phase ("Phase 1", "Phase 2")
+    ///   - operation: Failed operation ("scrubIndexEntriesBatch", "scrubRecordsBatch")
+    ///   - keyRange: Key range being processed
+    ///   - attempts: Number of attempts
+    ///   - lastError: Last error encountered
+    ///   - recommendation: Recommended action
     public static func scrubberRetryExhausted(
         phase: String,
         operation: String,
@@ -137,12 +137,12 @@ extension RecordLayerError {
         return .internalError(message)
     }
 
-    /// キースキップ処理が失敗した
+    /// Key skip operation failed
     ///
     /// - Parameters:
-    ///   - key: スキップしようとしたキー
-    ///   - reason: 失敗理由
-    ///   - attempts: 試行回数
+    ///   - key: Key that was attempted to skip
+    ///   - reason: Reason for failure
+    ///   - attempts: Number of attempts
     public static func scrubberSkipFailed(
         key: String,
         reason: Error,

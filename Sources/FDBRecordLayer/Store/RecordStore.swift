@@ -169,19 +169,19 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Internal Methods (shared by RecordStore and RecordTransaction)
 
-    /// 内部保存ロジック（RecordStoreとRecordTransactionで共有）
+    /// Internal save logic (shared between RecordStore and RecordTransaction)
     ///
     /// - Parameters:
-    ///   - record: 保存するレコード
-    ///   - context: トランザクションコンテキスト
+    ///   - record: Record to save
+    ///   - context: Transaction context
     /// - Throws: RecordLayerError if save fails
     internal func saveInternal(_ record: Record, context: RecordContext) async throws {
         let recordAccess = GenericRecordAccess<Record>()
         let bytes = try recordAccess.serialize(record)
         let primaryKey = recordAccess.extractPrimaryKey(from: record)
 
-        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
-        // TODO: Phase 2a-3で#Subspace対応を追加
+        // Subspace control: Always automatically add record type name (Phase 2a-1)
+        // TODO: Add #Subspace support in Phase 2a-3
         let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
         let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
 
@@ -209,20 +209,20 @@ public final class RecordStore<Record: Recordable>: Sendable {
         )
     }
 
-    /// 内部取得ロジック（RecordStoreとRecordTransactionで共有）
+    /// Internal fetch logic (shared between RecordStore and RecordTransaction)
     ///
     /// - Parameters:
-    ///   - primaryKey: プライマリキー値
-    ///   - context: トランザクションコンテキスト
-    /// - Returns: レコード（存在しない場合は nil）
+    ///   - primaryKey: Primary key value
+    ///   - context: Transaction context
+    /// - Returns: Record (nil if not found)
     /// - Throws: RecordLayerError if fetch fails
     internal func fetchInternal(by primaryKey: any TupleElement, context: RecordContext) async throws -> Record? {
         let recordAccess = GenericRecordAccess<Record>()
 
-        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
+        // Subspace control: Always automatically add record type name (Phase 2a-1)
         let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
 
-        // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
+        // Composite primary key support: Use Tuple as-is, or convert single value to Tuple
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
         let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
 
@@ -234,19 +234,19 @@ public final class RecordStore<Record: Recordable>: Sendable {
         return try recordAccess.deserialize(bytes)
     }
 
-    /// 内部削除ロジック（RecordStoreとRecordTransactionで共有）
+    /// Internal delete logic (shared between RecordStore and RecordTransaction)
     ///
     /// - Parameters:
-    ///   - primaryKey: プライマリキー値
-    ///   - context: トランザクションコンテキスト
+    ///   - primaryKey: Primary key value
+    ///   - context: Transaction context
     /// - Throws: RecordLayerError if delete fails
     internal func deleteInternal(by primaryKey: any TupleElement, context: RecordContext) async throws {
         let recordAccess = GenericRecordAccess<Record>()
 
-        // Subspace制御: 常にレコードタイプ名を自動追加（Phase 2a-1）
+        // Subspace control: Always automatically add record type name (Phase 2a-1)
         let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
 
-        // 複合主キー対応: primaryKeyがTupleの場合はそのまま、単一値の場合はTupleに変換
+        // Composite primary key support: Use Tuple as-is, or convert single value to Tuple
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
         let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
 

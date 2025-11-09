@@ -155,7 +155,8 @@ struct DirectoryMacroTests {
         // This test verifies that @Recordable macro reads #Directory and generates
         // the openDirectory() and store() methods in the extension
 
-        let source = """
+        // Example source that would be processed by @Recordable macro:
+        _ = """
             @Recordable
             struct User {
                 #Directory<User>(["app", "users"], layer: .recordStore)

@@ -268,9 +268,7 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
         recordSubspace: Subspace,
         indexSubspace: Subspace
     ) async throws -> FDB.Bytes {
-        return try await database.withRecordContext { [weak self] context in
-            guard let self = self else { throw RecordLayerError.contextAlreadyClosed }
-
+        return try await database.withRecordContext { context in
             let transaction = context.getTransaction()
             var recordsInBatch = 0
             var lastKey = begin
