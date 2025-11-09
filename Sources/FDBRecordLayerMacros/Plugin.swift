@@ -11,7 +11,7 @@ struct FDBRecordLayerMacrosPlugin: CompilerPlugin {
         IndexMacro.self,
         UniqueMacro.self,
         FieldOrderMacro.self,
-        SubspaceMacro.self,
+        DirectoryMacro.self,
         RelationshipMacro.self,
         AttributeMacro.self,
     ]

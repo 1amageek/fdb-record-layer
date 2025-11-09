@@ -1,27 +1,5 @@
 import Foundation
 
-/// Represents an element in a subspace path
-///
-/// Can be either a string literal or a PartialKeyPath for dynamic interpolation.
-///
-/// **Usage**:
-/// ```swift
-/// #Subspace<User>(["app", "accounts", \.accountID, "users"])
-/// //               ^^^^^  ^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^
-/// //               String String      PartialKeyPath String
-/// ```
-public enum SubspacePathElement<T> {
-    case literal(String)
-    case keyPath(PartialKeyPath<T>)
-}
-
-// ExpressibleByStringLiteral conformance for convenient syntax
-extension SubspacePathElement: ExpressibleByStringLiteral {
-    public init(stringLiteral value: String) {
-        self = .literal(value)
-    }
-}
-
 /// Marks a struct as a persistable record type
 ///
 /// This macro generates all necessary protocol conformances and methods
@@ -212,43 +190,112 @@ public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(m
 @freestanding(declaration)
 public macro FieldOrder<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
 
-/// Defines a dynamic subspace path for multi-tenant or hierarchical data
+/// Represents an element in a directory path
 ///
-/// This is a marker macro detected by @Recordable to generate partition-aware store methods.
+/// Can be either a string literal or a PartialKeyPath for dynamic interpolation.
 ///
 /// **Usage**:
 /// ```swift
+/// #Directory<Order>(["tenants", \.accountID, "orders"], layer: .partition)
+/// //                 ^^^^^^^^^  ^^^^^^^^^^      ^^^^^^^^
+/// //                 String     PartialKeyPath  String
+/// ```
+public enum DirectoryPathElement<T> {
+    case literal(String)
+    case keyPath(PartialKeyPath<T>)
+}
+
+// ExpressibleByStringLiteral conformance for convenient syntax
+extension DirectoryPathElement: ExpressibleByStringLiteral {
+    public init(stringLiteral value: String) {
+        self = .literal(value)
+    }
+}
+
+/// Defines a directory path using FoundationDB Directory Layer
+///
+/// This macro validates the directory path and layer parameter, and serves as a marker
+/// for the @Recordable macro to generate type-safe store() methods.
+///
+/// **Basic Usage**:
+/// ```swift
 /// @Recordable
 /// struct User {
-///     #Subspace<User>(["app", "accounts", \.accountID, "users"])
+///     #Directory<User>(["app", "users"])
 ///
 ///     @PrimaryKey var userID: Int64
+///     var name: String
+/// }
+/// ```
+///
+/// **Multi-tenant with Partition**:
+/// ```swift
+/// @Recordable
+/// struct Order {
+///     #Directory<Order>(
+///         ["tenants", \.accountID, "orders"],
+///         layer: .partition
+///     )
+///
+///     @PrimaryKey var orderID: Int64
 ///     var accountID: String  // Partition key
-///     var email: String
 /// }
 ///
 /// // @Recordable generates:
-/// // extension User {
+/// // extension Order {
+/// //     static func openDirectory(
+/// //         accountID: String,
+/// //         database: any DatabaseProtocol
+/// //     ) async throws -> DirectorySubspace
+/// //
 /// //     static func store(
 /// //         accountID: String,
-/// //         partitionManager: PartitionManager
-/// //     ) async throws -> RecordStore<User>
+/// //         database: any DatabaseProtocol,
+/// //         metaData: RecordMetaData
+/// //     ) async throws -> RecordStore<Order>
 /// // }
 ///
 /// // Usage:
-/// let userStore = try await User.store(
-///     accountID: "acct-001",
-///     partitionManager: partitionManager
+/// let orderStore = try await Order.store(
+///     accountID: "account-123",
+///     database: database,
+///     metaData: metaData
 /// )
-/// // Path: /app/accounts/acct-001/users/
 /// ```
 ///
-/// **Multi-level partitions**:
+/// **Multi-level partitioning**:
 /// ```swift
-/// #Subspace<Message>(["app", "accounts", \.accountID, "channels", \.channelID, "messages"])
+/// @Recordable
+/// struct Message {
+///     #Directory<Message>(
+///         ["tenants", \.accountID, "channels", \.channelID, "messages"],
+///         layer: .partition
+///     )
+///
+///     @PrimaryKey var messageID: Int64
+///     var accountID: String  // First partition key
+///     var channelID: String  // Second partition key
+/// }
 /// ```
+///
+/// **Directory Layers**:
+/// - `.recordStore` (default): Standard RecordStore directory
+/// - `.partition`: Multi-tenant partition (requires at least one KeyPath)
+/// - `.luceneIndex`: Lucene full-text search index
+/// - `.timeSeries`: Time-series data storage
+/// - `.vectorIndex`: Vector search index
+/// - Custom: `"my_custom_format_v2"`
+///
+/// **Validation**:
+/// - Generic type parameter `<T>` is required
+/// - Path must be an array literal
+/// - Array elements must be string literals or KeyPath expressions
+/// - If `layer: .partition`, at least one KeyPath is required
 @freestanding(declaration)
-public macro Subspace<T>(_ path: [SubspacePathElement<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "SubspaceMacro")
+public macro Directory<T>(
+    _ path: [DirectoryPathElement<T>],
+    layer: DirectoryLayer = .recordStore
+) = #externalMacro(module: "FDBRecordLayerMacros", type: "DirectoryMacro")
 
 /// Defines a relationship to another record type
 ///
