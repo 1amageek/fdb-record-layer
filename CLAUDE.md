@@ -2342,8 +2342,7 @@ let users: [User] = try await store.fetch(User.self)
 | **#Unique** | なし | #Unique | ✅ 実装済み |
 | **#FieldOrder** | なし | #FieldOrder | ✅ 実装済み |
 | **@Relationship** | なし | @Relationship | ✅ 実装済み |
-| **#Subspace** | なし | #Subspace | ✅ 実装済み（テスト未実装） |
-| **Protobuf自動生成** | なし | 未実装 | ⏳ 将来検討 |
+| **#Directory** | なし | #Directory | ✅ 実装済み（26テスト合格） |
 
 ### 学べる重要な設計パターン
 

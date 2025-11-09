@@ -1,273 +1,450 @@
-# FoundationDB Record Layer - Examples
+# FDB Record Layer - Examples
 
-This directory contains practical examples demonstrating how to use the FDB Record Layer.
+このディレクトリには、FDB Record Layer（マクロAPI）の実践的な使用例が含まれています。
 
-## Prerequisites
+## 前提条件
 
-1. **FoundationDB**: Install and run FoundationDB locally
-   ```bash
-   brew install foundationdb
-   brew services start foundationdb
-   ```
-
-2. **Protocol Buffers Compiler**: Install `protoc`
-   ```bash
-   brew install protobuf
-   ```
-
-3. **Swift Protobuf Plugin**: Install the Swift plugin for protoc
-   ```bash
-   brew install swift-protobuf
-   ```
-
-## Running the Simple Example
-
-### Step 1: Generate Swift Code from Protobuf
+### 1. FoundationDBのインストールと起動
 
 ```bash
-cd Examples
-protoc --swift_out=. User.proto
+# インストール
+brew install foundationdb
+
+# 起動
+brew services start foundationdb
+
+# 動作確認
+fdbcli --exec "status"
 ```
 
-This will generate `User.pb.swift` containing the Swift structs for `User` and `RecordTypeUnion`.
+### 2. プロジェクトのビルド
 
-**Note**: Generated `.pb.swift` files are ignored by git (see `.gitignore`).
+```bash
+cd /path/to/fdb-record-layer
+swift build
+```
 
-### Step 2: Run the Example
+---
 
+## サンプル一覧
+
+### 1. SimpleExample.swift - 基本的な使い方
+
+**内容**:
+- `@Recordable`マクロでレコードタイプを定義
+- `#Directory`でデータ保存場所を指定
+- `#Index`でインデックスを定義
+- 基本的なCRUD操作
+- KeyPathベースのクエリ
+
+**実行方法**:
 ```bash
 swift run SimpleExample
 ```
 
-### Expected Output
+**コード例**:
+```swift
+@Recordable
+struct User {
+    #Directory<User>("app", "users", layer: .recordStore)
+    #Index<User>([\email])
+
+    @PrimaryKey var userID: Int64
+    var name: String
+    var email: String
+    var age: Int32
+
+    @Default(value: Date())
+    var createdAt: Date
+}
+
+// RecordStoreを開く（自動生成されたメソッド）
+let store = try await User.store(database: database, schema: schema)
+
+// 保存
+try await store.save(user)
+
+// クエリ
+let results = try await store.query(User.self)
+    .where(\.email, .equals, "alice@example.com")
+    .execute()
+```
+
+**学べること**:
+- ✅ マクロAPIの基本
+- ✅ レコードの保存・読み取り・更新・削除
+- ✅ インデックスを使った検索
+- ✅ デフォルト値の使用
+
+---
+
+### 2. MultiTypeExample.swift - 複数のレコードタイプ
+
+**内容**:
+- 複数の`@Recordable`型（User、Order）
+- `#Directory`でのパーティション（マルチテナント）
+- レコード間の関係（外部キー）
+- クロスタイプクエリ
+- ユニーク制約
+
+**実行方法**:
+```bash
+swift run MultiTypeExample
+```
+
+**コード例**:
+```swift
+@Recordable
+struct User {
+    #Directory<User>("app", "users")
+    #Unique<User>([\email])
+
+    @PrimaryKey var userID: Int64
+    var name: String
+    var email: String
+}
+
+@Recordable
+struct Order {
+    #Directory<Order>("tenants", Field(\Order.accountID), "orders", layer: .partition)
+    #Index<Order>([\userID])
+
+    @PrimaryKey var orderID: Int64
+    var accountID: String  // パーティションキー
+    var userID: Int64      // 外部キー
+    var total: Double
+}
+
+// 両方の型をスキーマに登録
+let schema = Schema([User.self, Order.self])
+
+let userStore = try await User.store(database: database, schema: schema)
+let orderStore = try await Order.store(
+    accountID: "account-123",
+    database: database,
+    schema: schema
+)
+```
+
+**学べること**:
+- ✅ 複数のレコードタイプ管理
+- ✅ パーティションによるデータ分離
+- ✅ 外部キー関係
+- ✅ ユニーク制約
+- ✅ クロスタイプクエリ
+
+---
+
+### 3. PartitionExample.swift - マルチテナントアーキテクチャ
+
+**内容**:
+- マルチレベルパーティション（tenant → channel → messages）
+- テナント間のデータ完全分離
+- 同じ主キーが異なるパーティションで使用可能
+- パーティションごとの統計情報
+
+**実行方法**:
+```bash
+swift run PartitionExample
+```
+
+**コード例**:
+```swift
+@Recordable
+struct Message {
+    #Directory<Message>(
+        "tenants",
+        Field(\Message.tenantID),
+        "channels",
+        Field(\Message.channelID),
+        "messages",
+        layer: .partition
+    )
+
+    #Index<Message>([\authorID])
+
+    @PrimaryKey var messageID: Int64
+    var tenantID: String   // 第1パーティションキー
+    var channelID: String  // 第2パーティションキー
+    var content: String
+}
+
+// テナントA、チャンネル"general"
+let tenantAGeneralStore = try await Message.store(
+    tenantID: "tenant-A",
+    channelID: "general",
+    database: database,
+    schema: schema
+)
+
+// テナントB、チャンネル"general"（完全に分離）
+let tenantBGeneralStore = try await Message.store(
+    tenantID: "tenant-B",
+    channelID: "general",
+    database: database,
+    schema: schema
+)
+```
+
+**学べること**:
+- ✅ マルチレベルパーティション
+- ✅ テナント別データ分離
+- ✅ SaaSアプリケーションのアーキテクチャ
+- ✅ パーティションごとの分析
+
+---
+
+## サンプル実行の期待される出力
+
+### SimpleExample.swift
 
 ```
-FDB Record Layer - Simple Example (Protobuf)
-==============================================
+FDB Record Layer - Macro API Example
+=====================================
 
 1. Initializing FoundationDB...
    ✓ Connected to FoundationDB
 
-2. Defining metadata...
-   ✓ Metadata created with 2 indexes
+2. Creating schema...
+   ✓ Schema created with User type
 
-3. Creating record store...
-   ✓ Record store created
+3. Opening record store...
+   ✓ Record store opened at: app/users
 
-4. Inserting records...
-   ✓ Inserted 3 records
+4. Creating sample records...
+5. Saving records...
+   ✓ Saved 3 records
 
-5. Loading record by primary key (user_id = 1)...
-   ✓ Record loaded:
+6. Loading record by primary key (userID = 1)...
+   ✓ Found user:
      - ID: 1
      - Name: Alice
      - Email: alice@example.com
      - Age: 30
 
-6. Querying records (age >= 30)...
-   Query results:
-     - Alice (age: 30, email: alice@example.com)
-     - Charlie (age: 35, email: charlie@example.com)
-   ✓ Found 2 record(s)
+7. Querying by email (bob@example.com)...
+   ✓ Found user: Bob (ID: 2)
 
-7. Querying by email index (email = 'bob@example.com')...
-   Query results:
-     - Found: Bob (user_id: 2)
+8. Querying users aged 30 or older...
+   ✓ Found 2 user(s):
+     - Alice (age: 30)
+     - Charlie (age: 35)
 
-8. Deleting record (user_id = 2)...
-   ✓ Record deleted
+9. Updating Bob's age...
+   ✓ Updated Bob's age to 26
 
-9. Verifying deletion...
-   ✓ Record successfully deleted
+10. Verifying update...
+   ✓ Bob's age is now: 26
+
+11. Deleting Charlie...
+   ✓ Deleted user ID 3
+
+12. Verifying deletion...
+   ✓ Charlie successfully deleted
+
+13. Counting remaining users...
+   ✓ Total users: 2
 
 Example completed successfully!
 
-Key Takeaways:
-  • Use Protobuf for type-safe record definitions
-  • Indexes are automatically maintained
-  • Queries use indexes when available
-  • All operations are ACID transactions
+Key Features of Macro API:
+  • @Recordable - No manual Protobuf files needed
+  • #Directory - Type-safe directory paths
+  • #Index - Declarative index definitions
+  • @PrimaryKey - Explicit primary key marking
+  • @Default - Default value support
+  • Type-safe queries with KeyPath-based filtering
+  • Automatic store() method generation
 ```
 
-## What the Example Demonstrates
+---
 
-### 1. Schema Definition (User.proto)
-
-```protobuf
-message User {
-    int64 user_id = 1;
-    string name = 2;
-    string email = 3;
-    int64 age = 4;
-}
-
-message RecordTypeUnion {
-    oneof record {
-        User user = 1;
-    }
-}
-```
-
-- Defines a `User` message type with 4 fields
-- Defines a union type for all record types in the database
-
-### 2. Type-Safe Record Creation
-
-```swift
-let alice = User.with {
-    $0.userID = 1
-    $0.name = "Alice"
-    $0.email = "alice@example.com"
-    $0.age = 30
-}
-```
-
-- Uses SwiftProtobuf's `.with` style for initialization
-- Type-safe: compiler checks field names and types
-
-### 3. Metadata and Indexes
-
-```swift
-let emailIndex = Index(
-    name: "user_by_email",
-    type: .value,
-    rootExpression: FieldKeyExpression(fieldName: "email")
-)
-
-let metaData = try RecordMetaDataBuilder()
-    .setVersion(1)
-    .addRecordType(userType)
-    .addIndex(emailIndex)
-    .build()
-```
-
-- Defines indexes on `email` and `age` fields
-- Indexes are automatically maintained on insert/update/delete
-
-### 4. CRUD Operations
-
-```swift
-// Create
-try await recordStore.saveRecord(alice, context: context)
-
-// Read
-let user = try await recordStore.loadRecord(
-    primaryKey: Tuple(Int64(1)),
-    context: context
-)
-
-// Delete
-try await recordStore.deleteRecord(
-    primaryKey: Tuple(Int64(2)),
-    context: context
-)
-```
-
-### 5. Querying
-
-```swift
-let query = RecordQuery(
-    recordType: "User",
-    filter: FieldQueryComponent(
-        fieldName: "age",
-        comparison: .greaterThanOrEquals,
-        value: Int64(30)
-    )
-)
-
-let cursor = try await recordStore.executeQuery(query, context: context)
-for try await user in cursor {
-    print(user.name)
-}
-```
-
-- Query planner automatically selects appropriate index
-- Streaming results with async/await
-- Strongly-typed results (returns `User` type)
-
-## File Structure
+## ファイル構造
 
 ```
 Examples/
-├── README.md              # This file
-├── User.proto            # Protobuf schema definition
-├── User.pb.swift         # Generated (gitignored)
-└── SimpleExample.swift   # Example code
+├── README.md               # このファイル
+├── SimpleExample.swift     # 基本的な使用例
+├── MultiTypeExample.swift  # 複数レコードタイプの例
+└── PartitionExample.swift  # マルチテナントの例
 ```
 
-## Next Steps
+---
 
-After running the simple example, explore:
+## 主要な概念
 
-1. **Add more indexes**: Try creating compound indexes
-   ```swift
-   let compoundIndex = Index(
-       name: "user_by_name_age",
-       type: .value,
-       rootExpression: ConcatenateKeyExpression(children: [
-           FieldKeyExpression(fieldName: "name"),
-           FieldKeyExpression(fieldName: "age")
-       ])
-   )
-   ```
+### 1. @Recordableマクロ
 
-2. **Aggregate indexes**: Use COUNT or SUM indexes
-   ```swift
-   let countIndex = Index(
-       name: "user_count_by_age",
-       type: .count,
-       rootExpression: FieldKeyExpression(fieldName: "age")
-   )
-   ```
+レコードタイプを定義するメインマクロ。
 
-3. **Complex queries**: Combine multiple filters
-   ```swift
-   let complexQuery = RecordQuery(
-       recordType: "User",
-       filter: AndQueryComponent(children: [
-           FieldQueryComponent(fieldName: "age", comparison: .greaterThan, value: 25),
-           FieldQueryComponent(fieldName: "email", comparison: .startsWith, value: "alice")
-       ])
-   )
-   ```
+```swift
+@Recordable
+struct User {
+    @PrimaryKey var userID: Int64
+    var name: String
+}
+```
 
-## Troubleshooting
+**自動生成**:
+- `Recordable`プロトコル準拠
+- Protobufシリアライズメソッド
+- `store()`メソッド（`#Directory`と組み合わせた場合）
 
-### FoundationDB Connection Error
+### 2. #Directoryマクロ
+
+データの保存場所を指定。
+
+```swift
+// 静的パス
+#Directory<User>("app", "users", layer: .recordStore)
+
+// パーティション（動的パス）
+#Directory<Order>(
+    "tenants",
+    Field(\Order.accountID),
+    "orders",
+    layer: .partition
+)
+```
+
+### 3. #Indexマクロ
+
+検索インデックスを定義。
+
+```swift
+// 単一インデックス
+#Index<User>([\email])
+
+// 複合インデックス
+#Index<User>([\city, \age])
+
+// 複数のインデックス
+#Index<User>([\email], [\username])
+```
+
+### 4. #Uniqueマクロ
+
+ユニーク制約を持つインデックス。
+
+```swift
+#Unique<User>([\email])  // emailは一意
+```
+
+### 5. @PrimaryKeyマクロ
+
+主キーフィールドを指定（必須）。
+
+```swift
+@PrimaryKey var userID: Int64
+
+// 複合主キー
+@PrimaryKey var tenantID: String
+@PrimaryKey var userID: Int64
+```
+
+### 6. @Defaultマクロ
+
+デフォルト値を指定。
+
+```swift
+@Default(value: Date())
+var createdAt: Date
+```
+
+### 7. @Transientマクロ
+
+永続化しないフィールド。
+
+```swift
+@Transient var isLoggedIn: Bool = false
+```
+
+---
+
+## よくある質問
+
+### Q1: Protobufファイルは必要ですか？
+
+**A**: いいえ、マクロAPIを使用する場合、`.proto`ファイルは不要です。
+
+---
+
+### Q2: 既存のProtobufスキーマと互換性はありますか？
+
+**A**: はい、`#FieldOrder`マクロを使ってフィールド番号を明示的に指定できます。
+
+---
+
+### Q3: どのサンプルから始めるべきですか？
+
+**A**: `SimpleExample.swift`から始めることをお勧めします。基本的な概念がすべて含まれています。
+
+---
+
+### Q4: パーティションはいつ使うべきですか？
+
+**A**: マルチテナントアプリケーション、地理的データ分離、またはセキュリティ要件で厳格なデータ分離が必要な場合に使用してください。
+
+---
+
+## トラブルシューティング
+
+### FoundationDB接続エラー
 
 ```
 Error: Could not connect to FoundationDB
 ```
 
-**Solution**: Ensure FoundationDB is running
+**解決法**:
 ```bash
+# FoundationDBが起動しているか確認
+brew services list | grep foundationdb
+
+# 起動していない場合
 brew services start foundationdb
-# Verify it's running
-fdbcli
+
+# ステータス確認
+fdbcli --exec "status"
 ```
 
-### Protobuf Generation Error
+### ビルドエラー
 
 ```
-Error: protoc: command not found
+error: no such module 'FDBRecordLayer'
 ```
 
-**Solution**: Install protobuf compiler
+**解決法**:
 ```bash
-brew install protobuf swift-protobuf
+# プロジェクトルートで
+swift package clean
+swift package resolve
+swift build
 ```
 
-### Import Error
+---
 
-```
-Error: No such module 'SwiftProtobuf'
-```
+## 次のステップ
 
-**Solution**: SwiftProtobuf should be included as a dependency in `Package.swift`
+サンプルを実行したら、以下のドキュメントで詳細を学びましょう：
 
-## Further Reading
+### ガイド
 
-- [Main README](../README.md) - Full project documentation
-- [FoundationDB Documentation](https://apple.github.io/foundationdb/)
-- [SwiftProtobuf Guide](https://github.com/apple/swift-protobuf)
-- [Record Layer Architecture](../docs/ARCHITECTURE.md)
+- **[getting-started.md](../docs/guides/getting-started.md)** - クイックスタートガイド
+- **[macro-usage-guide.md](../docs/guides/macro-usage-guide.md)** - 包括的なマクロAPIリファレンス
+- **[best-practices.md](../docs/guides/best-practices.md)** - ベストプラクティス
+
+### 設計ドキュメント
+
+- **[swift-macro-design.md](../docs/design/swift-macro-design.md)** - マクロAPIの設計
+- **[query-planner-optimization.md](../docs/design/query-planner-optimization.md)** - クエリ最適化
+- **[online-index-scrubber.md](../docs/design/online-index-scrubber.md)** - インデックス整合性
+
+### リソース
+
+- **[FoundationDB Documentation](https://apple.github.io/foundationdb/)** - 公式ドキュメント
+- **[CLAUDE.md](../CLAUDE.md)** - FoundationDB使い方ガイド
+
+---
+
+**最終更新**: 2025-01-09
+**マクロAPI**: ✅ 100%完了

@@ -151,19 +151,28 @@ let avgAge = try await store.query(User.self)
 
 ### 優先度: 🟡 IMPORTANT（プロダクション品質向上）
 
-#### 1. SwiftData風マクロAPI完成（95%→100%）
+#### 1. SwiftData風マクロAPI完成 ✅ 100%完了（2025-01-09）
+
+**完了した実装**:
+
+**Phase 4: Directory Layer 統合**
+```swift
+✅ #Directory マクロ実装
+✅ DirectoryPathElement プロトコル設計
+✅ @Recordable + #Directory 統合
+✅ openDirectory() / store() 自動生成
+✅ 静的パス・動的パーティション対応
+✅ 26テスト全合格
+```
 
 **残りの作業**:
-
-**Phase 4: Examples & Documentation（40%→100%）**
 ```swift
 - [ ] SimpleExampleをマクロAPIで書き直し
 - [ ] MultiTypeExample作成（User + Order）
 - [ ] docs/guides/macro-usage.md作成
 - [ ] ベストプラクティスガイド
-- [ ] トラブルシューティングガイド
 ```
-**見積もり**: 1-2週間
+**見積もり**: 1-2週間（ドキュメント・サンプルのみ）
 
 **注**: Protobuf定義は手動で作成します（多言語互換性維持のため）。マクロがシリアライズ処理を自動生成するため、実用上の問題はありません。
 

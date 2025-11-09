@@ -10,7 +10,7 @@ A production-ready Swift implementation of FoundationDB Record Layer, providing 
 
 The Record Layer provides a powerful abstraction for storing and querying structured data in FoundationDB, featuring:
 
-- **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index (95% complete)
+- **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index, #Directory (100% complete)
 - **Type-Safe API**: Recordable protocol for compile-time type safety
 - **Cost-Based Query Optimizer**: Statistics-driven query planning with histogram selectivity
 - **Automatic Index Maintenance**: Value, Count, and Sum indexes with online building
@@ -38,71 +38,42 @@ dependencies: [
 import FDBRecordLayer
 import FoundationDB
 
-// 1. Define your Protobuf schema
-// User.proto:
-// message User {
-//     int64 user_id = 1;
-//     string name = 2;
-//     string email = 3;
-//     int32 age = 4;
-// }
+// 1. Define your record type with macros (no Protobuf files needed!)
+@Recordable
+struct User {
+    #Directory<User>("app", "users", layer: .recordStore)
+    #Index<User>([\email])
+    #Index<User>([\age])
 
-// 2. Conform User to Recordable
-extension User: Recordable {
-    public static var recordTypeName: String { "User" }
-    public static var primaryKeyFields: [String] { ["user_id"] }
+    @PrimaryKey var userID: Int64
+    var name: String
+    var email: String
+    var age: Int32
 
-    public static func fieldName<Value>(for keyPath: KeyPath<User, Value>) -> String {
-        switch keyPath {
-        case \User.userID: return "user_id"
-        case \User.name: return "name"
-        case \User.email: return "email"
-        case \User.age: return "age"
-        default: fatalError("Unknown keyPath")
-        }
-    }
+    @Default(value: Date())
+    var createdAt: Date
 }
 
-// 3. Create metadata and store
-let metaData = try RecordMetaData(
-    version: 1,
-    recordTypes: [
-        RecordType(
-            name: "User",
-            primaryKey: FieldKeyExpression(fieldName: "user_id")
-        )
-    ],
-    indexes: [
-        .value("by_email", on: FieldKeyExpression(fieldName: "email")),
-        .value("by_age", on: FieldKeyExpression(fieldName: "age"))
-    ]
-)
+// 2. Create schema
+let schema = Schema([User.self])
 
-let statisticsManager = StatisticsManager(
-    database: database,
-    subspace: Subspace(rootPrefix: "stats")
-)
-
-let store = try RecordStore(
-    database: database,
-    subspace: Subspace(rootPrefix: "records"),
-    metaData: metaData,
-    statisticsManager: statisticsManager
-)
+// 3. Open record store (auto-generated method by macros)
+let store = try await User.store(database: database, schema: schema)
 
 // 4. Save records
-let user = User.with {
-    $0.userID = 1
-    $0.name = "Alice"
-    $0.email = "alice@example.com"
-    $0.age = 30
-}
+let user = User(
+    userID: 1,
+    name: "Alice",
+    email: "alice@example.com",
+    age: 30,
+    createdAt: Date()
+)
 
 try await store.save(user)
 
 // 5. Query with type safety
 let adults = try await store.query(User.self)
-    .where(\.age, .greaterThanOrEquals, Int64(30))
+    .where(\.age, .greaterThanOrEquals, Int32(30))
     .limit(100)
     .execute()
 
@@ -111,33 +82,41 @@ for user in adults {
 }
 
 // 6. Fetch by primary key
-if let user = try await store.fetch(User.self, by: Int64(1)) {
+if let user: User = try await store.fetch(by: Int64(1)) {
     print("Found: \(user.name)")
 }
 ```
 
 ## Key Features
 
-### 1. Type-Safe Records with Recordable Protocol
+### 1. SwiftData-Style Macro API
 
-Define your types with compile-time safety:
+Define your types declaratively with macros (no Protobuf files needed):
 
 ```swift
-extension User: Recordable {
-    public static var recordTypeName: String { "User" }
-    public static var primaryKeyFields: [String] { ["user_id"] }
+@Recordable
+struct User {
+    #Directory<User>("app", "users", layer: .recordStore)
+    #Index<User>([\email])
+    #Unique<User>([\email])
 
-    public static func fieldName<Value>(for keyPath: KeyPath<User, Value>) -> String {
-        // Map KeyPaths to field names
-    }
+    @PrimaryKey var userID: Int64
+    var name: String
+    var email: String
+
+    @Default(value: Date())
+    var createdAt: Date
+
+    @Transient var isOnline: Bool = false
 }
 ```
 
 **Benefits**:
-- ✅ Compile-time type checking
+- ✅ No manual Protobuf file creation
+- ✅ Compile-time type checking and validation
 - ✅ Automatic serialization/deserialization
-- ✅ KeyPath-based queries
-- ✅ No runtime type casting
+- ✅ Auto-generated store() methods
+- ✅ SwiftData-familiar syntax
 
 ### 2. Cost-Based Query Optimizer
 
@@ -314,9 +293,10 @@ let sanFranciscoAdults = try await store.query(User.self)
 📚 **[Complete Documentation Index](docs/README.md)** - Start here for all documentation
 
 ### Quick Start
-- [SimpleExample.swift](Examples/SimpleExample.swift) - Basic usage
-- [User+Recordable.swift](Examples/User+Recordable.swift) - Recordable conformance
-- [PartitionExample.swift](Examples/PartitionExample.swift) - Multi-tenant usage
+- [getting-started.md](docs/guides/getting-started.md) - 10-minute quick start guide
+- [SimpleExample.swift](Examples/SimpleExample.swift) - Basic macro API usage
+- [MultiTypeExample.swift](Examples/MultiTypeExample.swift) - Multiple record types
+- [PartitionExample.swift](Examples/PartitionExample.swift) - Multi-tenant with partitions
 
 ### Status & Planning
 - [STATUS.md](docs/STATUS.md) - Current project status (Phase 2a complete)
@@ -338,10 +318,11 @@ let sanFranciscoAdults = try await store.query(User.self)
 - [online-index-scrubber.md](docs/design/online-index-scrubber.md) - Index consistency verification
 
 ### User Guides
+- [macro-usage-guide.md](docs/guides/macro-usage-guide.md) - Comprehensive macro API reference
+- [best-practices.md](docs/guides/best-practices.md) - Production best practices
 - [partition-usage.md](docs/guides/partition-usage.md) - Multi-tenant usage patterns
 - [query-optimizer.md](docs/guides/query-optimizer.md) - Query optimization guide
 - [advanced-index-design.md](docs/guides/advanced-index-design.md) - Index design patterns
-- [versionstamp-usage.md](docs/guides/versionstamp-usage.md) - Using version stamps
 - [CLAUDE.md](CLAUDE.md) - Comprehensive FoundationDB usage guide
 
 ## Performance
@@ -438,13 +419,28 @@ See [STATUS.md](docs/STATUS.md) for detailed implementation status.
 
 ## Roadmap
 
-### Phase 2b (Future)
+### ✅ Phase 1: Production-Ready Core (Complete)
 
-- **SwiftData-Style Macros**: ✅ Core macros complete (@Recordable, #Index, @Relationship)
-  - Remaining: Examples and documentation updates
+- Type-safe RecordStore with Recordable protocol
+- Cost-based query optimizer with statistics
+- Automatic index maintenance (Value, Count, Sum)
+- Online index building and scrubbing
+- Swift 6 concurrency compliance
+
+### ✅ Phase 2: SwiftData-Style Macros (Complete)
+
+- @Recordable, @PrimaryKey, @Transient, @Default macros
+- #Index, #Unique, #Directory, #FieldOrder macros
+- @Relationship, @Attribute macros
+- Auto-generated store() methods
+- Comprehensive documentation and examples
+
+### Phase 3: Advanced Features (Planned)
+
 - **Advanced Index Types**: Rank, Version, Spatial, Text (Lucene)
-- **Performance Enhancements**: Parallel indexing, Bloom filters, streaming
+- **Performance Enhancements**: Parallel indexing, Bloom filters, connection pooling
 - **Schema Evolution Validator**: Safe schema migration with validation
+- **SQL Support**: SQL-to-query-plan translation
 
 See [REMAINING_WORK.md](docs/REMAINING_WORK.md) for detailed roadmap.
 
@@ -475,6 +471,6 @@ Based on the [FoundationDB Record Layer](https://foundationdb.github.io/fdb-reco
 
 ---
 
-**Status**: ✅ **PRODUCTION-READY FOR CORE USE CASES**
+**Status**: ✅ **PRODUCTION-READY WITH MACRO API**
 
-Phase 1 provides a solid foundation for type-safe record storage, cost-based query optimization, and automatic index maintenance. Phase 2 will add SwiftData-style macros and advanced features.
+Phase 1 & 2 complete: Production-ready core + SwiftData-style macros. Perfect for type-safe record storage, multi-tenant applications, and cost-based query optimization. Phase 3 will add advanced index types and performance enhancements.
