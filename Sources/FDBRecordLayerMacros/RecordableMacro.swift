@@ -84,8 +84,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         let primaryKeyFields = fields.filter { $0.isPrimaryKey }
         let persistentFields = fields.filter { !$0.isTransient }
 
-        // Detect #Subspace metadata
-        let subspaceMetadata = extractSubspaceMetadata(from: members)
+        // Detect #Directory metadata
+        let directoryMetadata = extractDirectoryMetadata(from: members)
 
         // Extract index information from #Index/#Unique macro calls
         // Note: We need to check ALL members, including those added by other macros
@@ -99,7 +99,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             recordName: recordName,
             fields: persistentFields,
             primaryKeyFields: primaryKeyFields,
-            subspaceMetadata: subspaceMetadata,
+            directoryMetadata: directoryMetadata,
             indexInfo: indexInfo
         )
 
@@ -128,64 +128,104 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return nil
     }
 
-    /// Subspace metadata extracted from #Subspace macro
-    private struct SubspaceMetadata {
-        let pathTemplate: String
-        let placeholders: [String]
+    /// Directory metadata extracted from #Directory macro
+    private struct DirectoryMetadata {
+        enum PathElement {
+            case literal(String)
+            case keyPath(String)  // field name extracted from KeyPath
+        }
+
+        let pathElements: [PathElement]
+        let layerType: String  // e.g., "partition", "recordStore"
+        let keyPathFields: [String]  // Fields used in KeyPaths
+
+        /// Convert layer name to DirectoryType expression
+        var directoryTypeExpression: String {
+            switch layerType {
+            case "partition":
+                return ".partition"
+            case "recordStore":
+                return ".custom(\"fdb_record_layer\")"
+            case "luceneIndex":
+                return ".custom(\"lucene_index\")"
+            case "timeSeries":
+                return ".custom(\"time_series\")"
+            case "vectorIndex":
+                return ".custom(\"vector_index\")"
+            default:
+                return ".custom(\"\(layerType)\")"
+            }
+        }
     }
 
-    /// Extracts #Subspace metadata from struct members by looking for #Subspace macro calls
-    private static func extractSubspaceMetadata(
+    /// Extracts #Directory metadata from struct members by looking for #Directory macro calls
+    private static func extractDirectoryMetadata(
         from members: MemberBlockItemListSyntax
-    ) -> SubspaceMetadata? {
+    ) -> DirectoryMetadata? {
         for member in members {
-            // Look for #Subspace macro expansion
+            // Look for #Directory macro expansion
             guard let macroExpansion = member.decl.as(MacroExpansionDeclSyntax.self),
-                  macroExpansion.macroName.text == "Subspace" else {
+                  macroExpansion.macroName.text == "Directory" else {
                 continue
             }
 
-            // Extract the path template argument
-            guard let pathArg = macroExpansion.arguments.first,
-                  let stringLiteral = pathArg.expression.as(StringLiteralExprSyntax.self),
-                  let segment = stringLiteral.segments.first?.as(StringSegmentSyntax.self) else {
-                continue
+            // Extract path elements from variadic arguments
+            var pathElements: [DirectoryMetadata.PathElement] = []
+            var keyPathFields: [String] = []
+            var layer = "recordStore"  // Default layer
+
+            // Process all arguments (variadic path elements + optional layer)
+            for arg in macroExpansion.arguments {
+                // Check if this is the "layer:" labeled argument
+                if let label = arg.label, label.text == "layer" {
+                    if let memberAccessExpr = arg.expression.as(MemberAccessExprSyntax.self) {
+                        layer = memberAccessExpr.declName.baseName.text
+                    }
+                    continue
+                }
+
+                let expr = arg.expression
+
+                // Check if it's a string literal
+                if let stringLiteral = expr.as(StringLiteralExprSyntax.self),
+                   let segment = stringLiteral.segments.first?.as(StringSegmentSyntax.self) {
+                    pathElements.append(.literal(segment.content.text))
+                    continue
+                }
+
+                // Check if it's a Field(...) function call
+                if let functionCall = expr.as(FunctionCallExprSyntax.self) {
+                    // Check if called expression is "Field" (either MemberAccessExprSyntax or DeclReferenceExprSyntax)
+                    let isFieldCall: Bool
+                    if let memberAccess = functionCall.calledExpression.as(MemberAccessExprSyntax.self) {
+                        isFieldCall = memberAccess.declName.baseName.text == "Field"
+                    } else if let identExpr = functionCall.calledExpression.as(DeclReferenceExprSyntax.self) {
+                        isFieldCall = identExpr.baseName.text == "Field"
+                    } else {
+                        isFieldCall = false
+                    }
+
+                    if isFieldCall,
+                       let firstArg = functionCall.arguments.first,
+                       let keyPathExpr = firstArg.expression.as(KeyPathExprSyntax.self),
+                       let component = keyPathExpr.components.first,
+                       let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
+                        let fieldName = property.declName.baseName.text
+                        pathElements.append(.keyPath(fieldName))
+                        keyPathFields.append(fieldName)
+                        continue
+                    }
+                }
             }
 
-            let pathTemplate = segment.content.text
-
-            // Parse placeholders from the template
-            let placeholders = extractPlaceholders(from: pathTemplate)
-
-            return SubspaceMetadata(pathTemplate: pathTemplate, placeholders: placeholders)
+            return DirectoryMetadata(
+                pathElements: pathElements,
+                layerType: layer,
+                keyPathFields: keyPathFields
+            )
         }
 
         return nil
-    }
-
-    /// Extracts placeholder names from a path template
-    /// Example: "accounts/{accountID}/users/{userID}" -> ["accountID", "userID"]
-    private static func extractPlaceholders(from template: String) -> [String] {
-        var placeholders: [String] = []
-        var currentPlaceholder = ""
-        var insidePlaceholder = false
-
-        for char in template {
-            if char == "{" {
-                insidePlaceholder = true
-                currentPlaceholder = ""
-            } else if char == "}" {
-                if insidePlaceholder && !currentPlaceholder.isEmpty {
-                    placeholders.append(currentPlaceholder)
-                }
-                insidePlaceholder = false
-                currentPlaceholder = ""
-            } else if insidePlaceholder {
-                currentPlaceholder.append(char)
-            }
-        }
-
-        return placeholders
     }
 
     /// Extracts IndexDefinition static property names from struct members
@@ -395,93 +435,126 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return (staticProperties, indexDefinitionsProperty)
     }
 
-    /// Generates store() methods based on #Subspace metadata
-    private static func generateStoreMethods(
+    /// Generates openDirectory() and store() methods based on #Directory metadata
+    private static func generateDirectoryMethods(
         typeName: String,
         fields: [FieldInfo],
-        subspaceMetadata: SubspaceMetadata?
+        directoryMetadata: DirectoryMetadata?
     ) -> String {
+        guard let metadata = directoryMetadata else {
+            // No #Directory macro - generate nothing
+            return ""
+        }
+
         var methods: [String] = []
 
-        // Always generate basic store(in:path:) method
-        methods.append("""
+        // Build path array for openDirectory
+        let pathArrayElements = metadata.pathElements.map { element in
+            switch element {
+            case .literal(let value):
+                return "\"\(value)\""
+            case .keyPath(let fieldName):
+                return fieldName
+            }
+        }.joined(separator: ", ")
 
-            /// Creates a RecordStore for this type with a custom path
+        if metadata.keyPathFields.isEmpty {
+            // Static path - no parameters
+            methods.append("""
+
+            /// Opens or creates the directory for this record type
+            ///
+            /// - Parameter database: The database to use
+            /// - Returns: DirectorySubspace for this record type
+            public static func openDirectory(
+                database: any DatabaseProtocol
+            ) async throws -> DirectorySubspace {
+                let directoryLayer = database.makeDirectoryLayer()
+                let dir = try await directoryLayer.createOrOpen(
+                    path: [\(pathArrayElements)],
+                    type: \(metadata.directoryTypeExpression)
+                )
+                return dir
+            }
+
+            /// Creates a RecordStore for this type
             ///
             /// - Parameters:
-            ///   - container: The RecordContainer
-            ///   - path: Custom subspace path (e.g., "users" or "accounts/acct-001/users")
-            /// - Returns: RecordStore configured with the specified path
+            ///   - database: The database to use
+            ///   - schema: Schema with registered types and indexes
+            /// - Returns: RecordStore for this record type
             public static func store(
-                in container: RecordContainer,
-                path: String
-            ) -> RecordStore<\(typeName)> {
-                return container.store(for: \(typeName).self, path: path)
+                database: any DatabaseProtocol,
+                schema: Schema
+            ) async throws -> RecordStore<\(typeName)> {
+                let directory = try await openDirectory(database: database)
+                let subspace = directory.subspace
+                let statisticsManager = StatisticsManager(database: database, subspace: subspace.subspace(Tuple("stats")))
+                return RecordStore(
+                    database: database,
+                    subspace: subspace,
+                    schema: schema,
+                    statisticsManager: statisticsManager
+                )
             }
-        """)
-
-        // Generate type-safe method if #Subspace metadata exists
-        if let metadata = subspaceMetadata {
-            if metadata.placeholders.isEmpty {
-                // Static path - no parameters
-                methods.append("""
-
-                /// Creates a RecordStore for this type using the defined subspace path
-                ///
-                /// Subspace path: "\(metadata.pathTemplate)"
-                ///
-                /// - Parameter container: The RecordContainer
-                /// - Returns: RecordStore configured with the subspace path
-                public static func store(
-                    in container: RecordContainer
-                ) -> RecordStore<\(typeName)> {
-                    return container.store(for: \(typeName).self, path: "\(metadata.pathTemplate)")
+            """)
+        } else {
+            // Dynamic path with KeyPaths - generate parameters
+            let parameters = metadata.keyPathFields.map { fieldName -> String in
+                if let field = fields.first(where: { $0.name == fieldName }) {
+                    return "\(fieldName): \(field.type)"
+                } else {
+                    return "\(fieldName): String"
                 }
-                """)
-            } else {
-                // Dynamic path - generate parameters with field types
-                // Match placeholder names to field types
-                let parameters = metadata.placeholders.map { placeholder -> String in
-                    if let field = fields.first(where: { $0.name == placeholder }) {
-                        return "\(placeholder): \(field.type)"
-                    } else {
-                        // Fallback to String if field not found
-                        return "\(placeholder): String"
-                    }
-                }.joined(separator: ", ")
+            }.joined(separator: ", ")
 
-                // Convert template to Swift string interpolation
-                var interpolatedPath = metadata.pathTemplate
-                for placeholder in metadata.placeholders {
-                    interpolatedPath = interpolatedPath.replacingOccurrences(
-                        of: "{\(placeholder)}",
-                        with: "\\(\(placeholder))"
-                    )
-                }
+            let paramDocs = metadata.keyPathFields.map {
+                "    ///   - \($0): Partition key value"
+            }.joined(separator: "\n")
 
-                let paramDocs = metadata.placeholders.map {
-                    "    ///   - \($0): Path component value"
-                }.joined(separator: "\n")
+            methods.append("""
 
-                methods.append("""
-
-                /// Creates a RecordStore for this type using the defined subspace path
-                ///
-                /// Subspace path template: "\(metadata.pathTemplate)"
-                ///
-                /// - Parameters:
-                ///   - container: The RecordContainer
-                \(paramDocs)
-                /// - Returns: RecordStore configured with the interpolated subspace path
-                public static func store(
-                    in container: RecordContainer,
-                    \(parameters)
-                ) -> RecordStore<\(typeName)> {
-                    let path = "\(interpolatedPath)"
-                    return container.store(for: \(typeName).self, path: path)
-                }
-                """)
+            /// Opens or creates the directory for this record type
+            ///
+            /// - Parameters:
+            \(paramDocs)
+            ///   - database: The database to use
+            /// - Returns: DirectorySubspace for this record type
+            public static func openDirectory(
+                \(parameters),
+                database: any DatabaseProtocol
+            ) async throws -> DirectorySubspace {
+                let directoryLayer = database.makeDirectoryLayer()
+                let dir = try await directoryLayer.createOrOpen(
+                    path: [\(pathArrayElements)],
+                    type: \(metadata.directoryTypeExpression)
+                )
+                return dir
             }
+
+            /// Creates a RecordStore for this type
+            ///
+            /// - Parameters:
+            \(paramDocs)
+            ///   - database: The database to use
+            ///   - schema: Schema with registered types and indexes
+            /// - Returns: RecordStore for this record type
+            public static func store(
+                \(parameters),
+                database: any DatabaseProtocol,
+                schema: Schema
+            ) async throws -> RecordStore<\(typeName)> {
+                let directory = try await openDirectory(\(metadata.keyPathFields.map { "\($0): \($0)" }.joined(separator: ", ")), database: database)
+                let subspace = directory.subspace
+                let statisticsManager = StatisticsManager(database: database, subspace: subspace.subspace(Tuple("stats")))
+                return RecordStore(
+                    database: database,
+                    subspace: subspace,
+                    schema: schema,
+                    statisticsManager: statisticsManager
+                )
+            }
+            """)
         }
 
         return methods.joined(separator: "\n")
@@ -492,7 +565,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         recordName: String,
         fields: [FieldInfo],
         primaryKeyFields: [FieldInfo],
-        subspaceMetadata: SubspaceMetadata?,
+        directoryMetadata: DirectoryMetadata?,
         indexInfo: [IndexInfo]
     ) throws -> ExtensionDeclSyntax {
 
@@ -544,8 +617,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             return "self.\(field.name)"
         }.joined(separator: ", ")
 
-        // Generate store() methods based on #Subspace metadata
-        let storeMethods = generateStoreMethods(typeName: typeName, fields: fields, subspaceMetadata: subspaceMetadata)
+        // Generate openDirectory() and store() methods based on #Directory metadata
+        let directoryMethods = generateDirectoryMethods(typeName: typeName, fields: fields, directoryMetadata: directoryMetadata)
 
         // Generate IndexDefinition static properties and indexDefinitions array
         let (indexStaticProperties, indexDefinitionsProperty) = generateIndexDefinitions(
@@ -729,7 +802,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 return Tuple([\(raw: primaryKeyExtraction)])
             }
 
-            \(raw: storeMethods)
+            \(raw: directoryMethods)
         }
         """
 

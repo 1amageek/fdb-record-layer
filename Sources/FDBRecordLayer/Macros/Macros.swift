@@ -190,25 +190,62 @@ public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(m
 @freestanding(declaration)
 public macro FieldOrder<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
 
-/// Represents an element in a directory path
+/// Protocol for directory path elements
 ///
-/// Can be either a string literal or a PartialKeyPath for dynamic interpolation.
+/// Directory paths can contain string literals and KeyPath references.
+/// This protocol allows type-safe specification of heterogeneous path elements.
 ///
 /// **Usage**:
 /// ```swift
-/// #Directory<Order>(["tenants", \.accountID, "orders"], layer: .partition)
-/// //                 ^^^^^^^^^  ^^^^^^^^^^      ^^^^^^^^
-/// //                 String     PartialKeyPath  String
+/// #Directory<Order>(
+///     "tenants",           // Literal (ExpressibleByStringLiteral)
+///     Field(\.accountID),  // Field (KeyPath wrapper)
+///     "orders",
+///     layer: .partition
+/// )
 /// ```
-public enum DirectoryPathElement<T> {
-    case literal(String)
-    case keyPath(PartialKeyPath<T>)
+public protocol DirectoryPathElement {
+    associatedtype Value
+    var value: Value { get }
 }
 
-// ExpressibleByStringLiteral conformance for convenient syntax
-extension DirectoryPathElement: ExpressibleByStringLiteral {
+/// String literal path element
+///
+/// Automatically created from string literals via `ExpressibleByStringLiteral`.
+public struct Path: DirectoryPathElement, ExpressibleByStringLiteral {
+    public let value: String
+
     public init(stringLiteral value: String) {
-        self = .literal(value)
+        self.value = value
+    }
+
+    public init(_ value: String) {
+        self.value = value
+    }
+}
+
+extension String: DirectoryPathElement {
+    public var value: String { self }
+}
+
+/// KeyPath-based path element for dynamic partitioning
+///
+/// Wraps a KeyPath to a field in the record type, used for multi-tenant directories.
+///
+/// **Usage**:
+/// ```swift
+/// #Directory<Order>(
+///     "tenants",
+///     Field(\.tenantID),  // KeyPath to tenantID field
+///     "orders",
+///     layer: .partition
+/// )
+/// ```
+public struct Field<Root>: DirectoryPathElement {
+    public var value: PartialKeyPath<Root>
+
+    public init(_ keyPath: PartialKeyPath<Root>) {
+        self.value = keyPath
     }
 }
 
@@ -221,7 +258,7 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 /// ```swift
 /// @Recordable
 /// struct User {
-///     #Directory<User>(["app", "users"])
+///     #Directory<User>("app", "users")
 ///
 ///     @PrimaryKey var userID: Int64
 ///     var name: String
@@ -233,7 +270,9 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 /// @Recordable
 /// struct Order {
 ///     #Directory<Order>(
-///         ["tenants", \.accountID, "orders"],
+///         "tenants",
+///         Field(\.accountID),
+///         "orders",
 ///         layer: .partition
 ///     )
 ///
@@ -251,7 +290,7 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 /// //     static func store(
 /// //         accountID: String,
 /// //         database: any DatabaseProtocol,
-/// //         metaData: RecordMetaData
+/// //         schema: Schema
 /// //     ) async throws -> RecordStore<Order>
 /// // }
 ///
@@ -259,7 +298,7 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 /// let orderStore = try await Order.store(
 ///     accountID: "account-123",
 ///     database: database,
-///     metaData: metaData
+///     schema: schema
 /// )
 /// ```
 ///
@@ -268,7 +307,11 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 /// @Recordable
 /// struct Message {
 ///     #Directory<Message>(
-///         ["tenants", \.accountID, "channels", \.channelID, "messages"],
+///         "tenants",
+///         Field(\.accountID),
+///         "channels",
+///         Field(\.channelID),
+///         "messages",
 ///         layer: .partition
 ///     )
 ///
@@ -288,14 +331,26 @@ extension DirectoryPathElement: ExpressibleByStringLiteral {
 ///
 /// **Validation**:
 /// - Generic type parameter `<T>` is required
-/// - Path must be an array literal
-/// - Array elements must be string literals or KeyPath expressions
-/// - If `layer: .partition`, at least one KeyPath is required
+/// - Path elements must be string literals or `Field(\.propertyName)` expressions
+/// - If `layer: .partition`, at least one `Field` is required
 @freestanding(declaration)
 public macro Directory<T>(
-    _ path: [DirectoryPathElement<T>],
-    layer: DirectoryLayer = .recordStore
+    _ pathElements: any DirectoryPathElement...,
+    layer: DirectoryLayerType = .recordStore
 ) = #externalMacro(module: "FDBRecordLayerMacros", type: "DirectoryMacro")
+
+/// Directory layer type for #Directory macro
+///
+/// This enum is used as a type-safe parameter for the #Directory macro.
+/// It will be converted to fdb-swift-bindings' DirectoryType at compile time.
+public enum DirectoryLayerType: Sendable {
+    case partition
+    case recordStore
+    case luceneIndex
+    case timeSeries
+    case vectorIndex
+    case custom(String)
+}
 
 /// Defines a relationship to another record type
 ///

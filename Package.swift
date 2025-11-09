@@ -70,7 +70,12 @@ let package = Package(
         ),
         .testTarget(
             name: "FDBRecordLayerTests",
-            dependencies: ["FDBRecordLayer"],
+            dependencies: [
+                "FDBRecordLayer",
+                "FDBRecordLayerMacros",
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
+            ],
             path: "Tests/FDBRecordLayerTests",
             // Note: Swift 6 already enables BareSlashRegexLiterals, ConciseMagicFile,
             // ExistentialAny, ForwardTrailingClosures, and ImplicitOpenExistentials by default

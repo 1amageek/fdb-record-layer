@@ -102,81 +102,76 @@ public struct DirectoryMacro: DeclarationMacro {
 
         let typeName = genericArg.argument.description.trimmingCharacters(in: .whitespaces)
 
-        // Extract the path array argument (first argument)
-        guard let pathArg = node.arguments.first else {
-            throw DiagnosticsError(diagnostics: [
-                Diagnostic(
-                    node: Syntax(node),
-                    message: MacroExpansionErrorMessage("#Directory requires a path array argument")
-                )
-            ])
-        }
-
-        // Validate that the path is an array expression
-        guard let arrayExpr = pathArg.expression.as(ArrayExprSyntax.self) else {
-            throw DiagnosticsError(diagnostics: [
-                Diagnostic(
-                    node: Syntax(pathArg.expression),
-                    message: MacroExpansionErrorMessage("Path must be an array literal (e.g., [\"app\", \"users\", \\.accountID])")
-                )
-            ])
-        }
-
-        // Extract KeyPath fields from the path
+        // Extract KeyPath fields from the path elements (variadic arguments)
         var keyPathFields: [String] = []
+        var layerExpr: ExprSyntax? = nil
 
-        // Validate array elements (string literals or KeyPath expressions)
-        for element in arrayExpr.elements {
-            let expr = element.expression
-
-            // Check if it's a string literal
-            if expr.is(StringLiteralExprSyntax.self) {
+        // Process all arguments (variadic path elements + optional layer)
+        for arg in node.arguments {
+            // Check if this is the "layer:" labeled argument
+            if let label = arg.label, label.text == "layer" {
+                layerExpr = arg.expression
                 continue
             }
 
-            // Check if it's a KeyPath expression (\.propertyName)
-            if let keyPathExpr = expr.as(KeyPathExprSyntax.self) {
-                // Extract the property name from the KeyPath
-                if let component = keyPathExpr.components.first,
+            let expr = arg.expression
+
+            // Check if it's a string literal
+            if expr.is(StringLiteralExprSyntax.self) {
+                // String literal path element - valid
+                continue
+            }
+
+            // Check if it's a Field(...) function call
+            if let functionCall = expr.as(FunctionCallExprSyntax.self),
+               let memberAccess = functionCall.calledExpression.as(MemberAccessExprSyntax.self),
+               memberAccess.declName.baseName.text == "Field" || memberAccess.base == nil {
+                // This is Field(\.propertyName) - extract the KeyPath from arguments
+                if let firstArg = functionCall.arguments.first,
+                   let keyPathExpr = firstArg.expression.as(KeyPathExprSyntax.self),
+                   let component = keyPathExpr.components.first,
                    let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
                     let fieldName = property.declName.baseName.text
                     keyPathFields.append(fieldName)
+                    continue
                 }
-                continue
+            }
+
+            // Also support direct Field function call (without member access)
+            if let functionCall = expr.as(FunctionCallExprSyntax.self),
+               let identExpr = functionCall.calledExpression.as(DeclReferenceExprSyntax.self),
+               identExpr.baseName.text == "Field" {
+                // This is Field(\.propertyName) - extract the KeyPath from arguments
+                if let firstArg = functionCall.arguments.first,
+                   let keyPathExpr = firstArg.expression.as(KeyPathExprSyntax.self),
+                   let component = keyPathExpr.components.first,
+                   let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
+                    let fieldName = property.declName.baseName.text
+                    keyPathFields.append(fieldName)
+                    continue
+                }
             }
 
             // Invalid element type
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
                     node: Syntax(expr),
-                    message: MacroExpansionErrorMessage("Path elements must be string literals (\"literal\") or KeyPath expressions (\\.propertyName)")
+                    message: MacroExpansionErrorMessage("Path elements must be string literals (\"literal\") or Field(\\.propertyName) expressions")
                 )
             ])
         }
 
-        // Extract the layer argument (second argument, optional)
-        var layerExpr: ExprSyntax? = nil
-        if node.arguments.count >= 2 {
-            // Look for "layer:" labeled argument
-            for arg in node.arguments {
-                if let label = arg.label, label.text == "layer" {
-                    layerExpr = arg.expression
-                    break
-                }
-            }
-        }
-
-        // Validate layer: .partition requires at least one KeyPath
+        // Validate layer: .partition requires at least one Field
         if let layerExpr = layerExpr {
             // Check if layer is .partition
             if let memberAccessExpr = layerExpr.as(MemberAccessExprSyntax.self),
                memberAccessExpr.declName.baseName.text == "partition" {
-                // Ensure at least one KeyPath exists
+                // Ensure at least one Field exists
                 if keyPathFields.isEmpty {
                     throw DiagnosticsError(diagnostics: [
                         Diagnostic(
                             node: Syntax(layerExpr),
-                            message: MacroExpansionErrorMessage("layer: .partition requires at least one KeyPath in the path (e.g., [\"tenants\", \\.accountID, \"orders\"])")
+                            message: MacroExpansionErrorMessage("layer: .partition requires at least one Field in the path (e.g., Field(\\.accountID))")
                         )
                     ])
                 }

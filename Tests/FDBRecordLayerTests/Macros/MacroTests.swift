@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FoundationDB
 @testable import FDBRecordLayer
 
 // MARK: - Test Types
@@ -124,50 +125,47 @@ struct TestOptionalArrayFields {
     var optDoubleArray: [Double]?
 }
 
-// MARK: - #Subspace tests (Phase 2a-3, not yet implemented)
-// TODO: Uncomment when #Subspace macro is implemented
-
-/*
-/// Test type with static subspace
+// MARK: - #Directory tests
+//
+/// Test type with static directory
 @Recordable
 struct TestGlobalConfig {
-    #Subspace<TestGlobalConfig>(["global", "config"])
+    #Directory<TestGlobalConfig>("global", "config", layer: .recordStore)
 
     @PrimaryKey var key: String
     var value: String
 }
 
-/// Test type with single dynamic component
+/// Test type with static directory
 @Recordable
 struct TestTenantConfig {
-    #Subspace<TestTenantConfig>(["tenants", \.tenantID, "config"])
+    #Directory<TestTenantConfig>("tenants", "config", layer: .recordStore)
 
     @PrimaryKey var key: String
     var tenantID: String
     var value: String
 }
 
-/// Test type with multiple dynamic components
+/// Test type with static directory
 @Recordable
-struct TestMultiTenantUser {
-    #Subspace<TestMultiTenantUser>(["accounts", \.accountID, "users"])
+struct TestOrderWithDirectory {
+    #Directory<TestOrderWithDirectory>("orders", layer: .recordStore)
 
-    @PrimaryKey var userID: Int64
+    @PrimaryKey var orderID: Int64
     var accountID: String
-    var email: String
+    var total: Int64
 }
 
-/// Test type with nested dynamic path
+/// Test type with static directory
 @Recordable
-struct TestComment {
-    #Subspace<TestComment>(["accounts", \.accountID, "posts", \.postID, "comments"])
+struct TestMessage {
+    #Directory<TestMessage>("messages", layer: .recordStore)
 
-    @PrimaryKey var commentID: Int64
+    @PrimaryKey var messageID: Int64
     var accountID: String
-    var postID: Int64
+    var channelID: String
     var text: String
 }
-*/
 
 // MARK: - Test Suite
 
@@ -538,65 +536,35 @@ struct MacroTests {
         #expect(decoded.optDoubleArray == nil)
     }
 
-    // MARK: - Subspace Macro Tests
+    // MARK: - Directory Macro Integration Tests
+    //
+    // NOTE: Commented out pending fdb-swift-bindings Directory Layer API implementation
 
-    // TODO: Uncomment when #Subspace macro is implemented (Phase 2a-3)
-    /*
-    /// Test static subspace generation
-    @Test("#Subspace static path")
-    func testStaticSubspace() {
-        // Verify that TestGlobalConfig has a store(in:) method
-        // Note: This is a compile-time test - if it compiles, the macro worked
+    /// Test static directory generation
+    @Test("#Directory static path")
+    func testStaticDirectory() async throws {
+        // Verify that TestGlobalConfig has openDirectory() and store() methods
+        // This is a compile-time test - if it compiles, the macro worked
 
-        // The macro should generate (inside the struct):
-        // static func store(in container: RecordContainer) -> RecordStore<TestGlobalConfig>
-
-        // We can't actually test the runtime behavior without a RecordContainer,
-        // but we can verify the method signature exists by checking it compiles
-        let _: (RecordContainer) -> RecordStore<TestGlobalConfig> = TestGlobalConfig.store(in:)
+        let _: (any DatabaseProtocol) async throws -> DirectorySubspace = TestGlobalConfig.openDirectory
+        let _: (any DatabaseProtocol, Schema) async throws -> RecordStore<TestGlobalConfig> = TestGlobalConfig.store
     }
 
-    /// Test single dynamic component
-    @Test("#Subspace single dynamic component")
-    func testSingleDynamicSubspace() {
-        // Verify that TestTenantConfig has a store(in:tenantID:) method
+    /// Test static directory - TestOrderWithDirectory
+    @Test("#Directory static path - TestOrderWithDirectory")
+    func testOrderWithDirectory() async throws {
+        // Verify that TestOrderWithDirectory has openDirectory() and store() methods
 
-        // The macro should generate (inside the struct):
-        // static func store(
-        //     in container: RecordContainer,
-        //     tenantID: String
-        // ) -> RecordStore<TestTenantConfig>
-
-        let _: (RecordContainer, String) -> RecordStore<TestTenantConfig> = TestTenantConfig.store(in:tenantID:)
+        let _: (any DatabaseProtocol) async throws -> DirectorySubspace = TestOrderWithDirectory.openDirectory
+        let _: (any DatabaseProtocol, Schema) async throws -> RecordStore<TestOrderWithDirectory> = TestOrderWithDirectory.store
     }
 
-    /// Test multiple dynamic components
-    @Test("#Subspace multiple dynamic components")
-    func testMultipleDynamicSubspace() {
-        // Verify that TestMultiTenantUser has a store(in:accountID:) method
+    /// Test static directory - TestMessage
+    @Test("#Directory static path - TestMessage")
+    func testMessageWithDirectory() async throws {
+        // Verify that TestMessage has openDirectory() and store() methods
 
-        // The macro should generate (inside the struct):
-        // static func store(
-        //     in container: RecordContainer,
-        //     accountID: String
-        // ) -> RecordStore<TestMultiTenantUser>
-
-        let _: (RecordContainer, String) -> RecordStore<TestMultiTenantUser> = TestMultiTenantUser.store(in:accountID:)
+        let _: (any DatabaseProtocol) async throws -> DirectorySubspace = TestMessage.openDirectory
+        let _: (any DatabaseProtocol, Schema) async throws -> RecordStore<TestMessage> = TestMessage.store
     }
-
-    /// Test nested dynamic path
-    @Test("#Subspace nested dynamic path")
-    func testNestedDynamicSubspace() {
-        // Verify that TestComment has a store(in:accountID:postID:) method
-
-        // The macro should generate (inside the struct):
-        // static func store(
-        //     in container: RecordContainer,
-        //     accountID: String,
-        //     postID: Int64
-        // ) -> RecordStore<TestComment>
-
-        let _: (RecordContainer, String, Int64) -> RecordStore<TestComment> = TestComment.store(in:accountID:postID:)
-    }
-    */
 }
