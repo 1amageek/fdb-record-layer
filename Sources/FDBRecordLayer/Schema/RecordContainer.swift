@@ -169,7 +169,7 @@ public final class RecordContainer: Sendable {
         for type: Record.Type,
         path: String
     ) -> RecordStore<Record> {
-        let subspace = Subspace.fromPath(path)
+        let subspace = Subspace(path: path)
         let cacheKey = StoreCacheKey(subspace: subspace, typeName: Record.recordName)
 
         // Check cache (fast path)

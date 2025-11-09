@@ -389,7 +389,7 @@ struct TypedInJoinPlanTests {
     @Test("IN join plan execute returns matching records")
     func inJoinPlanExecuteReturnsMatchingRecords() async throws {
         let database = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_in_join_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_in_join_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
@@ -456,7 +456,7 @@ struct TypedInJoinPlanTests {
     @Test("IN join plan execute with deduplication")
     func inJoinPlanExecuteWithDeduplication() async throws {
         let database = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_in_join_dedup_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_in_join_dedup_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
@@ -509,7 +509,7 @@ struct TypedInJoinPlanTests {
     @Test("IN join plan execute with multi-valued field")
     func inJoinPlanExecuteWithMultiValuedField() async throws {
         let database = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_in_join_multi_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_in_join_multi_\(UUID().uuidString)".utf8))
 
         struct TaggedRecord: Sendable, Codable {
             let id: Int64
@@ -612,7 +612,7 @@ struct TypedInJoinPlanTests {
     @Test("IN join plan execute with empty result")
     func inJoinPlanExecuteWithEmptyResult() async throws {
         let database = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_in_join_empty_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_in_join_empty_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
@@ -670,7 +670,7 @@ struct TypedInJoinPlanTests {
     @Test("IN join plan execute with large result set")
     func inJoinPlanExecuteWithLargeResultSet() async throws {
         let database = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_in_join_large_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_in_join_large_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)

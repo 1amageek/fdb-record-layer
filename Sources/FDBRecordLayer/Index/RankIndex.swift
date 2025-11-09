@@ -349,7 +349,7 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Build rank index key: [grouping][score][pk]
-        let allElements = values + (try Tuple.decode(from: primaryKey.encode()))
+        let allElements = values + (try Tuple.unpack(from: primaryKey.pack()))
         let tuple = TupleHelpers.toTuple(allElements)
         let key = subspace.pack(tuple)
 
@@ -370,7 +370,7 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         primaryKey: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let allElements = values + (try Tuple.decode(from: primaryKey.encode()))
+        let allElements = values + (try Tuple.unpack(from: primaryKey.pack()))
         let tuple = TupleHelpers.toTuple(allElements)
         let key = subspace.pack(tuple)
 
@@ -391,7 +391,7 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         score: Int64,
         transaction: any TransactionProtocol
     ) async throws -> Int {
-        let groupingElements = try Tuple.decode(from: TupleHelpers.toTuple(groupingValues).encode())
+        let groupingElements = try Tuple.unpack(from: TupleHelpers.toTuple(groupingValues).pack())
 
         var totalCount = 0
 
@@ -459,7 +459,7 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     /// Extract primary key from rank index key
     private func extractPrimaryKeyFromIndexKey(_ key: FDB.Bytes) throws -> Tuple {
         let keyWithoutPrefix = Array(key.dropFirst(subspace.prefix.count))
-        let elements = try Tuple.decode(from: keyWithoutPrefix)
+        let elements = try Tuple.unpack(from: keyWithoutPrefix)
 
         guard let lastElement = elements.last else {
             throw RecordLayerError.invalidKey("Cannot extract primary key from index key")
@@ -492,7 +492,7 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
             // Build count node key: [subspace][grouping]["_count"][level][range_start]
             let countKey = subspace.pack(
                 Tuple(
-                    try Tuple.decode(from: groupingTuple.encode()) +
+                    try Tuple.unpack(from: groupingTuple.pack()) +
                     ["_count", level, rangeStart]
                 )
             )

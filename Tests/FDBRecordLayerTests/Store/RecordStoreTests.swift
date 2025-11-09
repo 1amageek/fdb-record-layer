@@ -22,7 +22,7 @@ struct RecordStoreTests {
 
     func createTestStore() throws -> (RecordStore, any DatabaseProtocol, Subspace) {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_store_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_store_\(UUID().uuidString)".utf8))
 
         // Create metadata
         let primaryKey = FieldKeyExpression(fieldName: "id")
@@ -267,7 +267,7 @@ struct RecordStoreTests {
     @Test("Record with complex primary key")
     func complexPrimaryKey() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_complex_key_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_complex_key_\(UUID().uuidString)".utf8))
 
         // Create metadata with compound primary key
         let primaryKey = ConcatenateKeyExpression(children: [

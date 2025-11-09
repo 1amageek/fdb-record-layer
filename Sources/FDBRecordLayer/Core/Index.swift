@@ -112,7 +112,7 @@ extension Index {
     ///   - recordTypes: Optional set of record types this index applies to
     /// - Returns: Value index instance
     public static func value(
-        _ name: String,
+        named name: String,
         on expression: KeyExpression,
         unique: Bool = false,
         recordTypes: Set<String>? = nil
@@ -134,7 +134,7 @@ extension Index {
     ///   - recordTypes: Optional set of record types this index applies to
     /// - Returns: Count index instance
     public static func count(
-        _ name: String,
+        named name: String,
         groupBy expression: KeyExpression,
         recordTypes: Set<String>? = nil
     ) -> Index {
@@ -155,7 +155,7 @@ extension Index {
     ///   - recordTypes: Optional set of record types this index applies to
     /// - Returns: Sum index instance
     public static func sum(
-        _ name: String,
+        named name: String,
         of valueExpression: KeyExpression,
         groupBy groupExpression: KeyExpression,
         recordTypes: Set<String>? = nil
@@ -184,7 +184,7 @@ extension Index {
     ///   - recordTypes: Optional set of record types this index applies to
     /// - Returns: Rank index instance
     public static func rank(
-        _ name: String,
+        named name: String,
         on expression: KeyExpression,
         order: String = "asc",
         bucketSize: Int? = nil,

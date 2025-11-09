@@ -7,7 +7,7 @@ import FoundationDB
 /// saved, updated, or deleted. It works with IndexMaintainer implementations
 /// to update each index type.
 ///
-/// **Implementation Status**: ✅ **Fully Implemented**
+/// **Implementation Status**: OK: **Fully Implemented**
 ///
 /// IndexManager now provides complete index maintenance for all 6 index types:
 /// - **VALUE**: Standard B-tree indexes

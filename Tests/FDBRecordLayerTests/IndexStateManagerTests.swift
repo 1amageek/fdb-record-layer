@@ -25,7 +25,7 @@ struct IndexStateManagerTests {
     @Test("New index returns disabled state", .disabled("Requires running FoundationDB instance"))
     func newIndexReturnsDisabled() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_index_state")
+        let subspace = Subspace(prefix: Array("test_index_state".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // New index should default to disabled
@@ -43,7 +43,7 @@ struct IndexStateManagerTests {
     @Test("Enable transitions index from disabled to writeOnly", .disabled("Requires running FoundationDB instance"))
     func enableTransition() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_enable_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_enable_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // Verify initial state
@@ -68,7 +68,7 @@ struct IndexStateManagerTests {
     @Test("MakeReadable transitions index from writeOnly to readable", .disabled("Requires running FoundationDB instance"))
     func makeReadableTransition() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_readable_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_readable_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // Enable first (disabled → writeOnly)
@@ -96,7 +96,7 @@ struct IndexStateManagerTests {
     @Test("Disable transitions index from any state to disabled", .disabled("Requires running FoundationDB instance"))
     func disableFromAnyState() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_disable_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_disable_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // Test: disabled → enabled → disabled
@@ -123,7 +123,7 @@ struct IndexStateManagerTests {
     @Test("Invalid transition from disabled to readable throws error", .disabled("Requires running FoundationDB instance"))
     func invalidTransitionThrowsError() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_invalid_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_invalid_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // Attempting disabled → readable should throw
@@ -142,7 +142,7 @@ struct IndexStateManagerTests {
     @Test("State read within transaction context is consistent", .disabled("Requires running FoundationDB instance"))
     func stateReadConsistency() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_consistency_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_consistency_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         try await db.withRecordContext { context in
@@ -173,7 +173,7 @@ struct IndexStateManagerTests {
     @Test("Batch states operation returns multiple index states", .disabled("Requires running FoundationDB instance"))
     func batchStatesOperation() async throws {
         let db = try FDBClient.openDatabase()
-        let subspace = Subspace(rootPrefix: "test_batch_\(UUID().uuidString)")
+        let subspace = Subspace(prefix: Array("test_batch_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
         // Set up different states

@@ -98,7 +98,7 @@ extension UUID: PrimaryKeyProtocol {
 
 // MARK: - Tuple Conformance (backward compatibility - LIMITED USE)
 
-// ⚠️ WARNING: Tuple conformance to PrimaryKeyProtocol is provided for backward
+// WARNING: WARNING: Tuple conformance to PrimaryKeyProtocol is provided for backward
 // compatibility ONLY. It returns empty arrays/expressions which can cause issues
 // with index building and query planning.
 //
@@ -116,13 +116,13 @@ extension Tuple: PrimaryKeyProtocol {
     }
 
     public static var fieldNames: [String] {
-        // ⚠️ Returns empty array - cannot statically determine from Tuple
+        // WARNING: Returns empty array - cannot statically determine from Tuple
         // This will cause validation failures if used as PrimaryKeyValue
         return []
     }
 
     public static var keyExpression: KeyExpression {
-        // ⚠️ Returns empty expression - cannot statically determine
+        // WARNING: Returns empty expression - cannot statically determine
         // This will cause issues in query planning if used as PrimaryKeyValue
         return EmptyKeyExpression()
     }
@@ -185,13 +185,13 @@ public struct PrimaryKeyPaths<Record, Value: PrimaryKeyProtocol>: @unchecked Sen
     ///
     /// **Example (Safe)**:
     /// ```swift
-    /// let extract = { record in record.userID }  // ✅ Pure function
+    /// let extract = { record in record.userID }  // OK: Pure function
     /// ```
     ///
     /// **Example (Unsafe)**:
     /// ```swift
     /// var capturedState = someValue
-    /// let extract = { record in computeKey(record, capturedState) }  // ❌ Captures mutable state
+    /// let extract = { record in computeKey(record, capturedState) }  // ERROR: Captures mutable state
     /// ```
     ///
     /// Using @unchecked Sendable because:

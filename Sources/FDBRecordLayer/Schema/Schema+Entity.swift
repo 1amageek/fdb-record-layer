@@ -124,7 +124,7 @@ extension Schema {
 
             // Try new API first (Phase 3: Migration to type-safe primary keys)
             if let primaryKeyPaths = type.primaryKeyPaths {
-                // ✅ Use KeyPath-based definition (compile-time safe)
+                // OK: Use KeyPath-based definition (compile-time safe)
                 self.primaryKeyFields = primaryKeyPaths.fieldNames
                 self.primaryKeyExpression = primaryKeyPaths.keyExpression
 
@@ -134,13 +134,13 @@ extension Schema {
                 let invalidFields = primaryKeyFields.filter { !allFieldsSet.contains($0) }
                 if !invalidFields.isEmpty {
                     fatalError("""
-                        ❌ FATAL: Invalid primary key fields in \(type.recordName)
+                        ERROR: FATAL: Invalid primary key fields in \(type.recordName)
                            Primary key fields not in allFields: \(invalidFields)
                            allFields: \(type.allFields)
                         """)
                 }
             } else {
-                // ✅ Fallback to old API (manual definition)
+                // OK: Fallback to old API (manual definition)
                 self.primaryKeyFields = type.primaryKeyFields
 
                 // Validate that primaryKeyFields are valid (ALWAYS, not just DEBUG)
@@ -148,7 +148,7 @@ extension Schema {
                 let invalidFields = primaryKeyFields.filter { !allFieldsSet.contains($0) }
                 if !invalidFields.isEmpty {
                     fatalError("""
-                        ❌ FATAL: Invalid primary key fields in \(type.recordName)
+                        ERROR: FATAL: Invalid primary key fields in \(type.recordName)
                            Primary key fields not in allFields: \(invalidFields)
                            allFields: \(type.allFields)
                         """)
@@ -157,7 +157,7 @@ extension Schema {
                 // Validate not empty
                 if primaryKeyFields.isEmpty {
                     fatalError("""
-                        ❌ FATAL: Empty primary key fields in \(type.recordName)
+                        ERROR: FATAL: Empty primary key fields in \(type.recordName)
                            Must define at least one primary key field.
                         """)
                 }

@@ -6,52 +6,55 @@ extension Subspace {
     /// Path cache for performance optimization
     private static let pathCache = Mutex<[String: Subspace]>([:])
 
-    /// Create Subspace from Firestore-style path string
+    /// Creates a subspace from a Firestore-style path string.
     ///
-    /// - Parameter path: Path string (e.g., "accounts/acct-001/users")
-    /// - Returns: Subspace with prefix tuple ("accounts", "acct-001", "users")
+    /// The path string is split by "/" separators, with each component becoming
+    /// a tuple element at the same level. Results are cached for performance.
     ///
-    /// **Example usage**:
+    /// Example:
     /// ```swift
-    /// let subspace = Subspace.fromPath("accounts/acct-001/users")
-    /// // → Subspace with prefix: Tuple("accounts", "acct-001", "users")
+    /// let subspace = Subspace(path: "accounts/acct-001/users")
+    /// // Equivalent to: Subspace with prefix Tuple("accounts", "acct-001", "users")
     /// ```
     ///
     /// **Key Structure**: Each path component becomes a TupleElement at the same level:
-    /// - ✅ Correct: `("accounts", "acct-001", "users")`
-    /// - ❌ Wrong: `("", Tuple(["accounts"]), Tuple(["acct-001"]), ...)`
+    /// - Correct: `("accounts", "acct-001", "users")`
+    /// - Wrong: `("", Tuple(["accounts"]), Tuple(["acct-001"]), ...)`
     ///
-    /// **Performance**: Path parsing results are cached for efficiency.
-    public static func fromPath(_ path: String) -> Subspace {
+    /// - Parameter path: Path string using "/" as separator
+    public init(path: String) {
         // Check cache
-        if let cached = pathCache.withLock({ $0[path] }) {
-            return cached
+        if let cached = Self.pathCache.withLock({ $0[path] }) {
+            self = cached
+            return
         }
 
         // Parse path components
         let components = path.split(separator: "/").map(String.init)
 
-        // ✅ Start with empty byte array (not empty string tuple)
+        // Start with empty byte array (not empty string tuple)
         var subspace = Subspace(prefix: [])
 
-        // ✅ Add each component as a direct TupleElement (not nested Tuple)
+        // Add each component as a direct TupleElement (not nested Tuple)
         for component in components {
             subspace = subspace.subspace(component)  // String conforms to TupleElement
         }
 
         // Cache result
-        pathCache.withLock { $0[path] = subspace }
+        Self.pathCache.withLock { $0[path] = subspace }
 
-        return subspace
+        self = subspace
     }
 
-    /// Clear path cache (for testing or memory management)
-    public static func clearPathCache() {
+    /// Clear the path parsing cache
+    ///
+    /// Useful for testing or memory management when the cache grows too large.
+    public static func clearCache() {
         pathCache.withLock { $0.removeAll() }
     }
 
-    /// Get path cache size
-    public static func pathCacheSize() -> Int {
-        return pathCache.withLock { $0.count }
+    /// Current number of cached paths
+    public static var cacheSize: Int {
+        pathCache.withLock { $0.count }
     }
 }

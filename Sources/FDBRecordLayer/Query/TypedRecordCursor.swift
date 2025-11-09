@@ -129,14 +129,14 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
                 // We need to extract the last primaryKeyLength elements as the primary key
 
                 // Decode the full index key
-                let indexTuple = try Tuple.decode(from: indexKey)
+                let elements = try Tuple.unpack(from: indexKey)
 
                 // Extract primary key elements (last N elements)
-                guard indexTuple.count >= primaryKeyLength else {
+                guard elements.count >= primaryKeyLength else {
                     continue
                 }
 
-                let primaryKeyElements = Array(indexTuple.suffix(primaryKeyLength))
+                let primaryKeyElements = Array(elements.suffix(primaryKeyLength))
                 let primaryKeyTuple = TupleHelpers.toTuple(primaryKeyElements)
 
                 // Fetch the actual record

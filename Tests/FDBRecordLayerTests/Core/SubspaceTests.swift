@@ -6,13 +6,13 @@ import FoundationDB
 struct SubspaceTests {
     @Test("Subspace creation creates non-empty prefix")
     func subspaceCreation() {
-        let subspace = Subspace(rootPrefix: "test")
+        let subspace = Subspace(prefix: Array("test".utf8))
         #expect(!subspace.prefix.isEmpty)
     }
 
     @Test("Nested subspace prefix includes root prefix")
     func nestedSubspace() {
-        let root = Subspace(rootPrefix: "test")
+        let root = Subspace(prefix: Array("test".utf8))
         let nested = root.subspace(Int64(1), "child")
 
         #expect(nested.prefix.starts(with: root.prefix))
@@ -21,7 +21,7 @@ struct SubspaceTests {
 
     @Test("Pack/unpack preserves subspace prefix")
     func packUnpack() throws {
-        let subspace = Subspace(rootPrefix: "test")
+        let subspace = Subspace(prefix: Array("test".utf8))
         let tuple = Tuple("key", Int64(123))
 
         let packed = subspace.pack(tuple)
@@ -33,7 +33,7 @@ struct SubspaceTests {
 
     @Test("Range returns correct begin and end keys")
     func range() {
-        let subspace = Subspace(rootPrefix: "test")
+        let subspace = Subspace(prefix: Array("test".utf8))
         let (begin, end) = subspace.range()
 
         // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
@@ -49,7 +49,7 @@ struct SubspaceTests {
     func rangeOverflow() {
         // Create a subspace with string that encodes to end with 0xFF
         // Use "test" which should encode without 0xFF at end
-        let subspace = Subspace(rootPrefix: "test\u{00FF}")
+        let subspace = Subspace(prefix: Array("test\u{00FF}".utf8))
         let (begin, end) = subspace.range()
 
         // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
@@ -63,7 +63,7 @@ struct SubspaceTests {
 
     @Test("Range handles special characters")
     func rangeSpecialCharacters() {
-        let subspace = Subspace(rootPrefix: "test_special_chars")
+        let subspace = Subspace(prefix: Array("test_special_chars".utf8))
         let (begin, end) = subspace.range()
 
         // Canonical FDB behavior: begin = prefix + [0x00], end = prefix + [0xFF]
@@ -77,7 +77,7 @@ struct SubspaceTests {
 
     @Test("Range handles empty prefix")
     func rangeEmptyPrefix() {
-        let subspace = Subspace(rootPrefix: "")
+        let subspace = Subspace(prefix: Array("".utf8))
         let (begin, end) = subspace.range()
 
         // Empty string encodes to something in tuple encoding
@@ -87,13 +87,13 @@ struct SubspaceTests {
 
     @Test("Contains checks if key belongs to subspace")
     func contains() {
-        let subspace = Subspace(rootPrefix: "test")
+        let subspace = Subspace(prefix: Array("test".utf8))
         let tuple = Tuple("key")
         let key = subspace.pack(tuple)
 
         #expect(subspace.contains(key))
 
-        let otherSubspace = Subspace(rootPrefix: "other")
+        let otherSubspace = Subspace(prefix: Array("other".utf8))
         #expect(!otherSubspace.contains(key))
     }
 }

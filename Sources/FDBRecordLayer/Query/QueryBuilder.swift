@@ -59,7 +59,7 @@ public final class QueryBuilder<T: Recordable> {
     /// - Returns: Self（メソッドチェーン用）
     public func `where`<Value: TupleElement>(
         _ keyPath: KeyPath<T, Value>,
-        _ comparison: TypedFieldQueryComponent<T>.Comparison,
+        is comparison: TypedFieldQueryComponent<T>.Comparison,
         _ value: Value
     ) -> Self {
         let fieldName = T.fieldName(for: keyPath)

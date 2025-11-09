@@ -119,7 +119,7 @@ public final class Schema: Sendable {
     ///     var email: String
     /// }
     ///
-    /// let schema = Schema([User.self, Order.self])  // ✅ Indexes auto-collected
+    /// let schema = Schema([User.self, Order.self])  // OK: Indexes auto-collected
     /// ```
     ///
     /// **Manual indexes** (for programmatic index definitions):
@@ -160,7 +160,7 @@ public final class Schema: Sendable {
             let definitions = type.indexDefinitions
 
             // Convert IndexDefinition to Index
-            // ✅ Pass type.recordName to ensure correct recordTypes (avoiding "Self" or module names)
+            // OK: Pass type.recordName to ensure correct recordTypes (avoiding "Self" or module names)
             for def in definitions {
                 let index = Self.convertIndexDefinition(def, recordName: type.recordName)
                 allIndexes.append(index)
@@ -213,13 +213,13 @@ public final class Schema: Sendable {
         let options = IndexOptions(unique: definition.unique)
 
         // Create Index with recordTypes filter
-        // ✅ Use recordName parameter (from type.recordName) instead of definition.recordType
+        // OK: Use recordName parameter (from type.recordName) instead of definition.recordType
         // to avoid issues with "Self" or module-qualified names like "MyModule.User"
         return Index(
             name: definition.name,
             type: indexType,
             rootExpression: keyExpression,
-            recordTypes: Set([recordName]),  // ✅ Use actual recordName
+            recordTypes: Set([recordName]),  // OK: Use actual recordName
             options: options
         )
     }

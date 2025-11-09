@@ -122,7 +122,7 @@ struct OnlineIndexScrubberTests {
     }
 
     func createTestSubspace() -> Subspace {
-        return Subspace(rootPrefix: "test_scrubber_\(UUID().uuidString)")
+        return Subspace(prefix: Array("test_scrubber_\(UUID().uuidString)".utf8))
     }
 
     func createTestSchema() throws -> Schema {
@@ -316,7 +316,7 @@ struct OnlineIndexScrubberTests {
             let transaction = context.getTransaction()
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
-                .subspace(emailIndex.name)  // ✅ Use index name directly, not wrapped in Tuple
+                .subspace(emailIndex.name)  // OK: Use index name directly, not wrapped in Tuple
 
             // Create dangling entry: (email, id) -> empty bytes
             let danglingKey = indexSubspace.pack(Tuple("orphan@example.com", Int64(999)))
@@ -376,7 +376,7 @@ struct OnlineIndexScrubberTests {
             maxTransactionBytes: 9_000_000,
             transactionTimeoutMillis: 4_000,
             readYourWrites: false,
-            allowRepair: true,  // ✅ Enable repair
+            allowRepair: true,  // OK: Enable repair
             supportedTypes: [IndexType.value],
             logWarningsLimit: 100,
             enableProgressLogging: false,
@@ -519,7 +519,7 @@ struct OnlineIndexScrubberTests {
             maxTransactionBytes: 9_000_000,
             transactionTimeoutMillis: 4_000,
             readYourWrites: false,
-            allowRepair: true,  // ✅ Enable repair
+            allowRepair: true,  // OK: Enable repair
             supportedTypes: [IndexType.value],
             logWarningsLimit: 100,
             enableProgressLogging: false,

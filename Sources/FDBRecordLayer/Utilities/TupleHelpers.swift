@@ -69,7 +69,7 @@ public enum TupleHelpers {
 
             // Combine encoded tuples (this is a simplified approach)
             // In practice, we'd need proper tuple concatenation
-            combinedBytes.append(contentsOf: singleTuple.encode())
+            combinedBytes.append(contentsOf: singleTuple.pack())
         }
 
         // Decode combined bytes back to create final tuple
@@ -78,7 +78,7 @@ public enum TupleHelpers {
         }
 
         do {
-            let decoded = try Tuple.decode(from: combinedBytes)
+            let decoded = try Tuple.unpack(from: combinedBytes)
             return Tuple(decoded)
         } catch {
             // Fallback to empty tuple

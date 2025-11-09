@@ -14,13 +14,13 @@ import FoundationDB
 ///
 /// **Usage:**
 /// ```swift
-/// // ✅ OK: Array conforms to TransactionResult
+/// // OK: OK: Array conforms to TransactionResult
 /// let users = try await context.transaction { transaction in
 ///     let cursor = try await transaction.fetch(query)
 ///     return try await cursor.collect(limit: 100)
 /// }
 ///
-/// // ❌ Compile error: TransactionCursor does not conform to TransactionResult
+/// // ERROR: Compile error: TransactionCursor does not conform to TransactionResult
 /// let cursor = try await context.transaction { transaction in
 ///     return try await transaction.fetch(query)
 /// }

@@ -261,7 +261,7 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
             } else {
                 throw RecordLayerError.internalError("Record does not conform to Recordable")
             }
-            let oldPrimaryKey = try Tuple.decode(from: oldPrimaryKeyTuple.encode())
+            let oldPrimaryKey = try Tuple.unpack(from: oldPrimaryKeyTuple.pack())
 
             let oldKey = buildPermutedKey(
                 permutedValues: oldPermuted,
@@ -285,7 +285,7 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
             } else {
                 throw RecordLayerError.internalError("Record does not conform to Recordable")
             }
-            let newPrimaryKey = try Tuple.decode(from: newPrimaryKeyTuple.encode())
+            let newPrimaryKey = try Tuple.unpack(from: newPrimaryKeyTuple.pack())
 
             let newKey = buildPermutedKey(
                 permutedValues: newPermuted,
@@ -309,7 +309,7 @@ public struct GenericPermutedIndexMaintainer<Record: Sendable>: GenericIndexMain
 
         let key = buildPermutedKey(
             permutedValues: permuted,
-            primaryKeyValues: try Tuple.decode(from: primaryKey.encode())
+            primaryKeyValues: try Tuple.unpack(from: primaryKey.pack())
         )
         transaction.setValue(FDB.Bytes(), for: key)
     }

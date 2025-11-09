@@ -288,7 +288,7 @@ struct RecordStoreMetricsIntegrationTests {
     private func setupTestEnvironment() throws -> (any DatabaseProtocol, Subspace, RecordMetaData, any StatisticsManagerProtocol) {
         let db = try FDB.selectAPIVersion(710).createDatabase()
         let testID = UUID().uuidString
-        let subspace = Subspace(rootPrefix: "test_metrics_\(testID)")
+        let subspace = Subspace(prefix: Array("test_metrics_\(testID)".utf8))
 
         let metaData = RecordMetaData()
 

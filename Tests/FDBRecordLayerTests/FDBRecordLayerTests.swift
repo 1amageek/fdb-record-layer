@@ -8,7 +8,7 @@ struct FDBRecordLayerTests {
     @Test("Module imports and basic types are accessible")
     func moduleImport() {
         // Verify that basic types are accessible
-        let _ = Subspace(rootPrefix: "test")
+        let _ = Subspace(prefix: Array("test".utf8))
         let _ = FieldKeyExpression(fieldName: "test")
         let _ = RecordLayerError.contextAlreadyClosed
         let _ = IndexType.value
@@ -30,6 +30,6 @@ struct FDBRecordLayerTests {
         let tuple = TupleHelpers.toTuple(elements)
 
         // Verify tuple was created successfully
-        #expect(!tuple.encode().isEmpty)
+        #expect(!tuple.pack().isEmpty)
     }
 }

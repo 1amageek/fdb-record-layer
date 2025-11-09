@@ -124,14 +124,14 @@ extension RecordLayerError {
         recommendation: String
     ) -> RecordLayerError {
         let message = """
-            ❌ Scrubber retry exhausted during \(phase)
+            ERROR: Scrubber retry exhausted during \(phase)
 
-            📍 Operation: \(operation)
-            📍 Key Range: \(keyRange)
-            📍 Attempts: \(attempts)
-            📍 Last Error: \(lastError)
+            Operation: \(operation)
+            Key Range: \(keyRange)
+            Attempts: \(attempts)
+            Last Error: \(lastError)
 
-            💡 Recommendation:
+            Recommendation:
             \(recommendation)
             """
         return .internalError(message)
@@ -149,18 +149,18 @@ extension RecordLayerError {
         attempts: Int
     ) -> RecordLayerError {
         let message = """
-            ❌ Failed to skip problematic key after \(attempts) attempts
+            ERROR: Failed to skip problematic key after \(attempts) attempts
 
-            📍 Key: \(key)
-            📍 Reason: \(reason)
+            Key: \(key)
+            Reason: \(reason)
 
-            💡 Recommendation:
+            Recommendation:
             This key is blocking progress. Consider:
             1. Increase 'maxRetries' in ScrubberConfiguration
             2. Manually inspect and remove this key
             3. Check FoundationDB cluster health
 
-            ⚠️  The scrubber cannot proceed past this key until it is resolved.
+            WARNING: The scrubber cannot proceed past this key until it is resolved.
             """
         return .internalError(message)
     }

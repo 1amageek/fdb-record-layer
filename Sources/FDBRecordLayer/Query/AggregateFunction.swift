@@ -190,10 +190,10 @@ public struct MinFunction: AggregateFunction {
         // Get only the first value
         for try await (key, _) in sequence {
             // Extract value from key (last element in tuple)
-            let fullKey = try Tuple.decode(from: key)
-            if let lastElement = fullKey.last as? Int64 {
+            let elements = try Tuple.unpack(from: key)
+            if let lastElement = elements.last as? Int64 {
                 return lastElement
-            } else if let lastElement = fullKey.last as? Int {
+            } else if let lastElement = elements.last as? Int {
                 return Int64(lastElement)
             }
             // Found first value, return it
@@ -253,10 +253,10 @@ public struct MaxFunction: AggregateFunction {
         var maxValue: Int64?
         for try await (key, _) in sequence {
             // Extract value from key (last element in tuple)
-            let fullKey = try Tuple.decode(from: key)
-            if let value = fullKey.last as? Int64 {
+            let elements = try Tuple.unpack(from: key)
+            if let value = elements.last as? Int64 {
                 maxValue = value
-            } else if let value = fullKey.last as? Int {
+            } else if let value = elements.last as? Int {
                 maxValue = Int64(value)
             }
         }

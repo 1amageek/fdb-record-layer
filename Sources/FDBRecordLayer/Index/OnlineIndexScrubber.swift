@@ -255,7 +255,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 terminationReason: nil
             )
         } catch {
-            // ✅ Handle failure: Return partial result with error
+            // OK: Handle failure: Return partial result with error
             let timeElapsed = Date().timeIntervalSince(startTime)
 
             let danglingDetected = phase1Issues.filter { $0.type == .danglingEntry }.count
@@ -365,14 +365,14 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             "type": "\(index.type.rawValue)"
         ])
 
-        // ✅ Use index.subspaceTupleKey (consistent with TypedQueryPlan and OnlineIndexer)
+        // OK: Use index.subspaceTupleKey (consistent with TypedQueryPlan and OnlineIndexer)
         let indexSubspace = subspace
             .subspace(RecordStoreKeyspace.index.rawValue)
             .subspace(index.subspaceTupleKey)
 
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
 
-        // ✅ Get record types for this index (needed to check each record type)
+        // OK: Get record types for this index (needed to check each record type)
         let recordNames: [String]
         if let indexRecordTypes = index.recordTypes {
             recordNames = Array(indexRecordTypes)
@@ -394,13 +394,13 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 ])
             }
 
-            // 📊 Record batch start time for duration measurement
+            // METRICS: Record batch start time for duration measurement
             let batchStartTime = Date()
 
             var retryCount = 0
             var batchSucceeded = false
 
-            // ✅ CORRECT RETRY LOGIC: Create new transaction for each retry
+            // OK: CORRECT RETRY LOGIC: Create new transaction for each retry
             while !batchSucceeded && retryCount <= configuration.maxRetries {
                 let context = try RecordContext(database: database)
                 // Note: No need for defer { context.cancel() } - RecordContext.deinit handles cleanup
@@ -416,21 +416,21 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         warningCount: &warningCount
                     )
 
-                    // ✅ FIX (Issue 2): Update progress with next key after lastKey
+                    // OK: FIX (Issue 2): Update progress with next key after lastKey
                     // RangeSet uses [from, to) half-open interval, so 'to' must be AFTER the last processed key
                     if let lastKey = batchEndKey {
                         let rangeEnd = nextKey(after: lastKey)
                         try await progress.markPhase1Range(from: currentKey, to: rangeEnd, context: context)
                     }
 
-                    // ✅ ATOMICITY FIX: Commit FIRST
+                    // OK: ATOMICITY FIX: Commit FIRST
                     try await context.commit()
 
-                    // ✅ Then record issues (only if commit succeeded)
+                    // OK: Then record issues (only if commit succeeded)
                     allIssues.append(contentsOf: batchIssues)
                     totalScanned += scannedCount
 
-                    // 📊 Record metrics (batched - once per batch instead of per entry)
+                    // METRICS: Record metrics (batched - once per batch instead of per entry)
                     entriesScannedCounter.increment(by: Int64(scannedCount))
 
                     // Count and record issues by type
@@ -441,11 +441,11 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
                     batchSizeRecorder.record(Int64(scannedCount))
 
-                    // 📊 Record batch duration
+                    // METRICS: Record batch duration
                     let batchDuration = Date().timeIntervalSince(batchStartTime)
                     batchDurationTimer.recordSeconds(batchDuration)
 
-                    // 📊 Progress tracking strategy:
+                    // METRICS: Progress tracking strategy:
                     // - Update progress gauge only every 10 batches (accurate RangeSet progress)
                     let (currentBatch, _) = statelock.withLock { state in
                         state.batchCount += 1
@@ -453,7 +453,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         return (state.batchCount, state.totalScannedSoFar)
                     }
 
-                    // 📊 Update progress gauge only every 10 batches (accurate RangeSet progress)
+                    // METRICS: Update progress gauge only every 10 batches (accurate RangeSet progress)
                     if currentBatch % 10 == 0 {
                         let accurateProgress = try await progress.getAccurateProgress(
                             phase: .phase1InProgress,
@@ -479,7 +479,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     batchSucceeded = true
 
                 } catch let error as FDBError where error.code == 2101 {
-                    // ✅ INFINITE LOOP FIX: transaction_too_large - skip oversized key
+                    // OK: INFINITE LOOP FIX: transaction_too_large - skip oversized key
                     // This is NOT retryable - we must skip the key and continue
                     logger.warning("Oversized key detected, skipping", metadata: [
                         "key": "\(currentKey.safeLogRepresentation)",
@@ -487,7 +487,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         "phase": "phase1"
                     ])
 
-                    // 📊 Record skip metric with phase and reason
+                    // METRICS: Record skip metric with phase and reason
                     recordSkip(phase: "phase1", reason: "oversized_key")
 
                     let skipKey = nextKey(after: currentKey)
@@ -514,7 +514,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                                     "error": "\(skipError.safeDescription)"
                                 ])
 
-                                // ✅ Wrap FDBError in RecordLayerError with context
+                                // OK: Wrap FDBError in RecordLayerError with context
                                 throw RecordLayerError.scrubberSkipFailed(
                                     key: currentKey.safeLogRepresentation,
                                     reason: skipError,
@@ -532,7 +532,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         }
                     }
 
-                    // 📊 Record batch duration (including skip overhead)
+                    // METRICS: Record batch duration (including skip overhead)
                     let batchDuration = Date().timeIntervalSince(batchStartTime)
                     batchDurationTimer.recordSeconds(batchDuration)
 
@@ -540,7 +540,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     batchSucceeded = true  // Mark as handled
 
                 } catch let error as FDBError where error.isRetryable {
-                    // ✅ CORRECT RETRY LOGIC: Retryable error - create new transaction and retry
+                    // OK: CORRECT RETRY LOGIC: Retryable error - create new transaction and retry
                     retryCount += 1
 
                     if retryCount > configuration.maxRetries {
@@ -551,7 +551,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                             "error": "\(error.safeDescription)"
                         ])
 
-                        // ✅ Wrap FDBError in RecordLayerError with context
+                        // OK: Wrap FDBError in RecordLayerError with context
                         throw RecordLayerError.scrubberRetryExhausted(
                             phase: "Phase 1",
                             operation: "scrubIndexEntriesBatch",
@@ -589,7 +589,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
     /// Scrub a batch of index entries within a single transaction
     ///
-    /// ✅ FIX (Issue 3): Now returns scannedCount as 4th tuple element
+    /// OK: FIX (Issue 3): Now returns scannedCount as 4th tuple element
     private func scrubIndexEntriesBatch(
         context: RecordContext,
         indexSubspace: Subspace,
@@ -601,12 +601,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     ) async throws -> (continuation: FDB.Bytes?, issues: [ScrubberIssue], lastKey: FDB.Bytes?, scannedCount: Int) {
         let transaction = context.getTransaction()
 
-        // ✅ Set transaction timeout
+        // OK: Set transaction timeout
         if configuration.transactionTimeoutMillis > 0 {
             try context.setTimeout(milliseconds: configuration.transactionTimeoutMillis)
         }
 
-        // ✅ Set read-your-writes option
+        // OK: Set read-your-writes option
         let snapshot = !configuration.readYourWrites
         if !configuration.readYourWrites {
             try context.disableReadYourWrites()
@@ -620,12 +620,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         let sequence = transaction.getRange(
             begin: startKey,
             end: endKey,
-            snapshot: snapshot  // ✅ Use configured snapshot setting
+            snapshot: snapshot  // OK: Use configured snapshot setting
         )
 
         for try await (indexKey, _) in sequence {
-            // ✅ STEP 1: Check byte limit BEFORE processing
-            // ✅ FORWARD PROGRESS GUARANTEE: Only check if we've processed at least 1 entry
+            // OK: STEP 1: Check byte limit BEFORE processing
+            // OK: FORWARD PROGRESS GUARANTEE: Only check if we've processed at least 1 entry
             let keySize = indexKey.count
             if scannedCount > 0 && scannedBytes + keySize > configuration.maxTransactionBytes {
                 // Current key is NOT processed - return it as continuation
@@ -633,11 +633,11 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 return (indexKey, issues, lastProcessedKey, scannedCount)
             }
 
-            // ✅ STEP 2: We have capacity - commit to processing this key
+            // OK: STEP 2: We have capacity - commit to processing this key
             scannedBytes += keySize
             scannedCount += 1
 
-            // ✅ STEP 3: Process the key (check if record exists)
+            // OK: STEP 3: Process the key (check if record exists)
             var recordFound = false
 
             // Check each record type (since index may apply to multiple types)
@@ -650,7 +650,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     // Primary key extraction failed (tuple decode issue or record type mismatch)
                     warningCount += 1
 
-                    // 📊 Record skip metric with phase and reason
+                    // METRICS: Record skip metric with phase and reason
                     recordSkip(phase: "phase1", reason: "primary_key_extraction_failure")
 
                     // 📝 Log warning with sampling (1/100)
@@ -697,7 +697,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 issues.append(issue)
 
                 // 📝 Log sampling (1/100) to reduce I/O overhead
-                // ✅ PII Protection: Only log sanitized index_key, NOT primary_key
+                // OK: PII Protection: Only log sanitized index_key, NOT primary_key
                 if warningCount % 100 == 0 {
                     logger.warning(
                         "Dangling entry detected (sampled 1/100)",
@@ -723,10 +723,10 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 }
             }
 
-            // ✅ STEP 4: Mark this key as processed
+            // OK: STEP 4: Mark this key as processed
             lastProcessedKey = indexKey
 
-            // ✅ STEP 5: Check scan limit AFTER processing
+            // OK: STEP 5: Check scan limit AFTER processing
             // If we've reached the limit, continue from NEXT key
             if scannedCount >= configuration.entriesScanLimit {
                 let continuationKey = nextKey(after: indexKey)
@@ -734,7 +734,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             }
         }
 
-        return (nil, issues, lastProcessedKey, scannedCount)  // ✅ Return scan count
+        return (nil, issues, lastProcessedKey, scannedCount)  // OK: Return scan count
     }
 
     /// Extract primary key from index key
@@ -751,7 +751,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         indexSubspace: Subspace,
         recordName: String
     ) throws -> [any TupleElement]? {
-        // ✅ Get primary key length from Schema
+        // OK: Get primary key length from Schema
         guard let entity = schema.entity(named: recordName) else {
             // If record type not found, skip
             return nil
@@ -766,7 +766,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         }
 
         let tupleBytes = Array(indexKey.dropFirst(indexSubspace.prefix.count))
-        let elementsArray = try Tuple.decode(from: tupleBytes)
+        let elementsArray = try Tuple.unpack(from: tupleBytes)
 
         // Index key structure: [indexed_values...][primary_key...]
         // We need to extract the last `primaryKeyLength` elements
@@ -863,7 +863,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             .subspace(RecordStoreKeyspace.record.rawValue)
             .subspace(recordName)
 
-        // ✅ Use index.subspaceTupleKey (consistent with Phase 1)
+        // OK: Use index.subspaceTupleKey (consistent with Phase 1)
         let indexSubspace = subspace
             .subspace(RecordStoreKeyspace.index.rawValue)
             .subspace(index.subspaceTupleKey)
@@ -881,13 +881,13 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 ])
             }
 
-            // 📊 Record batch start time for duration measurement
+            // METRICS: Record batch start time for duration measurement
             let batchStartTime = Date()
 
             var retryCount = 0
             var batchSucceeded = false
 
-            // ✅ CORRECT RETRY LOGIC: Create new transaction for each retry
+            // OK: CORRECT RETRY LOGIC: Create new transaction for each retry
             while !batchSucceeded && retryCount <= configuration.maxRetries {
                 let context = try RecordContext(database: database)
                 // Note: No need for defer { context.cancel() } - RecordContext.deinit handles cleanup
@@ -903,20 +903,20 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         warningCount: &warningCount
                     )
 
-                    // ✅ FIX (Issue 2): Update progress with next key after lastKey
+                    // OK: FIX (Issue 2): Update progress with next key after lastKey
                     if let lastKey = batchEndKey {
                         let rangeEnd = nextKey(after: lastKey)
                         try await progress.markPhase2Range(from: currentKey, to: rangeEnd, context: context)
                     }
 
-                    // ✅ ATOMICITY FIX: Commit FIRST
+                    // OK: ATOMICITY FIX: Commit FIRST
                     try await context.commit()
 
-                    // ✅ Then record issues (only if commit succeeded)
+                    // OK: Then record issues (only if commit succeeded)
                     allIssues.append(contentsOf: batchIssues)
                     totalScanned += scannedCount
 
-                    // 📊 Record metrics (batched - once per batch instead of per entry)
+                    // METRICS: Record metrics (batched - once per batch instead of per entry)
                     recordsScannedCounter.increment(by: Int64(scannedCount))
 
                     // Count and record issues by type
@@ -927,18 +927,18 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
                     batchSizeRecorder.record(Int64(scannedCount))
 
-                    // 📊 Record batch duration
+                    // METRICS: Record batch duration
                     let batchDuration = Date().timeIntervalSince(batchStartTime)
                     batchDurationTimer.recordSeconds(batchDuration)
 
-                    // 📊 Progress tracking strategy (same as Phase 1)
+                    // METRICS: Progress tracking strategy (same as Phase 1)
                     let (currentBatch, _) = statelock.withLock { state in
                         state.batchCount += 1
                         state.totalScannedSoFar += scannedCount
                         return (state.batchCount, state.totalScannedSoFar)
                     }
 
-                    // 📊 Update progress gauge only every 10 batches (accurate RangeSet progress)
+                    // METRICS: Update progress gauge only every 10 batches (accurate RangeSet progress)
                     if currentBatch % 10 == 0 {
                         let accurateProgress = try await progress.getAccurateProgress(
                             phase: .phase2InProgress,
@@ -964,7 +964,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     batchSucceeded = true
 
                 } catch let error as FDBError where error.code == 2101 {
-                    // ✅ INFINITE LOOP FIX: transaction_too_large - skip oversized key
+                    // OK: INFINITE LOOP FIX: transaction_too_large - skip oversized key
                     // This is NOT retryable - we must skip the key and continue
                     logger.warning("Oversized record detected, skipping", metadata: [
                         "key": "\(currentKey.safeLogRepresentation)",
@@ -972,7 +972,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         "phase": "phase2"
                     ])
 
-                    // 📊 Record skip metric with phase and reason
+                    // METRICS: Record skip metric with phase and reason
                     recordSkip(phase: "phase2", reason: "oversized_key")
 
                     let skipKey = nextKey(after: currentKey)
@@ -999,7 +999,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                                     "error": "\(skipError.safeDescription)"
                                 ])
 
-                                // ✅ Wrap FDBError in RecordLayerError with context
+                                // OK: Wrap FDBError in RecordLayerError with context
                                 throw RecordLayerError.scrubberSkipFailed(
                                     key: currentKey.safeLogRepresentation,
                                     reason: skipError,
@@ -1017,7 +1017,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                         }
                     }
 
-                    // 📊 Record batch duration (including skip overhead)
+                    // METRICS: Record batch duration (including skip overhead)
                     let batchDuration = Date().timeIntervalSince(batchStartTime)
                     batchDurationTimer.recordSeconds(batchDuration)
 
@@ -1025,7 +1025,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     batchSucceeded = true  // Mark as handled
 
                 } catch let error as FDBError where error.isRetryable {
-                    // ✅ CORRECT RETRY LOGIC: Retryable error - create new transaction and retry
+                    // OK: CORRECT RETRY LOGIC: Retryable error - create new transaction and retry
                     retryCount += 1
 
                     if retryCount > configuration.maxRetries {
@@ -1036,7 +1036,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                             "error": "\(error.safeDescription)"
                         ])
 
-                        // ✅ Wrap FDBError in RecordLayerError with context
+                        // OK: Wrap FDBError in RecordLayerError with context
                         throw RecordLayerError.scrubberRetryExhausted(
                             phase: "Phase 2",
                             operation: "scrubRecordsBatch",
@@ -1065,12 +1065,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             }
         }
 
-        return (allIssues, totalScanned)  // ✅ Return scan count
+        return (allIssues, totalScanned)  // OK: Return scan count
     }
 
     /// Scrub a batch of records within a single transaction
     ///
-    /// ✅ FIX (Issue 3): Now returns scannedCount as 4th tuple element
+    /// OK: FIX (Issue 3): Now returns scannedCount as 4th tuple element
     private func scrubRecordsBatch(
         context: RecordContext,
         recordSubspace: Subspace,
@@ -1082,12 +1082,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     ) async throws -> (continuation: FDB.Bytes?, issues: [ScrubberIssue], lastKey: FDB.Bytes?, scannedCount: Int) {
         let transaction = context.getTransaction()
 
-        // ✅ Set transaction timeout
+        // OK: Set transaction timeout
         if configuration.transactionTimeoutMillis > 0 {
             try context.setTimeout(milliseconds: configuration.transactionTimeoutMillis)
         }
 
-        // ✅ Set read-your-writes option
+        // OK: Set read-your-writes option
         let snapshot = !configuration.readYourWrites
         if !configuration.readYourWrites {
             try context.disableReadYourWrites()
@@ -1098,7 +1098,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         var issues: [ScrubberIssue] = []
         var lastProcessedKey: FDB.Bytes?
 
-        // ✅ Get primary key length from Schema
+        // OK: Get primary key length from Schema
         guard let entity = schema.entity(named: recordName) else {
             throw RecordLayerError.recordTypeNotFound(recordName)
         }
@@ -1107,12 +1107,12 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         let sequence = transaction.getRange(
             begin: startKey,
             end: endKey,
-            snapshot: snapshot  // ✅ Use configured snapshot setting
+            snapshot: snapshot  // OK: Use configured snapshot setting
         )
 
         for try await (recordKey, recordBytes) in sequence {
-            // ✅ STEP 1: Check byte limit BEFORE processing
-            // ✅ FORWARD PROGRESS GUARANTEE: Only check if we've processed at least 1 entry
+            // OK: STEP 1: Check byte limit BEFORE processing
+            // OK: FORWARD PROGRESS GUARANTEE: Only check if we've processed at least 1 entry
             let entrySize = recordKey.count + recordBytes.count
             if scannedCount > 0 && scannedBytes + entrySize > configuration.maxTransactionBytes {
                 // Current record is NOT processed - return it as continuation
@@ -1120,11 +1120,11 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 return (recordKey, issues, lastProcessedKey, scannedCount)
             }
 
-            // ✅ STEP 2: We have capacity - commit to processing this record
+            // OK: STEP 2: We have capacity - commit to processing this record
             scannedBytes += entrySize
             scannedCount += 1
 
-            // ✅ STEP 3: Process the record
+            // OK: STEP 3: Process the record
 
             // Deserialize record
             let record: Record
@@ -1132,7 +1132,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 record = try recordAccess.deserialize(recordBytes)
             } catch {
                 // Skip records that can't be deserialized
-                // 📊 Record skip metric with phase and specific reason
+                // METRICS: Record skip metric with phase and specific reason
                 recordSkip(phase: "phase2", reason: "record_deserialization_failure")
 
                 // 📝 Log warning with sampling (1/100) to avoid log spam
@@ -1172,9 +1172,9 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             let tupleBytes = Array(recordKey.dropFirst(recordSubspace.prefix.count))
             let elementsArray: [any TupleElement]
             do {
-                elementsArray = try Tuple.decode(from: tupleBytes)
+                elementsArray = try Tuple.unpack(from: tupleBytes)
             } catch {
-                // 📊 Record skip metric with phase and specific reason
+                // METRICS: Record skip metric with phase and specific reason
                 recordSkip(phase: "phase2", reason: "tuple_decode_failure")
 
                 // 📝 Log warning with sampling (1/100) to avoid log spam
@@ -1238,7 +1238,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     issues.append(issue)
 
                     // 📝 Log sampling (1/100) to reduce I/O overhead
-                    // ✅ PII Protection: Only log sanitized index_key, NOT primary_key
+                    // OK: PII Protection: Only log sanitized index_key, NOT primary_key
                     if warningCount % 100 == 0 {
                         logger.warning(
                             "Missing index entry detected (sampled 1/100)",
@@ -1267,10 +1267,10 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 }
             }
 
-            // ✅ STEP 4: Mark this record as processed
+            // OK: STEP 4: Mark this record as processed
             lastProcessedKey = recordKey
 
-            // ✅ STEP 5: Check scan limit AFTER processing
+            // OK: STEP 5: Check scan limit AFTER processing
             // If we've reached the limit, continue from NEXT key
             if scannedCount >= configuration.entriesScanLimit {
                 let continuationKey = nextKey(after: recordKey)
@@ -1278,7 +1278,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             }
         }
 
-        return (nil, issues, lastProcessedKey, scannedCount)  // ✅ Return scan count
+        return (nil, issues, lastProcessedKey, scannedCount)  // OK: Return scan count
     }
 
     /// Build expected index keys for a record
@@ -1295,7 +1295,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
         primaryKey: [any TupleElement],
         indexSubspace: Subspace
     ) throws -> [FDB.Bytes] {
-        // ✅ FIX: evaluateKeyExpression now returns [[TupleElement]]
+        // OK: FIX: evaluateKeyExpression now returns [[TupleElement]]
         // Each inner array represents one complete index entry
         // - For single-valued field: [["value"]]
         // - For multi-valued field (array): [["value1"], ["value2"], ...]
@@ -1307,7 +1307,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
         var indexKeys: [FDB.Bytes] = []
 
-        // ✅ FIX: Remove empty tuple condition
+        // OK: FIX: Remove empty tuple condition
         // For VALUE index, null/missing fields should NOT create index entries
         if indexEntries.isEmpty {
             // No values: no index entries (field is null/missing)
@@ -1357,7 +1357,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                 fieldName: field.fieldName
             )
 
-            // ✅ FIX: Empty means NO index entries (not one empty entry)
+            // OK: FIX: Empty means NO index entries (not one empty entry)
             // For VALUE index, null/missing fields are not indexed
             if values.isEmpty {
                 return []  // Empty 2D array - no index entries at all
@@ -1365,7 +1365,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
             return values.map { [$0] }  // [[value1], [value2], ...]
 
         case let concat as ConcatenateKeyExpression:
-            // ✅ FIX: Compute Cartesian product to combine fields correctly
+            // OK: FIX: Compute Cartesian product to combine fields correctly
             // Start with one empty entry
             var result: [[any TupleElement]] = [[]]
 

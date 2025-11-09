@@ -329,8 +329,8 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// - Parameter primaryKey: プライマリキー値
     /// - Returns: レコード（存在しない場合は nil）
     /// - Throws: RecordLayerError if fetch fails
-    public func fetch(
-        by primaryKey: any TupleElement
+    public func record(
+        for primaryKey: any TupleElement
     ) async throws -> Record? {
         let start = DispatchTime.now()
 
@@ -382,25 +382,25 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// let user = try await store.fetch(by: 123)
     ///
     /// // 複合キー（可変長引数）
-    /// let orderItem = try await store.fetch(by: "order-001", "item-456")
+    /// let orderItem = try await store.record(forCompositeKey: "order-001", "item-456")
     /// ```
     ///
     /// - Parameter keys: プライマリキーの要素（可変長）
     /// - Returns: レコード（存在しない場合は nil）
     /// - Throws: RecordLayerError if fetch fails
-    public func fetch(
-        by keys: any TupleElement...
+    public func record(
+        forCompositeKey keys: any TupleElement...
     ) async throws -> Record? {
         // Validate arguments
         guard !keys.isEmpty else {
             throw RecordLayerError.invalidArgument(
-                "fetch(by:) requires at least one key element"
+                "record(forCompositeKey:) requires at least one key element"
             )
         }
 
         // Convert variadic arguments to Tuple
         let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
-        return try await fetch(by: primaryKey)
+        return try await record(for: primaryKey)
     }
 
     // MARK: - Query
@@ -544,8 +544,8 @@ public struct RecordTransaction<Record: Recordable> {
     }
 
     /// レコードを取得
-    public func fetch(
-        by primaryKey: any TupleElement
+    public func record(
+        for primaryKey: any TupleElement
     ) async throws -> Record? {
         // 共通ロジックを使用
         return try await store.fetchInternal(by: primaryKey, context: context)
@@ -557,29 +557,29 @@ public struct RecordTransaction<Record: Recordable> {
     /// ```swift
     /// try await store.transaction { transaction in
     ///     // 単一キー
-    ///     let user = try await transaction.fetch(by: 123)
+    ///     let user = try await transaction.record(for: 123)
     ///
     ///     // 複合キー（可変長引数）
-    ///     let orderItem = try await transaction.fetch(by: "order-001", "item-456")
+    ///     let orderItem = try await transaction.record(forCompositeKey: "order-001", "item-456")
     /// }
     /// ```
     ///
     /// - Parameter keys: プライマリキーの要素（可変長）
     /// - Returns: レコード（存在しない場合は nil）
     /// - Throws: RecordLayerError if fetch fails
-    public func fetch(
-        by keys: any TupleElement...
+    public func record(
+        forCompositeKey keys: any TupleElement...
     ) async throws -> Record? {
         // Validate arguments
         guard !keys.isEmpty else {
             throw RecordLayerError.invalidArgument(
-                "fetch(by:) requires at least one key element"
+                "record(forCompositeKey:) requires at least one key element"
             )
         }
 
         // Convert variadic arguments to Tuple
         let primaryKey: any TupleElement = keys.count == 1 ? keys[0] : Tuple(keys)
-        return try await fetch(by: primaryKey)
+        return try await record(for: primaryKey)
     }
 
     /// レコードを削除

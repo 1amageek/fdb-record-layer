@@ -85,7 +85,7 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         } else {
             throw RecordLayerError.internalError("Record does not conform to Recordable")
         }
-        let primaryKeyValues = try Tuple.decode(from: primaryKeyTuple.encode())
+        let primaryKeyValues = try Tuple.unpack(from: primaryKeyTuple.pack())
 
         // Combine indexed values with primary key for uniqueness
         let allValues = indexedValues + primaryKeyValues
