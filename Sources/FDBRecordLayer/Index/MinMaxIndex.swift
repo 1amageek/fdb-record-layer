@@ -85,28 +85,21 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         let groupingTuple = TupleHelpers.toTuple(groupingValues)
         let range = subspace.subspace(groupingTuple).range()
 
-        // Scan for first entry in range
-        let sequence = transaction.getRange(
-            begin: range.begin,
-            end: range.end,
-            snapshot: true
-        )
-
-        // Get first entry
-        var firstEntry: (key: FDB.Bytes, value: FDB.Bytes)?
-        for try await entry in sequence {
-            firstEntry = entry
-            break  // Only need first entry
+        // Use key selector for efficient O(log n) lookup
+        let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
+        guard let firstKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+            throw RecordLayerError.internalError("No values found for MIN aggregate")
         }
 
-        guard let firstEntry = firstEntry else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate")
+        // Verify key is within range
+        guard firstKey.starts(with: range.begin) else {
+            throw RecordLayerError.internalError("No values found for MIN aggregate in range")
         }
 
         // Extract value from key
         // Key structure: [grouping..., value, primaryKey...]
         // Value is at position: groupingValues.count
-        let elements = try Tuple.unpack(from: firstEntry.key)
+        let elements = try Tuple.unpack(from: firstKey)
         guard elements.count > groupingValues.count else {
             throw RecordLayerError.internalError("Invalid MIN index key structure")
         }
@@ -243,27 +236,21 @@ public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         let groupingTuple = TupleHelpers.toTuple(groupingValues)
         let range = subspace.subspace(groupingTuple).range()
 
-        // Scan for last entry in range
-        let sequence = transaction.getRange(
-            begin: range.begin,
-            end: range.end,
-            snapshot: true
-        )
-
-        // Get last entry by iterating through all entries
-        var lastEntry: (key: FDB.Bytes, value: FDB.Bytes)?
-        for try await entry in sequence {
-            lastEntry = entry  // Keep updating to get last entry
+        // Use key selector for efficient O(log n) lookup
+        let selector = FDB.KeySelector.lastLessThan(range.end)
+        guard let lastKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+            throw RecordLayerError.internalError("No values found for MAX aggregate")
         }
 
-        guard let lastEntry = lastEntry else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate")
+        // Verify key is within range
+        guard lastKey.starts(with: range.begin) else {
+            throw RecordLayerError.internalError("No values found for MAX aggregate in range")
         }
 
         // Extract value from key
         // Key structure: [grouping..., value, primaryKey...]
         // Value is at position: groupingValues.count
-        let elements = try Tuple.unpack(from: lastEntry.key)
+        let elements = try Tuple.unpack(from: lastKey)
         guard elements.count > groupingValues.count else {
             throw RecordLayerError.internalError("Invalid MAX index key structure")
         }

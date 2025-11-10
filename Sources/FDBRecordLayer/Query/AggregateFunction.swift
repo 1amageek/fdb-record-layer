@@ -189,31 +189,25 @@ public struct MinFunction: AggregateFunction {
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
         // MIN indexes are VALUE indexes with special semantics
-        // Scan for first entry in grouping range
+        // Use key selector to efficiently get the first key in range
         let groupingTuple = TupleHelpers.toTuple(groupBy)
         let range = subspace.subspace(groupingTuple).range()
 
-        // Get first entry in range
-        let sequence = transaction.getRange(
-            begin: range.begin,
-            end: range.end,
-            snapshot: true
-        )
-
-        var firstEntry: (key: FDB.Bytes, value: FDB.Bytes)?
-        for try await entry in sequence {
-            firstEntry = entry
-            break  // Only need first entry
+        // Use firstGreaterOrEqual selector for O(log n) lookup
+        let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
+        guard let firstKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+            throw RecordLayerError.internalError("No values found for MIN aggregate")
         }
 
-        guard let firstEntry = firstEntry else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate")
+        // Verify key is within range using prefix matching
+        guard firstKey.starts(with: range.begin) else {
+            throw RecordLayerError.internalError("No values found for MIN aggregate in range")
         }
 
         // Extract value from key
         // Key structure: [grouping..., value, primaryKey...]
         // Value is at position: groupBy.count
-        let elements = try Tuple.unpack(from: firstEntry.key)
+        let elements = try Tuple.unpack(from: firstKey)
         guard elements.count > groupBy.count else {
             throw RecordLayerError.internalError("Invalid MIN index key structure")
         }
@@ -284,30 +278,26 @@ public struct MaxFunction: AggregateFunction {
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
         // MAX indexes are VALUE indexes with special semantics
-        // Scan for last entry in grouping range
+        // Use key selector to efficiently get the last key in range
         let groupingTuple = TupleHelpers.toTuple(groupBy)
         let range = subspace.subspace(groupingTuple).range()
 
-        // Get last entry in range
-        let sequence = transaction.getRange(
-            begin: range.begin,
-            end: range.end,
-            snapshot: true
-        )
-
-        var lastEntry: (key: FDB.Bytes, value: FDB.Bytes)?
-        for try await entry in sequence {
-            lastEntry = entry  // Keep updating to get last entry
+        // Use lastLessThan selector for O(log n) lookup
+        // lastLessThan(end) gives us the last key before 'end'
+        let selector = FDB.KeySelector.lastLessThan(range.end)
+        guard let lastKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+            throw RecordLayerError.internalError("No values found for MAX aggregate")
         }
 
-        guard let lastEntry = lastEntry else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate")
+        // Verify key is within range using prefix matching
+        guard lastKey.starts(with: range.begin) else {
+            throw RecordLayerError.internalError("No values found for MAX aggregate in range")
         }
 
         // Extract value from key
         // Key structure: [grouping..., value, primaryKey...]
         // Value is at position: groupBy.count
-        let elements = try Tuple.unpack(from: lastEntry.key)
+        let elements = try Tuple.unpack(from: lastKey)
         guard elements.count > groupBy.count else {
             throw RecordLayerError.internalError("Invalid MAX index key structure")
         }
