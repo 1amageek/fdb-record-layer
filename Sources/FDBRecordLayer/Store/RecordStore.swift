@@ -105,6 +105,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// Metrics recorder for observability
     private let metricsRecorder: any MetricsRecorder
 
+    /// Aggregate metrics for MIN/MAX/COUNT/SUM queries
+    public let aggregateMetrics: AggregateMetrics
+
     // Subspaces
     internal let recordSubspace: Subspace
     internal let indexSubspace: Subspace
@@ -133,6 +136,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         self.logger = logger ?? Logger(label: "com.fdb.recordlayer.store")
         self.statisticsManager = statisticsManager
         self.metricsRecorder = metricsRecorder
+        self.aggregateMetrics = AggregateMetrics()
 
         // Initialize subspaces
         self.recordSubspace = subspace.subspace(Tuple("R"))  // Records
@@ -673,20 +677,54 @@ extension RecordStore {
         _ function: F,
         groupBy: [any TupleElement]
     ) async throws -> F.Result {
-        guard let index = schema.index(named: function.indexName) else {
-            throw RecordLayerError.indexNotFound("Index '\(function.indexName)' not found in schema")
+        let startTime = Date()
+
+        do {
+            guard let index = schema.index(named: function.indexName) else {
+                throw RecordLayerError.indexNotFound("Index '\(function.indexName)' not found in schema")
+            }
+
+            // Check index state - must be readable for queries
+            let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+            let state = try await indexStateManager.state(of: function.indexName)
+
+            guard state == .readable else {
+                throw RecordLayerError.indexNotReady(
+                    "Cannot query index '\(function.indexName)' in '\(state)' state. " +
+                    "Index must be in 'readable' state for aggregate queries. " +
+                    "Current state: \(state)"
+                )
+            }
+
+            // Execute query in a read-only transaction with automatic lifecycle management
+            let indexSubspace = self.indexSubspace.subspace(Tuple([function.indexName]))
+            let result = try await database.withTransaction { transaction in
+                try await function.evaluate(
+                    index: index,
+                    subspace: indexSubspace,
+                    groupBy: groupBy,
+                    transaction: transaction
+                )
+            }
+
+            // Record successful query metrics
+            let duration = Date().timeIntervalSince(startTime)
+            aggregateMetrics.recordQuery(
+                indexName: function.indexName,
+                aggregateType: function.aggregateType,
+                duration: duration
+            )
+
+            return result
+        } catch {
+            // Record failure metrics
+            aggregateMetrics.recordFailure(
+                indexName: function.indexName,
+                aggregateType: function.aggregateType,
+                error: error
+            )
+            throw error
         }
-
-        let context = try RecordContext(database: database)
-        let indexSubspace = self.indexSubspace.subspace(Tuple([function.indexName]))
-        let transaction = context.getTransaction()
-
-        return try await function.evaluate(
-            index: index,
-            subspace: indexSubspace,
-            groupBy: groupBy,
-            transaction: transaction
-        )
     }
 
     /// Evaluate an aggregate function with no grouping (aggregate over all records)

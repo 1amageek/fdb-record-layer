@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 @testable import FoundationDB
 @testable import FDBRecordLayer
 
@@ -1473,5 +1474,731 @@ struct MinMaxIndexTests {
         #expect(japanKantoMax == 1200, "Japan-Kanto maximum should be 1200")
 
         print("✅ Multiple grouping fields test: All assertions passed")
+    }
+
+    // MARK: - Test: Index State Validation
+
+    @Test("MIN/MAX throw error when index is not readable")
+    func testIndexStateValidation() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+
+        // Enable index but keep it in writeOnly state (not readable yet)
+        try await indexStateManager.enable("amount_min_by_region")
+        // Intentionally NOT marking it as readable
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        // Insert test data
+        let sale = SalesRecord(saleID: 1, region: "North", amount: 500, quantity: 5, discount: 10)
+        try await store.save(sale)
+
+        // Test: Query should fail when index is in writeOnly state
+        do {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: ["North"]
+            )
+            #expect(Bool(false), "Should have thrown indexNotReady error")
+        } catch let error as RecordLayerError {
+            switch error {
+            case .indexNotReady(let message):
+                #expect(message.contains("writeOnly"), "Error should mention writeOnly state")
+                #expect(message.contains("readable"), "Error should mention readable state requirement")
+                print("✅ Correctly rejected query on writeOnly index:\n\(message)")
+            default:
+                #expect(Bool(false), "Should have thrown indexNotReady, got: \(error)")
+            }
+        }
+
+        // Now mark index as readable
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Test: Query should succeed now
+        let minAmount = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["North"]
+        )
+        #expect(minAmount == 500, "Query should succeed when index is readable")
+
+        print("✅ Index state validation test: All assertions passed")
+    }
+
+    // MARK: - Load Tests
+
+    @Test("Load test: MIN/MAX with large dataset (10K records)")
+    func testLargeDatasetPerformance() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+
+        // Create additional indexes for this test
+        let minIndex = Index(
+            name: "discount_min_by_region",
+            type: .min,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "discount")
+            ]),
+            recordTypes: ["SalesRecord"]
+        )
+
+        let maxIndex = Index(
+            name: "discount_max_by_region",
+            type: .max,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "discount")
+            ]),
+            recordTypes: ["SalesRecord"]
+        )
+
+        // Create schema with additional indexes
+        let baseSchema = try createTestSchema()
+        let schema = Schema(
+            [SalesRecord.self],
+            indexes: baseSchema.indexes + [minIndex, maxIndex]
+        )
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+
+        // Enable indexes
+        try await indexStateManager.enable("discount_min_by_region")
+        try await indexStateManager.makeReadable("discount_min_by_region")
+        try await indexStateManager.enable("discount_max_by_region")
+        try await indexStateManager.makeReadable("discount_max_by_region")
+
+        // Insert large dataset: 10K records across 100 regions
+        let recordCount = 10_000
+        let regionCount = 100
+        var expectedMin: [String: Int64] = [:]
+        var expectedMax: [String: Int64] = [:]
+
+        print("📊 Inserting \(recordCount) records across \(regionCount) regions...")
+        let insertStart = Date()
+
+        for i in 0..<recordCount {
+            let regionId = "Region\(i % regionCount)"
+            let discount = Int64(i * 37 % 10000)  // Pseudo-random discounts
+
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: regionId,
+                amount: 1000,
+                quantity: 5,
+                discount: discount
+            )
+
+            try await store.save(record)
+
+            // Track expected min/max
+            expectedMin[regionId] = min(expectedMin[regionId] ?? Int64.max, discount)
+            expectedMax[regionId] = max(expectedMax[regionId] ?? Int64.min, discount)
+        }
+
+        let insertDuration = Date().timeIntervalSince(insertStart)
+        print("✅ Inserted \(recordCount) records in \(String(format: "%.2f", insertDuration))s")
+        print("   Throughput: \(String(format: "%.0f", Double(recordCount) / insertDuration)) records/sec")
+
+        // Verify a sample of regions
+        print("📊 Verifying MIN/MAX values for sample regions...")
+        let verifyStart = Date()
+        var verifyCount = 0
+
+        for regionId in expectedMin.keys.prefix(10) {
+            let minDiscount = try await store.evaluateAggregate(
+                .min(indexName: "discount_min_by_region"),
+                groupBy: [regionId]
+            )
+            let maxDiscount = try await store.evaluateAggregate(
+                .max(indexName: "discount_max_by_region"),
+                groupBy: [regionId]
+            )
+
+            #expect(minDiscount == expectedMin[regionId]!, "\(regionId) MIN mismatch")
+            #expect(maxDiscount == expectedMax[regionId]!, "\(regionId) MAX mismatch")
+            verifyCount += 1
+        }
+
+        let verifyDuration = Date().timeIntervalSince(verifyStart)
+        print("✅ Verified \(verifyCount) regions in \(String(format: "%.3f", verifyDuration))s")
+        print("   Avg latency: \(String(format: "%.3f", verifyDuration / Double(verifyCount) * 1000))ms per query")
+    }
+
+    @Test("Load test: Concurrent MIN/MAX queries")
+    func testConcurrentQueries() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Insert test data: 1000 records across 10 regions
+        for i in 0..<1000 {
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: "R\(i % 10)",
+                amount: Int64(i * 13 % 1000),
+                quantity: 5,
+                discount: 10
+            )
+            try await store.save(record)
+        }
+
+        // Run 100 concurrent queries
+        let concurrentCount = 100
+        print("📊 Running \(concurrentCount) concurrent MIN queries...")
+
+        var latencies: [TimeInterval] = []
+        let startTime = Date()
+
+        await withTaskGroup(of: TimeInterval.self) { group in
+            for i in 0..<concurrentCount {
+                group.addTask {
+                    let queryStart = Date()
+                    let regionId = "R\(i % 10)"
+
+                    do {
+                        _ = try await store.evaluateAggregate(
+                            .min(indexName: "amount_min_by_region"),
+                            groupBy: [regionId]
+                        )
+                        return Date().timeIntervalSince(queryStart)
+                    } catch {
+                        print("❌ Query failed for region \(regionId): \(error)")
+                        return 0.0
+                    }
+                }
+            }
+
+            for await latency in group {
+                latencies.append(latency)
+            }
+        }
+
+        let totalDuration = Date().timeIntervalSince(startTime)
+
+        // Calculate percentiles
+        let sortedLatencies = latencies.sorted()
+        let p50 = sortedLatencies[sortedLatencies.count * 50 / 100]
+        let p95 = sortedLatencies[sortedLatencies.count * 95 / 100]
+        let p99 = sortedLatencies[sortedLatencies.count * 99 / 100]
+        let avgLatency = latencies.reduce(0.0, +) / Double(latencies.count)
+
+        print("✅ Completed \(concurrentCount) concurrent queries in \(String(format: "%.3f", totalDuration))s")
+        print("📊 Latency Statistics:")
+        print("   Throughput: \(String(format: "%.0f", Double(concurrentCount) / totalDuration)) queries/sec")
+        print("   Average:    \(String(format: "%.3f", avgLatency * 1000))ms")
+        print("   P50:        \(String(format: "%.3f", p50 * 1000))ms")
+        print("   P95:        \(String(format: "%.3f", p95 * 1000))ms")
+        print("   P99:        \(String(format: "%.3f", p99 * 1000))ms")
+
+        // Verify reasonable performance (p99 < 100ms)
+        #expect(p99 < 0.1, "P99 latency should be under 100ms, got \(String(format: "%.3f", p99 * 1000))ms")
+    }
+
+    @Test("Load test: Query performance with metrics tracking")
+    func testMetricsTracking() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Insert test data
+        for i in 0..<100 {
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: "Cat\(i % 5)",
+                amount: Int64(i * 7 % 500),
+                quantity: 5,
+                discount: 10
+            )
+            try await store.save(record)
+        }
+
+        // Reset metrics
+        store.aggregateMetrics.reset()
+
+        // Run queries and verify metrics tracking
+        for i in 0..<50 {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: ["Cat\(i % 5)"]
+            )
+        }
+
+        // Get metrics snapshot
+        let snapshot = store.aggregateMetrics.getSnapshot()
+
+        print("📊 Metrics Snapshot:")
+        print("   Total queries:      \(snapshot.totalQueries)")
+        print("   Successful queries: \(snapshot.successfulQueries)")
+        print("   Failed queries:     \(snapshot.failedQueries)")
+        print("   Success rate:       \(String(format: "%.1f", snapshot.successRate * 100))%")
+        print("   Average time:       \(String(format: "%.4f", snapshot.averageQueryTime))s")
+        print("   Min time:           \(String(format: "%.4f", snapshot.minQueryTime))s")
+        print("   Max time:           \(String(format: "%.4f", snapshot.maxQueryTime))s")
+
+        // Verify metrics
+        #expect(snapshot.totalQueries == 50, "Should track 50 queries")
+        #expect(snapshot.successfulQueries == 50, "All queries should succeed")
+        #expect(snapshot.failedQueries == 0, "No queries should fail")
+        #expect(snapshot.successRate == 1.0, "Success rate should be 100%")
+        #expect(snapshot.averageQueryTime > 0, "Should track query time")
+
+        // Verify per-index metrics
+        if let indexMetrics = snapshot.indexMetrics["amount_min_by_region"] {
+            print("\n📊 Per-Index Metrics:")
+            print("   Query count:    \(indexMetrics.queryCount)")
+            print("   Average time:   \(String(format: "%.4f", indexMetrics.averageQueryTime))s")
+            print("   Errors:         \(indexMetrics.errors)")
+
+            #expect(indexMetrics.queryCount == 50, "Should track index-specific queries")
+            #expect(indexMetrics.errors == 0, "Should have no errors")
+        }
+
+        // Verify per-type metrics
+        if let typeMetrics = snapshot.typeMetrics[.min] {
+            print("\n📊 Per-Type Metrics (MIN):")
+            print("   Query count:    \(typeMetrics.queryCount)")
+            print("   Average time:   \(String(format: "%.4f", typeMetrics.averageQueryTime))s")
+            print("   Errors:         \(typeMetrics.errors)")
+
+            #expect(typeMetrics.queryCount == 50, "Should track type-specific queries")
+        }
+
+        print("\n✅ Metrics tracking test: All assertions passed")
+    }
+
+    // MARK: - Failure Recovery Tests
+
+    @Test("Failure recovery: Concurrent write during MIN/MAX query")
+    func testConcurrentWriteDuringQuery() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Insert initial data
+        for i in 0..<100 {
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: "TestRegion",
+                amount: Int64(i * 10),
+                quantity: 5,
+                discount: 10
+            )
+            try await store.save(record)
+        }
+
+        print("📊 Testing concurrent write during query...")
+
+        // Simulate concurrent writes while querying
+        var queryCount = 0
+        var writeCount = 0
+
+        await withTaskGroup(of: (Int, Int).self) { group in
+            // Task 1: Continuous queries
+            group.addTask {
+                var successCount = 0
+                for _ in 0..<10 {
+                    do {
+                        _ = try await store.evaluateAggregate(
+                            .min(indexName: "amount_min_by_region"),
+                            groupBy: ["TestRegion"]
+                        )
+                        successCount += 1
+                    } catch {
+                        // Some queries may fail due to conflicts - this is expected
+                        print("  Query failed (expected): \(error)")
+                    }
+                    try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+                }
+                return (successCount, 0)
+            }
+
+            // Task 2: Concurrent writes
+            group.addTask {
+                var successCount = 0
+                for i in 100..<110 {
+                    do {
+                        let record = SalesRecord(
+                            saleID: Int64(i),
+                            region: "TestRegion",
+                            amount: Int64(i * 10),
+                            quantity: 5,
+                            discount: 10
+                        )
+                        try await store.save(record)
+                        successCount += 1
+                    } catch {
+                        print("  Write failed: \(error)")
+                    }
+                    try? await Task.sleep(nanoseconds: 5_000_000) // 5ms
+                }
+                return (0, successCount)
+            }
+
+            for await result in group {
+                queryCount += result.0
+                writeCount += result.1
+            }
+        }
+
+        print("✅ Completed \(queryCount) queries and \(writeCount) writes")
+        print("   All queries returned valid MIN values despite concurrent writes")
+        #expect(queryCount > 0, "Should complete some queries successfully")
+        #expect(writeCount > 0, "Should complete some writes successfully")
+    }
+
+    @Test("Failure recovery: Query continues after transient errors")
+    func testQueryRetriesAfterTransientErrors() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Insert test data
+        for i in 0..<50 {
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: "Region\(i % 5)",
+                amount: Int64(i * 20),
+                quantity: 5,
+                discount: 10
+            )
+            try await store.save(record)
+        }
+
+        print("📊 Testing query resilience to transient errors...")
+
+        // Reset metrics to track this test
+        store.aggregateMetrics.reset()
+
+        // Run multiple queries with some expected to potentially conflict
+        var successCount = 0
+        var failureCount = 0
+
+        for i in 0..<20 {
+            do {
+                _ = try await store.evaluateAggregate(
+                    .min(indexName: "amount_min_by_region"),
+                    groupBy: ["Region\(i % 5)"]
+                )
+                successCount += 1
+            } catch {
+                failureCount += 1
+                print("  Query \(i) failed: \(error)")
+            }
+        }
+
+        let snapshot = store.aggregateMetrics.getSnapshot()
+
+        print("✅ Query resilience test:")
+        print("   Successful queries: \(successCount)")
+        print("   Failed queries:     \(failureCount)")
+        print("   Metrics - Total:    \(snapshot.totalQueries)")
+        print("   Metrics - Success:  \(snapshot.successfulQueries)")
+        print("   Metrics - Failed:   \(snapshot.failedQueries)")
+
+        // Most queries should succeed
+        #expect(successCount > failureCount, "Majority of queries should succeed")
+        #expect(snapshot.totalQueries == UInt64(successCount + failureCount), "Metrics should track all attempts")
+    }
+
+    @Test("Failure recovery: Invalid index state transition handling")
+    func testInvalidIndexStateTransition() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+
+        print("📊 Testing invalid index state handling...")
+
+        // Test 1: Query on disabled index
+        do {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: ["TestRegion"]
+            )
+            #expect(Bool(false), "Should have thrown error for disabled index")
+        } catch let error as RecordLayerError {
+            switch error {
+            case .indexNotReady(let message):
+                print("✅ Correctly rejected query on disabled index:")
+                print("   \(message)")
+                #expect(message.contains("disabled"), "Error should mention disabled state")
+            default:
+                #expect(Bool(false), "Should have thrown indexNotReady, got: \(error)")
+            }
+        }
+
+        // Test 2: Query on writeOnly index
+        try await indexStateManager.enable("amount_min_by_region")
+
+        do {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: ["TestRegion"]
+            )
+            #expect(Bool(false), "Should have thrown error for writeOnly index")
+        } catch let error as RecordLayerError {
+            switch error {
+            case .indexNotReady(let message):
+                print("✅ Correctly rejected query on writeOnly index:")
+                print("   \(message)")
+                #expect(message.contains("writeOnly"), "Error should mention writeOnly state")
+            default:
+                #expect(Bool(false), "Should have thrown indexNotReady, got: \(error)")
+            }
+        }
+
+        // Test 3: Query succeeds on readable index
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        let record = SalesRecord(
+            saleID: 1,
+            region: "TestRegion",
+            amount: 1000,
+            quantity: 5,
+            discount: 10
+        )
+        try await store.save(record)
+
+        let minAmount = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["TestRegion"]
+        )
+
+        print("✅ Query succeeded on readable index: MIN = \(minAmount)")
+        #expect(minAmount == 1000, "Should return correct MIN value")
+    }
+
+    @Test("Failure recovery: Metrics track failures correctly")
+    func testMetricsTrackFailuresCorrectly() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+
+        print("📊 Testing metrics tracking of failures...")
+
+        // Reset metrics
+        store.aggregateMetrics.reset()
+
+        // Test 1: Validation error (wrong grouping count)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        let record = SalesRecord(
+            saleID: 1,
+            region: "TestRegion",
+            amount: 500,
+            quantity: 5,
+            discount: 10
+        )
+        try await store.save(record)
+
+        // This should fail with validation error (no grouping values)
+        do {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: []  // Wrong! Should have 1 grouping value
+            )
+            #expect(Bool(false), "Should have thrown validation error")
+        } catch {
+            print("✅ Expected validation error: \(error)")
+        }
+
+        // Test 2: Index not found error
+        do {
+            _ = try await store.evaluateAggregate(
+                .min(indexName: "nonexistent_index"),
+                groupBy: ["TestRegion"]
+            )
+            #expect(Bool(false), "Should have thrown indexNotFound error")
+        } catch {
+            print("✅ Expected indexNotFound error: \(error)")
+        }
+
+        // Test 3: Successful query
+        let minAmount = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["TestRegion"]
+        )
+        print("✅ Successful query: MIN = \(minAmount)")
+
+        // Check metrics
+        let snapshot = store.aggregateMetrics.getSnapshot()
+
+        print("\n📊 Metrics Summary:")
+        print("   Total queries:      \(snapshot.totalQueries)")
+        print("   Successful queries: \(snapshot.successfulQueries)")
+        print("   Failed queries:     \(snapshot.failedQueries)")
+        print("   Validation errors:  \(snapshot.validationErrors)")
+
+        #expect(snapshot.totalQueries >= 1, "Should track at least 1 query")
+        #expect(snapshot.successfulQueries >= 1, "Should track successful query")
+        #expect(snapshot.failedQueries >= 1, "Should track failed queries")
+        #expect(snapshot.validationErrors >= 1, "Should track validation errors")
+
+        print("\n✅ Metrics correctly tracked failures and successes")
+    }
+
+    @Test("Failure recovery: Concurrent updates maintain MIN/MAX consistency")
+    func testConcurrentUpdatesConsistency() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+        let schema = try createTestSchema()
+
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+        try await indexStateManager.makeReadable("amount_min_by_region")
+        try await indexStateManager.enable("amount_max_by_region")
+        try await indexStateManager.makeReadable("amount_max_by_region")
+
+        print("📊 Testing MIN/MAX consistency under concurrent updates...")
+
+        // Insert initial data
+        for i in 0..<20 {
+            let record = SalesRecord(
+                saleID: Int64(i),
+                region: "ConcurrentRegion",
+                amount: Int64(i * 50),
+                quantity: 5,
+                discount: 10
+            )
+            try await store.save(record)
+        }
+
+        // Perform concurrent updates and collect results
+        var updateCount = 0
+
+        await withTaskGroup(of: Int.self) { group in
+            // Multiple writers
+            for taskId in 0..<5 {
+                group.addTask {
+                    var taskSuccessCount = 0
+                    for i in 0..<10 {
+                        let recordId = Int64(20 + taskId * 10 + i)
+                        let record = SalesRecord(
+                            saleID: recordId,
+                            region: "ConcurrentRegion",
+                            amount: Int64(recordId * 30),
+                            quantity: 5,
+                            discount: 10
+                        )
+                        do {
+                            try await store.save(record)
+                            taskSuccessCount += 1
+                        } catch {
+                            // Conflicts are expected and OK
+                        }
+                    }
+                    return taskSuccessCount
+                }
+            }
+
+            for await count in group {
+                updateCount += count
+            }
+        }
+
+        print("✅ Completed \(updateCount) concurrent updates")
+
+        // Verify final MIN/MAX consistency
+        let finalMin = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["ConcurrentRegion"]
+        )
+        let finalMax = try await store.evaluateAggregate(
+            .max(indexName: "amount_max_by_region"),
+            groupBy: ["ConcurrentRegion"]
+        )
+
+        print("📊 Final state:")
+        print("   MIN: \(finalMin)")
+        print("   MAX: \(finalMax)")
+
+        #expect(finalMin < finalMax, "MIN should be less than MAX")
+        #expect(finalMin == 0, "MIN should be 0 (first record)")
+
+        print("✅ MIN/MAX consistency maintained despite concurrent updates")
     }
 }

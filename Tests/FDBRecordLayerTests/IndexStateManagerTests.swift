@@ -231,21 +231,3 @@ struct IndexStateManagerTests {
         #expect(state.rawValue <= 2)
     }
 }
-
-// MARK: - Future Integration Tests
-
-/*
-@Suite("IndexStateManager Integration Tests", .disabled("Requires FoundationDB"))
-struct IndexStateManagerIntegrationTests {
-
-    @Test("Full index lifecycle: disabled → writeOnly → readable → disabled")
-    func fullIndexLifecycle() async throws {
-        // Would test complete lifecycle with real FDB
-    }
-
-    @Test("Concurrent state transitions are handled correctly")
-    func concurrentStateTransitions() async throws {
-        // Would test race conditions with real FDB
-    }
-}
-*/

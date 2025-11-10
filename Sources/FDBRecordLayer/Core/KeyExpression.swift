@@ -3,13 +3,8 @@ import Foundation
 /// Protocol for expressions that extract key values from records
 ///
 /// KeyExpressions are used to define primary keys and index keys.
-/// They evaluate a record (in a generic way) and return tuple elements.
+/// They use the Visitor pattern to extract values from records through RecordAccess.
 public protocol KeyExpression: Sendable {
-    /// Evaluate the expression on a record
-    /// - Parameter record: The record to evaluate (as a dictionary for simplicity)
-    /// - Returns: An array of tuple elements representing the key
-    func evaluate(record: [String: Any]) -> [any TupleElement]
-
     /// Number of columns this expression produces
     var columnCount: Int { get }
 }
@@ -24,31 +19,6 @@ public struct FieldKeyExpression: KeyExpression {
         self.fieldName = fieldName
     }
 
-    public func evaluate(record: [String: Any]) -> [any TupleElement] {
-        guard let value = record[fieldName] else {
-            return [""]
-        }
-
-        // Convert value to TupleElement
-        if let element = value as? any TupleElement {
-            return [element]
-        }
-
-        // Try common conversions
-        if let str = value as? String {
-            return [str]
-        } else if let int = value as? Int {
-            return [Int64(int)]
-        } else if let int64 = value as? Int64 {
-            return [int64]
-        } else if let bool = value as? Bool {
-            return [bool]
-        }
-
-        // Fallback to nil for unsupported types
-        return [""]
-    }
-
     public var columnCount: Int { 1 }
 }
 
@@ -60,10 +30,6 @@ public struct ConcatenateKeyExpression: KeyExpression {
 
     public init(children: [KeyExpression]) {
         self.children = children
-    }
-
-    public func evaluate(record: [String: Any]) -> [any TupleElement] {
-        return children.flatMap { $0.evaluate(record: record) }
     }
 
     public var columnCount: Int {
@@ -81,10 +47,6 @@ public struct LiteralKeyExpression<T: TupleElement>: KeyExpression {
         self.value = value
     }
 
-    public func evaluate(record: [String: Any]) -> [any TupleElement] {
-        return [value]
-    }
-
     public var columnCount: Int { 1 }
 }
 
@@ -93,10 +55,6 @@ public struct LiteralKeyExpression<T: TupleElement>: KeyExpression {
 /// Expression that returns an empty key
 public struct EmptyKeyExpression: KeyExpression {
     public init() {}
-
-    public func evaluate(record: [String: Any]) -> [any TupleElement] {
-        return []
-    }
 
     public var columnCount: Int { 0 }
 }
@@ -111,16 +69,6 @@ public struct NestExpression: KeyExpression {
     public init(parentField: String, child: KeyExpression) {
         self.parentField = parentField
         self.child = child
-    }
-
-    public func evaluate(record: [String: Any]) -> [any TupleElement] {
-        guard let nestedRecord = record[parentField] as? [String: Any] else {
-            // If parent field doesn't exist or isn't a nested record,
-            // return nil for each column
-            return Array(repeating: "", count: child.columnCount)
-        }
-
-        return child.evaluate(record: nestedRecord)
     }
 
     public var columnCount: Int {
