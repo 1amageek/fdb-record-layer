@@ -1,13 +1,151 @@
 import Foundation
 import FoundationDB
 
+// MARK: - Internal Helper Functions
+
+/// Extract field names from a KeyExpression for error messages
+private func extractFieldNames(from expression: KeyExpression) -> [String] {
+    if let field = expression as? FieldKeyExpression {
+        return [field.fieldName]
+    } else if let concat = expression as? ConcatenateKeyExpression {
+        return concat.children.flatMap { extractFieldNames(from: $0) }
+    } else {
+        // For other expression types (Literal, Empty, etc.), use placeholder
+        return ["<expression>"]
+    }
+}
+
+/// Build detailed error message for grouping validation
+private func buildGroupingErrorMessage(
+    index: Index,
+    providedCount: Int,
+    expectedCount: Int,
+    providedValues: [any TupleElement]
+) -> String {
+    let fieldNames = extractFieldNames(from: index.rootExpression)
+    let groupingFields = Array(fieldNames.prefix(expectedCount))
+    let valueField = fieldNames.count > expectedCount ? fieldNames[expectedCount] : "<value>"
+
+    var message = "Grouping values count (\(providedCount)) does not match expected count (\(expectedCount)) for index '\(index.name)'\n"
+    message += "Expected grouping fields: [\(groupingFields.joined(separator: ", "))]\n"
+    message += "Value field: \(valueField)\n"
+    message += "Provided values: [\(providedValues.map { "\"\($0)\"" }.joined(separator: ", "))]"
+
+    if providedCount < expectedCount {
+        let missingFields = Array(groupingFields.suffix(expectedCount - providedCount))
+        message += "\nMissing: [\(missingFields.joined(separator: ", "))]"
+    } else if providedCount > expectedCount {
+        let extraValues = Array(providedValues.suffix(providedCount - expectedCount))
+        message += "\nExtra values: [\(extraValues.map { "\"\($0)\"" }.joined(separator: ", "))]"
+    }
+
+    return message
+}
+
+/// Find the minimum value in a grouped MIN index
+internal func findMinValue(
+    index: Index,
+    subspace: Subspace,
+    groupingValues: [any TupleElement],
+    transaction: any TransactionProtocol
+) async throws -> Int64 {
+    let expectedGroupingCount = index.rootExpression.columnCount - 1
+    guard groupingValues.count == expectedGroupingCount else {
+        throw RecordLayerError.invalidArgument(
+            buildGroupingErrorMessage(
+                index: index,
+                providedCount: groupingValues.count,
+                expectedCount: expectedGroupingCount,
+                providedValues: groupingValues
+            )
+        )
+    }
+
+    let groupingTuple = TupleHelpers.toTuple(groupingValues)
+    let groupingBytes = groupingTuple.pack()
+    let groupingSubspace = Subspace(prefix: subspace.prefix + groupingBytes)
+    let range = groupingSubspace.range()
+
+    let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
+    guard let firstKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+        throw RecordLayerError.internalError("No values found for MIN aggregate")
+    }
+
+    guard groupingSubspace.contains(firstKey) else {
+        throw RecordLayerError.internalError("No values found for MIN aggregate in range")
+    }
+
+    let dataTuple = try groupingSubspace.unpack(firstKey)
+    let dataElements = try Tuple.unpack(from: dataTuple.pack())
+    guard !dataElements.isEmpty else {
+        throw RecordLayerError.internalError("Invalid MIN index key structure")
+    }
+
+    return try extractNumericValue(dataElements[0])
+}
+
+/// Find the maximum value in a grouped MAX index
+internal func findMaxValue(
+    index: Index,
+    subspace: Subspace,
+    groupingValues: [any TupleElement],
+    transaction: any TransactionProtocol
+) async throws -> Int64 {
+    let expectedGroupingCount = index.rootExpression.columnCount - 1
+    guard groupingValues.count == expectedGroupingCount else {
+        throw RecordLayerError.invalidArgument(
+            buildGroupingErrorMessage(
+                index: index,
+                providedCount: groupingValues.count,
+                expectedCount: expectedGroupingCount,
+                providedValues: groupingValues
+            )
+        )
+    }
+
+    let groupingTuple = TupleHelpers.toTuple(groupingValues)
+    let groupingBytes = groupingTuple.pack()
+    let groupingSubspace = Subspace(prefix: subspace.prefix + groupingBytes)
+    let range = groupingSubspace.range()
+
+    let selector = FDB.KeySelector.lastLessThan(range.end)
+    guard let lastKey = try await transaction.getKey(selector: selector, snapshot: true) else {
+        throw RecordLayerError.internalError("No values found for MAX aggregate")
+    }
+
+    guard groupingSubspace.contains(lastKey) else {
+        throw RecordLayerError.internalError("No values found for MAX aggregate in range")
+    }
+
+    let dataTuple = try groupingSubspace.unpack(lastKey)
+    let dataElements = try Tuple.unpack(from: dataTuple.pack())
+    guard !dataElements.isEmpty else {
+        throw RecordLayerError.internalError("Invalid MAX index key structure")
+    }
+
+    return try extractNumericValue(dataElements[0])
+}
+
+/// Extract numeric value from a tuple element as Int64
+private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
+    if let int64 = element as? Int64 {
+        return int64
+    } else if let int = element as? Int {
+        return Int64(int)
+    } else if let int32 = element as? Int32 {
+        return Int64(int32)
+    } else if let double = element as? Double {
+        return Int64(double)
+    } else if let float = element as? Float {
+        return Int64(float)
+    } else {
+        throw RecordLayerError.internalError("Aggregate value must be numeric, got: \(type(of: element))")
+    }
+}
+
 // MARK: - Generic Min Index Maintainer
 
 /// Generic maintainer for MIN aggregation indexes
-///
-/// MIN indexes are implemented as VALUE indexes with special semantics.
-/// The index stores entries with keys: [grouping..., value, primaryKey...]
-/// MIN query scans for the first entry in the grouping range.
 ///
 /// **Index Definition:**
 /// ```swift
@@ -15,19 +153,11 @@ import FoundationDB
 ///     name: "age_min_by_city",
 ///     type: .min,
 ///     rootExpression: ConcatenateKeyExpression(children: [
-///         FieldKeyExpression(fieldName: "city"),  // grouping
-///         FieldKeyExpression(fieldName: "age")     // min value
+///         FieldKeyExpression(fieldName: "city"),
+///         FieldKeyExpression(fieldName: "age")
 ///     ])
 /// )
 /// ```
-///
-/// **Storage:**
-/// - Keys: `subspace.pack([city, age, userID])`
-/// - Values: Empty (all info in key)
-///
-/// **Query:**
-/// - Get first key in range `[city, ...]`
-/// - Extract age value from key
 public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
@@ -49,17 +179,14 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        // MIN indexes are VALUE indexes - same update logic
-        // Remove old entry
         if let oldRecord = oldRecord {
             let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess)
             transaction.clear(key: oldKey)
         }
 
-        // Add new entry
         if let newRecord = newRecord {
             let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
-            transaction.setValue([], for: newKey)  // Empty value
+            transaction.setValue([], for: newKey)
         }
     }
 
@@ -74,38 +201,16 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
     }
 
     /// Get the minimum value for a specific grouping
-    /// - Parameters:
-    ///   - groupingValues: The grouping key values
-    ///   - transaction: The transaction to use
-    /// - Returns: The minimum value
     public func getMin(
         groupingValues: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        let groupingTuple = TupleHelpers.toTuple(groupingValues)
-        let range = subspace.subspace(groupingTuple).range()
-
-        // Use key selector for efficient O(log n) lookup
-        let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
-        guard let firstKey = try await transaction.getKey(selector: selector, snapshot: true) else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate")
-        }
-
-        // Verify key is within range
-        guard firstKey.starts(with: range.begin) else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate in range")
-        }
-
-        // Extract value from key
-        // Key structure: [grouping..., value, primaryKey...]
-        // Value is at position: groupingValues.count
-        let elements = try Tuple.unpack(from: firstKey)
-        guard elements.count > groupingValues.count else {
-            throw RecordLayerError.internalError("Invalid MIN index key structure")
-        }
-
-        let valueElement = elements[groupingValues.count]
-        return try extractNumericValue(valueElement)
+        return try await findMinValue(
+            index: index,
+            subspace: subspace,
+            groupingValues: groupingValues,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private Methods
@@ -114,13 +219,11 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         record: Record,
         recordAccess: any RecordAccess<Record>
     ) throws -> FDB.Bytes {
-        // Evaluate index expression to get indexed values
         let indexedValues = try recordAccess.evaluate(
             record: record,
             expression: index.rootExpression
         )
 
-        // Extract primary key values
         let primaryKeyTuple: Tuple
         if let recordableRecord = record as? any Recordable {
             primaryKeyTuple = recordableRecord.extractPrimaryKey()
@@ -129,26 +232,9 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         }
         let primaryKeyValues = try Tuple.unpack(from: primaryKeyTuple.pack())
 
-        // Combine: [grouping..., value, primaryKey...]
         let allValues = indexedValues + primaryKeyValues
         let tuple = TupleHelpers.toTuple(allValues)
         return subspace.pack(tuple)
-    }
-
-    private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
-        if let int64 = element as? Int64 {
-            return int64
-        } else if let int = element as? Int {
-            return Int64(int)
-        } else if let int32 = element as? Int32 {
-            return Int64(int32)
-        } else if let double = element as? Double {
-            return Int64(double)
-        } else if let float = element as? Float {
-            return Int64(float)
-        } else {
-            throw RecordLayerError.internalError("MIN index value must be numeric, got: \(type(of: element))")
-        }
     }
 }
 
@@ -156,29 +242,17 @@ public struct GenericMinIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
 
 /// Generic maintainer for MAX aggregation indexes
 ///
-/// MAX indexes are implemented as VALUE indexes with special semantics.
-/// The index stores entries with keys: [grouping..., value, primaryKey...]
-/// MAX query scans for the last entry in the grouping range.
-///
 /// **Index Definition:**
 /// ```swift
 /// let maxIndex = Index(
 ///     name: "age_max_by_city",
 ///     type: .max,
 ///     rootExpression: ConcatenateKeyExpression(children: [
-///         FieldKeyExpression(fieldName: "city"),  // grouping
-///         FieldKeyExpression(fieldName: "age")     // max value
+///         FieldKeyExpression(fieldName: "city"),
+///         FieldKeyExpression(fieldName: "age")
 ///     ])
 /// )
 /// ```
-///
-/// **Storage:**
-/// - Keys: `subspace.pack([city, age, userID])`
-/// - Values: Empty (all info in key)
-///
-/// **Query:**
-/// - Get last key in range `[city, ...]`
-/// - Extract age value from key
 public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
@@ -200,17 +274,14 @@ public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        // MAX indexes are VALUE indexes - same update logic
-        // Remove old entry
         if let oldRecord = oldRecord {
             let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess)
             transaction.clear(key: oldKey)
         }
 
-        // Add new entry
         if let newRecord = newRecord {
             let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
-            transaction.setValue([], for: newKey)  // Empty value
+            transaction.setValue([], for: newKey)
         }
     }
 
@@ -225,38 +296,16 @@ public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
     }
 
     /// Get the maximum value for a specific grouping
-    /// - Parameters:
-    ///   - groupingValues: The grouping key values
-    ///   - transaction: The transaction to use
-    /// - Returns: The maximum value
     public func getMax(
         groupingValues: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        let groupingTuple = TupleHelpers.toTuple(groupingValues)
-        let range = subspace.subspace(groupingTuple).range()
-
-        // Use key selector for efficient O(log n) lookup
-        let selector = FDB.KeySelector.lastLessThan(range.end)
-        guard let lastKey = try await transaction.getKey(selector: selector, snapshot: true) else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate")
-        }
-
-        // Verify key is within range
-        guard lastKey.starts(with: range.begin) else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate in range")
-        }
-
-        // Extract value from key
-        // Key structure: [grouping..., value, primaryKey...]
-        // Value is at position: groupingValues.count
-        let elements = try Tuple.unpack(from: lastKey)
-        guard elements.count > groupingValues.count else {
-            throw RecordLayerError.internalError("Invalid MAX index key structure")
-        }
-
-        let valueElement = elements[groupingValues.count]
-        return try extractNumericValue(valueElement)
+        return try await findMaxValue(
+            index: index,
+            subspace: subspace,
+            groupingValues: groupingValues,
+            transaction: transaction
+        )
     }
 
     // MARK: - Private Methods
@@ -265,13 +314,11 @@ public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         record: Record,
         recordAccess: any RecordAccess<Record>
     ) throws -> FDB.Bytes {
-        // Evaluate index expression to get indexed values
         let indexedValues = try recordAccess.evaluate(
             record: record,
             expression: index.rootExpression
         )
 
-        // Extract primary key values
         let primaryKeyTuple: Tuple
         if let recordableRecord = record as? any Recordable {
             primaryKeyTuple = recordableRecord.extractPrimaryKey()
@@ -280,25 +327,8 @@ public struct GenericMaxIndexMaintainer<Record: Sendable>: GenericIndexMaintaine
         }
         let primaryKeyValues = try Tuple.unpack(from: primaryKeyTuple.pack())
 
-        // Combine: [grouping..., value, primaryKey...]
         let allValues = indexedValues + primaryKeyValues
         let tuple = TupleHelpers.toTuple(allValues)
         return subspace.pack(tuple)
-    }
-
-    private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
-        if let int64 = element as? Int64 {
-            return int64
-        } else if let int = element as? Int {
-            return Int64(int)
-        } else if let int32 = element as? Int32 {
-            return Int64(int32)
-        } else if let double = element as? Double {
-            return Int64(double)
-        } else if let float = element as? Float {
-            return Int64(float)
-        } else {
-            throw RecordLayerError.internalError("MAX index value must be numeric, got: \(type(of: element))")
-        }
     }
 }

@@ -673,17 +673,16 @@ extension RecordStore {
         _ function: F,
         groupBy: [any TupleElement]
     ) async throws -> F.Result {
-        // Create context for this operation (will auto-close on deinit)
+        guard let index = schema.index(named: function.indexName) else {
+            throw RecordLayerError.indexNotFound("Index '\(function.indexName)' not found in schema")
+        }
+
         let context = try RecordContext(database: database)
-
-        // Get index subspace
         let indexSubspace = self.indexSubspace.subspace(Tuple([function.indexName]))
-
-        // Get transaction
         let transaction = context.getTransaction()
 
-        // Evaluate the function
         return try await function.evaluate(
+            index: index,
             subspace: indexSubspace,
             groupBy: groupBy,
             transaction: transaction

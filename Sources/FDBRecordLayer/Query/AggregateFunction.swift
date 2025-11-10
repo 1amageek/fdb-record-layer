@@ -36,11 +36,13 @@ public protocol AggregateFunction: Sendable {
 
     /// Evaluate the aggregate function
     /// - Parameters:
+    ///   - index: The index definition
     ///   - subspace: The index subspace
     ///   - groupBy: The grouping values
     ///   - transaction: The transaction to use
     /// - Returns: The aggregated result
     func evaluate(
+        index: Index,
         subspace: Subspace,
         groupBy: [any TupleElement],
         transaction: any TransactionProtocol
@@ -84,15 +86,14 @@ public struct CountFunction: AggregateFunction {
     }
 
     public func evaluate(
+        index: Index,
         subspace: Subspace,
         groupBy: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // Build key for count lookup
         let groupingTuple = TupleHelpers.toTuple(groupBy)
         let countKey = subspace.pack(groupingTuple)
 
-        // Get count value
         guard let bytes = try await transaction.getValue(for: countKey) else {
             return 0
         }
@@ -127,15 +128,14 @@ public struct SumFunction: AggregateFunction {
     }
 
     public func evaluate(
+        index: Index,
         subspace: Subspace,
         groupBy: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // Build key for sum lookup
         let groupingTuple = TupleHelpers.toTuple(groupBy)
         let sumKey = subspace.pack(groupingTuple)
 
-        // Get sum value
         guard let bytes = try await transaction.getValue(for: sumKey) else {
             return 0
         }
@@ -184,52 +184,17 @@ public struct MinFunction: AggregateFunction {
     }
 
     public func evaluate(
+        index: Index,
         subspace: Subspace,
         groupBy: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // MIN indexes are VALUE indexes with special semantics
-        // Use key selector to efficiently get the first key in range
-        let groupingTuple = TupleHelpers.toTuple(groupBy)
-        let range = subspace.subspace(groupingTuple).range()
-
-        // Use firstGreaterOrEqual selector for O(log n) lookup
-        let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
-        guard let firstKey = try await transaction.getKey(selector: selector, snapshot: true) else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate")
-        }
-
-        // Verify key is within range using prefix matching
-        guard firstKey.starts(with: range.begin) else {
-            throw RecordLayerError.internalError("No values found for MIN aggregate in range")
-        }
-
-        // Extract value from key
-        // Key structure: [grouping..., value, primaryKey...]
-        // Value is at position: groupBy.count
-        let elements = try Tuple.unpack(from: firstKey)
-        guard elements.count > groupBy.count else {
-            throw RecordLayerError.internalError("Invalid MIN index key structure")
-        }
-
-        let valueElement = elements[groupBy.count]
-        return try extractNumericValue(valueElement)
-    }
-
-    private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
-        if let int64 = element as? Int64 {
-            return int64
-        } else if let int = element as? Int {
-            return Int64(int)
-        } else if let int32 = element as? Int32 {
-            return Int64(int32)
-        } else if let double = element as? Double {
-            return Int64(double)
-        } else if let float = element as? Float {
-            return Int64(float)
-        } else {
-            throw RecordLayerError.internalError("MIN value must be numeric, got: \(type(of: element))")
-        }
+        return try await findMinValue(
+            index: index,
+            subspace: subspace,
+            groupingValues: groupBy,
+            transaction: transaction
+        )
     }
 }
 
@@ -273,53 +238,17 @@ public struct MaxFunction: AggregateFunction {
     }
 
     public func evaluate(
+        index: Index,
         subspace: Subspace,
         groupBy: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // MAX indexes are VALUE indexes with special semantics
-        // Use key selector to efficiently get the last key in range
-        let groupingTuple = TupleHelpers.toTuple(groupBy)
-        let range = subspace.subspace(groupingTuple).range()
-
-        // Use lastLessThan selector for O(log n) lookup
-        // lastLessThan(end) gives us the last key before 'end'
-        let selector = FDB.KeySelector.lastLessThan(range.end)
-        guard let lastKey = try await transaction.getKey(selector: selector, snapshot: true) else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate")
-        }
-
-        // Verify key is within range using prefix matching
-        guard lastKey.starts(with: range.begin) else {
-            throw RecordLayerError.internalError("No values found for MAX aggregate in range")
-        }
-
-        // Extract value from key
-        // Key structure: [grouping..., value, primaryKey...]
-        // Value is at position: groupBy.count
-        let elements = try Tuple.unpack(from: lastKey)
-        guard elements.count > groupBy.count else {
-            throw RecordLayerError.internalError("Invalid MAX index key structure")
-        }
-
-        let valueElement = elements[groupBy.count]
-        return try extractNumericValue(valueElement)
-    }
-
-    private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
-        if let int64 = element as? Int64 {
-            return int64
-        } else if let int = element as? Int {
-            return Int64(int)
-        } else if let int32 = element as? Int32 {
-            return Int64(int32)
-        } else if let double = element as? Double {
-            return Int64(double)
-        } else if let float = element as? Float {
-            return Int64(float)
-        } else {
-            throw RecordLayerError.internalError("MAX value must be numeric, got: \(type(of: element))")
-        }
+        return try await findMaxValue(
+            index: index,
+            subspace: subspace,
+            groupingValues: groupBy,
+            transaction: transaction
+        )
     }
 }
 

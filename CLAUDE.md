@@ -352,6 +352,156 @@ public enum IndexState: String, Sendable {
 }
 ```
 
+### インデックスタイプ
+
+#### VALUE インデックス（B-tree）
+
+標準的なインデックス。フィールド値でのルックアップとRange検索が可能。
+
+```swift
+let emailIndex = Index(
+    name: "user_by_email",
+    type: .value,
+    rootExpression: FieldKeyExpression(fieldName: "email")
+)
+```
+
+**インデックス構造**: `[indexSubspace][email][primaryKey] = []`
+
+#### COUNT インデックス（集約）
+
+グループごとのレコード数をカウント。
+
+```swift
+let cityCountIndex = Index(
+    name: "user_count_by_city",
+    type: .count,
+    rootExpression: FieldKeyExpression(fieldName: "city")
+)
+
+// 使用例: 東京のユーザー数を取得
+let count = try await store.evaluateAggregate(
+    .count(indexName: "user_count_by_city"),
+    groupBy: ["Tokyo"]
+)
+```
+
+**インデックス構造**: `[indexSubspace][groupingValue] = Int64（カウント）`
+
+#### SUM インデックス（集約）
+
+グループごとの値の合計を計算。
+
+```swift
+let salaryByDeptIndex = Index(
+    name: "salary_by_dept",
+    type: .sum,
+    rootExpression: ConcatenateKeyExpression(children: [
+        FieldKeyExpression(fieldName: "department"),
+        FieldKeyExpression(fieldName: "salary")
+    ])
+)
+
+// 使用例: エンジニアリング部門の給与合計
+let total = try await store.evaluateAggregate(
+    .sum(indexName: "salary_by_dept"),
+    groupBy: ["Engineering"]
+)
+```
+
+**インデックス構造**: `[indexSubspace][groupingValue] = Int64（合計）`
+
+#### MIN/MAX インデックス（集約）
+
+グループごとの最小値・最大値を効率的に取得（O(log n)）。
+
+**インデックス定義**:
+```swift
+// MIN インデックス: [region, amount] → 地域ごとの最小金額
+let minIndex = Index(
+    name: "amount_min_by_region",
+    type: .min,
+    rootExpression: ConcatenateKeyExpression(children: [
+        FieldKeyExpression(fieldName: "region"),    // グルーピングフィールド
+        FieldKeyExpression(fieldName: "amount")     // 値フィールド
+    ])
+)
+
+// MAX インデックス: [region, amount] → 地域ごとの最大金額
+let maxIndex = Index(
+    name: "amount_max_by_region",
+    type: .max,
+    rootExpression: ConcatenateKeyExpression(children: [
+        FieldKeyExpression(fieldName: "region"),    // グルーピングフィールド
+        FieldKeyExpression(fieldName: "amount")     // 値フィールド
+    ])
+)
+```
+
+**インデックス構造**: `[indexSubspace][groupingValue][value][primaryKey] = []`
+
+- キーは辞書順にソートされるため、MIN = 最初のキー、MAX = 最後のキー
+- O(log n)で取得可能（Key Selectorを使用）
+
+**使用例**:
+```swift
+// RecordStore経由（推奨）
+let minAmount = try await store.evaluateAggregate(
+    .min(indexName: "amount_min_by_region"),
+    groupBy: ["North"]
+)
+
+let maxAmount = try await store.evaluateAggregate(
+    .max(indexName: "amount_max_by_region"),
+    groupBy: ["North"]
+)
+
+// 内部ヘルパー関数（低レベルAPI）
+let min = try await findMinValue(
+    index: index,
+    subspace: indexSubspace,
+    groupingValues: ["North"],
+    transaction: transaction
+)
+```
+
+**重要な制約**:
+- グルーピング値の数は `index.rootExpression.columnCount - 1` と一致する必要がある
+- 例: インデックスが `[country, region, amount]` の場合、`groupBy: ["USA", "East"]`（2値）が正しい
+- 不一致の場合は詳細なエラーメッセージとともに `RecordLayerError.invalidArgument` を返す
+
+**エラーメッセージの詳細化**:
+```
+// グルーピング値が少ない場合
+Grouping values count (1) does not match expected count (2) for index 'amount_min_by_country_region'
+Expected grouping fields: [country, region]
+Value field: amount
+Provided values: ["USA"]
+Missing: [region]
+
+// グルーピング値が多い場合
+Grouping values count (3) does not match expected count (2) for index 'amount_min_by_country_region'
+Expected grouping fields: [country, region]
+Value field: amount
+Provided values: ["USA", "East", "Extra"]
+Extra values: ["Extra"]
+```
+
+**内部実装**:
+```swift
+// MIN: 最初のキーを取得
+let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
+let firstKey = try await transaction.getKey(selector: selector, snapshot: true)
+let value = extractNumericValue(dataElements[0])  // O(1)
+
+// MAX: 最後のキーを取得
+let selector = FDB.KeySelector.lastLessThan(range.end)
+let lastKey = try await transaction.getKey(selector: selector, snapshot: true)
+let value = extractNumericValue(dataElements[0])  // O(1)
+```
+
+**対応する数値型**: Int64, Int, Int32, Double, Float（すべてInt64に変換）
+
 ### RangeSet（進行状況追跡）
 
 オンライン操作（インデックス構築、スクラビング）の進行状況を追跡する仕組み：
@@ -669,5 +819,9 @@ let users: [User] = try await store.fetch(User.self)
 
 ---
 
-**Last Updated**: 2025-01-10
+**Last Updated**: 2025-01-11
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+ | **Record Layer (Swift)**: 開発中（マクロAPI 95%完了）
+
+**実装済みインデックスタイプ**: VALUE, COUNT, SUM, MIN/MAX
+- MIN/MAXインデックス: グルーピングバリデーション + 詳細なエラーメッセージ
+- 複数グルーピングフィールド対応（テストカバレッジ: 14テスト）
