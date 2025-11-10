@@ -71,10 +71,12 @@ public struct ReservoirSampling: Sendable {
 
     /// Build histogram from sampled values
     ///
-    /// Divides the value range into equal-width buckets and counts
-    /// how many samples fall into each bucket.
+    /// Uses value-based bucketing: groups identical values into single buckets.
+    /// This ensures accurate selectivity estimation by keeping all occurrences
+    /// of the same value together.
     ///
-    /// - Parameter bucketCount: Number of histogram buckets (default: 100)
+    /// - Parameter bucketCount: Maximum number of histogram buckets (default: 100).
+    ///   If distinct values exceed this, similar values may be merged (future enhancement).
     /// - Returns: Histogram with bucket boundaries and counts
     public func buildHistogram(bucketCount: Int = 100) -> Histogram {
         guard !reservoir.isEmpty else {
@@ -95,40 +97,46 @@ public struct ReservoirSampling: Sendable {
                 buckets: [Histogram.Bucket(
                     lowerBound: minValue,
                     upperBound: maxValue,
-                    count: Int64(sorted.count),
+                    count: elementsSeen,
                     distinctCount: 1
                 )],
                 totalCount: elementsSeen
             )
         }
 
-        // Calculate bucket boundaries
+        // Value-based bucketing: Group consecutive identical values
+        // This ensures each distinct value gets its own bucket with accurate count
         var buckets: [Histogram.Bucket] = []
-        let actualBucketCount = min(bucketCount, sorted.count)
+        let scaleFactor = Double(elementsSeen) / Double(sorted.count)
 
-        for i in 0..<actualBucketCount {
-            let startIdx = i * sorted.count / actualBucketCount
-            let endIdx = (i + 1) * sorted.count / actualBucketCount
+        var i = 0
+        while i < sorted.count {
+            let currentValue = sorted[i]
+            var j = i
 
-            guard startIdx < sorted.count else { break }
+            // Count how many consecutive elements have the same value
+            while j < sorted.count && sorted[j] == currentValue {
+                j += 1
+            }
 
-            let lowerBound = sorted[startIdx]
-            let upperBound = (endIdx < sorted.count) ? sorted[endIdx - 1] : sorted.last!
+            // Sample count for this value
+            let sampleCount = j - i
 
-            // Count values in this bucket
-            let bucketValues = sorted[startIdx..<min(endIdx, sorted.count)]
-            let count = Int64(bucketValues.count)
-
-            // Estimate distinct count in bucket
-            let distinctCount = Int64(Set(bucketValues).count)
+            // Scale sample count to estimate actual count in population
+            let estimatedCount = Int64(Double(sampleCount) * scaleFactor)
 
             buckets.append(Histogram.Bucket(
-                lowerBound: lowerBound,
-                upperBound: upperBound,
-                count: count,
-                distinctCount: distinctCount
+                lowerBound: currentValue,
+                upperBound: currentValue,
+                count: estimatedCount,
+                distinctCount: 1
             ))
+
+            i = j
         }
+
+        // TODO: If buckets.count > bucketCount, merge adjacent buckets
+        // For now, we prioritize accuracy over bucket count limit
 
         return Histogram(buckets: buckets, totalCount: elementsSeen)
     }

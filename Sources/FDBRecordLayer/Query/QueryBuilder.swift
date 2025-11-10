@@ -252,8 +252,8 @@ public final class QueryBuilder<T: Recordable> {
                 defer { transaction.cancel() }
 
                 let indexSubspace = subspace
-                    .subspace(Tuple("I"))
-                    .subspace(Tuple([index.name]))
+                    .subspace("I")
+                    .subspace(index.name)
 
                 let maintainer = GenericCountIndexMaintainer<T>(
                     index: index,

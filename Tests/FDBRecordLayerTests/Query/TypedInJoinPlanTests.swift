@@ -392,8 +392,8 @@ struct TypedInJoinPlanTests {
         let subspace = Subspace(prefix: Array("test_in_join_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
-        let recordSubspace = subspace.subspace(Tuple("R"))
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let recordSubspace = subspace.subspace("R")
+        let indexSubspace = subspace.subspace("I")
             .subspace("test_by_age")
 
         let records = [
@@ -459,8 +459,8 @@ struct TypedInJoinPlanTests {
         let subspace = Subspace(prefix: Array("test_in_join_dedup_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
-        let recordSubspace = subspace.subspace(Tuple("R"))
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let recordSubspace = subspace.subspace("R")
+        let indexSubspace = subspace.subspace("I")
             .subspace("test_by_status")
 
         let record = TestRecord(id: 1, age: 20, city: "Tokyo", status: "ACTIVE")
@@ -548,8 +548,8 @@ struct TypedInJoinPlanTests {
         }
 
         let recordAccess = TaggedRecordAccess()
-        let recordSubspace = subspace.subspace(Tuple("R"))
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let recordSubspace = subspace.subspace("R")
+        let indexSubspace = subspace.subspace("I")
             .subspace("test_by_tags")
 
         let records = [
@@ -615,8 +615,8 @@ struct TypedInJoinPlanTests {
         let subspace = Subspace(prefix: Array("test_in_join_empty_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
-        let recordSubspace = subspace.subspace(Tuple("R"))
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let recordSubspace = subspace.subspace("R")
+        let indexSubspace = subspace.subspace("I")
             .subspace("test_by_age")
 
         let records = [
@@ -673,8 +673,8 @@ struct TypedInJoinPlanTests {
         let subspace = Subspace(prefix: Array("test_in_join_large_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
-        let recordSubspace = subspace.subspace(Tuple("R"))
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let recordSubspace = subspace.subspace("R")
+        let indexSubspace = subspace.subspace("I")
             .subspace("test_by_age")
 
         var records: [TestRecord] = []

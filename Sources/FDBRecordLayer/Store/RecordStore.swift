@@ -139,8 +139,8 @@ public final class RecordStore<Record: Recordable>: Sendable {
         self.aggregateMetrics = AggregateMetrics()
 
         // Initialize subspaces
-        self.recordSubspace = subspace.subspace(Tuple("R"))  // Records
-        self.indexSubspace = subspace.subspace(Tuple("I"))    // Indexes
+        self.recordSubspace = subspace.subspace("R")  // Records
+        self.indexSubspace = subspace.subspace("I")    // Indexes
     }
 
     // MARK: - Statistics Support
@@ -206,7 +206,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         //
         // Current design (record type name) is sufficient for most use cases and
         // maintains compatibility with standard Record Layer patterns.
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
+        let effectiveSubspace = recordSubspace.subspace(Record.recordName)
         let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
 
         let tr = context.getTransaction()
@@ -244,7 +244,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace control: Always automatically add record type name (Phase 2a-1)
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
+        let effectiveSubspace = recordSubspace.subspace(Record.recordName)
 
         // Composite primary key support: Use Tuple as-is, or convert single value to Tuple
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
@@ -268,7 +268,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace control: Always automatically add record type name (Phase 2a-1)
-        let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
+        let effectiveSubspace = recordSubspace.subspace(Record.recordName)
 
         // Composite primary key support: Use Tuple as-is, or convert single value to Tuple
         let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
@@ -684,22 +684,27 @@ extension RecordStore {
                 throw RecordLayerError.indexNotFound("Index '\(function.indexName)' not found in schema")
             }
 
-            // Check index state - must be readable for queries
-            let indexStateManager = IndexStateManager(database: database, subspace: subspace)
-            let state = try await indexStateManager.state(of: function.indexName)
+            // Execute query within a single transaction to avoid race conditions
+            // Index state check and query execution use the same transaction snapshot
+            let indexSubspace = self.indexSubspace.subspace(function.indexName)
+            let result = try await database.withRecordContext { context in
+                // Check index state within the same transaction as the query
+                // This ensures consistency: if makeReadable() was called in the same transaction,
+                // we will see the updated state
+                let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+                let state = try await indexStateManager.state(of: function.indexName, context: context)
 
-            guard state == .readable else {
-                throw RecordLayerError.indexNotReady(
-                    "Cannot query index '\(function.indexName)' in '\(state)' state. " +
-                    "Index must be in 'readable' state for aggregate queries. " +
-                    "Current state: \(state)"
-                )
-            }
+                guard state == .readable else {
+                    throw RecordLayerError.indexNotReady(
+                        "Cannot query index '\(function.indexName)' in '\(state)' state. " +
+                        "Index must be in 'readable' state for aggregate queries. " +
+                        "Current state: \(state)"
+                    )
+                }
 
-            // Execute query in a read-only transaction with automatic lifecycle management
-            let indexSubspace = self.indexSubspace.subspace(Tuple([function.indexName]))
-            let result = try await database.withTransaction { transaction in
-                try await function.evaluate(
+                // Execute query in the same transaction
+                let transaction = context.getTransaction()
+                return try await function.evaluate(
                     index: index,
                     subspace: indexSubspace,
                     groupBy: groupBy,
@@ -771,7 +776,7 @@ extension RecordStore {
         let context = try RecordContext(database: database)
 
         // Get index subspace
-        let indexSubspace = self.indexSubspace.subspace(Tuple([function.indexName]))
+        let indexSubspace = self.indexSubspace.subspace(function.indexName)
 
         // Get transaction
         let transaction = context.getTransaction()

@@ -193,6 +193,160 @@ func deposit(transaction: TransactionProtocol, accountID: String, depositID: Str
 }
 ```
 
+### Subspaceの正しい使い方
+
+> **重要**: Subspaceの誤った使い方は、インデックスエントリが見つからないなどの深刻なバグを引き起こします。
+
+#### Subspace.subspace()の仕様
+
+`Subspace.subspace()`はvariadic引数を取り、各引数をTuple要素として扱います：
+
+```swift
+public func subspace(_ elements: any TupleElement...) -> Subspace {
+    let tuple = Tuple(elements)
+    return Subspace(prefix: prefix + tuple.pack())
+}
+```
+
+#### ❌ 間違った使い方
+
+**問題**: `Tuple`オブジェクトを渡すと、**ネストされたタプル**としてエンコードされます。
+
+```swift
+// ❌ 間違い: Tupleオブジェクトを渡す
+let indexSubspace = subspace.subspace(Tuple("I"))
+// エンコード結果: 05 02 49 00 ff 00 (ネストされたタプル)
+//   05 = ネストされたタプル型コード
+//   02 = 文字列型コード
+//   49 00 = "I"
+
+let indexNameSubspace = indexSubspace.subspace(Tuple(["product_by_category"]))
+// エンコード結果: 05 02 70 72 6f... (さらにネストされる)
+
+// ❌ 間違い: 配列を含むTupleを渡す
+let keyPrefix = indexNameSubspace.subspace(Tuple(["Electronics"]))
+// エンコード結果: 05 02 45 6c... (ネストされたタプル)
+
+// 結果: インデックスキーの構造が不一致で、Range読み取りが失敗
+// 書き込まれたキー: ...02 45 6c 65 63 74 72 6f 6e 69 63 73 00 15 01
+// クエリのキー:     ...05 02 45 6c 65 63 74 72 6f 6e 69 63 73 00 ff 00 00
+//                      ^^^^^ ネストされたタプル型コード（不一致！）
+```
+
+#### ✅ 正しい使い方
+
+**解決策**: Tupleオブジェクトではなく、**直接値を渡す**。
+
+```swift
+// ✅ 正しい: 直接文字列を渡す
+let indexSubspace = subspace.subspace("I")
+// エンコード結果: 02 49 00 (文字列型)
+//   02 = 文字列型コード
+//   49 00 = "I"
+
+let indexNameSubspace = indexSubspace.subspace("product_by_category")
+// エンコード結果: 02 70 72 6f... (文字列型)
+
+// ✅ 正しい: 直接値を渡す
+let keyPrefix = indexNameSubspace.subspace("Electronics")
+// エンコード結果: 02 45 6c... (文字列型)
+
+// ✅ 正しい: 数値も直接渡す
+let priceSubspace = indexNameSubspace.subspace(300)
+// エンコード結果: 15 2c 01 (整数型)
+
+// ✅ 正しい: 複数の値を渡す（Tupleは不要）
+let compositeSubspace = subspace.subspace("users", "active", 12345)
+// エンコード結果: 02 75 73... 02 61 63... 15 39 30...
+```
+
+#### 実際のバグ例
+
+**症状**: インデックスエントリが見つからない（count = 0）
+
+```swift
+// ❌ バグのあるコード
+func countIndexEntries(
+    indexSubspace: Subspace,
+    indexName: String,
+    keyPrefix: Tuple  // ← Tupleオブジェクトを受け取る
+) async throws -> Int {
+    let indexNameSubspace = indexSubspace.subspace(Tuple([indexName]))  // ❌ 間違い
+    let rangeSubspace = indexNameSubspace.subspace(keyPrefix)          // ❌ 間違い
+    let (begin, end) = rangeSubspace.range()
+
+    var count = 0
+    for try await _ in transaction.getRange(begin: begin, end: end) {
+        count += 1  // ← 常に0（キー構造が不一致）
+    }
+    return count
+}
+
+// ✅ 修正後のコード
+func countIndexEntries(
+    indexSubspace: Subspace,
+    indexName: String,
+    keyPrefix: Tuple  // Tupleは引数として受け取るが...
+) async throws -> Int {
+    let indexNameSubspace = indexSubspace.subspace(indexName)  // ✅ 直接文字列を渡す
+
+    // TupleからTupleElementsを抽出して個別に渡す
+    let elements = keyPrefix.elements
+    let rangeSubspace: Subspace
+    if elements.count == 1 {
+        rangeSubspace = indexNameSubspace.subspace(elements[0])  // ✅ 個別の要素を渡す
+    } else {
+        // 複数要素の場合もvariadic引数として展開
+        rangeSubspace = elements.reduce(indexNameSubspace) { subspace, element in
+            subspace.subspace(element)
+        }
+    }
+
+    let (begin, end) = rangeSubspace.range()
+
+    var count = 0
+    for try await _ in transaction.getRange(begin: begin, end: end) {
+        count += 1  // ✅ 正しくカウントされる
+    }
+    return count
+}
+```
+
+#### プロジェクト全体での修正パターン
+
+このプロジェクトで見つかった誤用箇所と修正：
+
+```bash
+# ❌ 間違ったパターンを検索
+grep -r "\.subspace(Tuple(\[" Sources/ Tests/
+
+# ✅ 一括修正（例）
+sed -i '' 's/\.subspace(Tuple("\([^"]*\)"))/\.subspace("\1")/g' file.swift
+sed -i '' 's/\.subspace(Tuple(\[\([0-9]*\)\]))/\.subspace(\1)/g' file.swift
+sed -i '' 's/\.subspace(Tuple(\["\([^"]*\)"\]))/\.subspace("\1")/g' file.swift
+```
+
+**修正が必要だった箇所**:
+- `RecordStore.swift`: `recordSubspace.subspace(Tuple([Record.recordName]))` → `recordSubspace.subspace(Record.recordName)`
+- `IndexManager.swift`: `subspace.subspace(Tuple([indexName]))` → `subspace.subspace(indexName)`
+- `RecordStoreIndexIntegrationTests.swift`: すべての`Tuple([...])`パターン
+- `DebugIndexKeysTests.swift`: すべての`Tuple([...])`パターン
+
+#### まとめ
+
+| 操作 | ❌ 間違い | ✅ 正しい |
+|------|----------|----------|
+| 文字列subspace | `.subspace(Tuple("I"))` | `.subspace("I")` |
+| 配列からsubspace | `.subspace(Tuple(["name"]))` | `.subspace("name")` |
+| 数値subspace | `.subspace(Tuple([300]))` | `.subspace(300)` |
+| 変数からsubspace | `.subspace(Tuple([indexName]))` | `.subspace(indexName)` |
+| 複数要素 | `.subspace(Tuple("a", "b"))` | `.subspace("a", "b")` |
+
+**覚え方**:
+- `Subspace.subspace()`は**variadic引数**を直接受け取る
+- `Tuple`オブジェクトは**絶対に渡さない**
+- 配列リテラル`[...]`も**絶対に使わない**
+
 ---
 
 ## Part 2: fdb-swift-bindings API

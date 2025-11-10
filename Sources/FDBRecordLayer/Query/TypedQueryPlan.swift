@@ -42,7 +42,7 @@ public struct TypedFullScanPlan<Record: Sendable>: TypedQueryPlan {
         context: RecordContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
-        let recordSubspace = subspace.subspace(Tuple("R"))
+        let recordSubspace = subspace.subspace("R")
         let transaction = context.getTransaction()
 
         let (beginKey, endKey) = recordSubspace.range()
@@ -98,7 +98,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         let transaction = context.getTransaction()
-        let indexSubspace = subspace.subspace(Tuple("I"))
+        let indexSubspace = subspace.subspace("I")
             .subspace(indexSubspaceTupleKey)
 
         // Build index key range
@@ -115,7 +115,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         )
 
         // For index scans, we need to fetch the actual records
-        let recordSubspace = subspace.subspace(Tuple("R"))
+        let recordSubspace = subspace.subspace("R")
 
         let cursor = IndexScanTypedCursor(
             indexSequence: sequence,
@@ -282,13 +282,13 @@ public struct TypedInJoinPlan<Record: Sendable>: TypedQueryPlan {
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Get index and record subspaces
         let indexSubspace = subspace
-            .subspace(Tuple("I"))
+            .subspace("I")
             .subspace(indexSubspaceTupleKey)
 
         // IMPORTANT: Use same layout as TypedIndexScanPlan and TypedFullScanPlan
         // Record subspace does NOT include recordName
         let recordSubspace = subspace
-            .subspace(Tuple("R"))
+            .subspace("R")
 
         let transaction = context.getTransaction()
 

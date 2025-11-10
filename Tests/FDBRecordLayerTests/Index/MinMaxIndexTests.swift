@@ -238,7 +238,7 @@ struct MinMaxIndexTests {
 
         let minValue = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -300,7 +300,7 @@ struct MinMaxIndexTests {
 
         let maxValue = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
             let index = Index(
                 name: "amount_max_by_region",
@@ -362,7 +362,7 @@ struct MinMaxIndexTests {
 
         let initialMin = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -404,7 +404,7 @@ struct MinMaxIndexTests {
 
         let newMin = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -463,7 +463,7 @@ struct MinMaxIndexTests {
 
         let initialMax = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
             let index = Index(
                 name: "amount_max_by_region",
@@ -505,7 +505,7 @@ struct MinMaxIndexTests {
 
         let newMax = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
             let index = Index(
                 name: "amount_max_by_region",
@@ -574,7 +574,7 @@ struct MinMaxIndexTests {
 
         try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -602,7 +602,7 @@ struct MinMaxIndexTests {
 
         try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
             let index = Index(
                 name: "amount_max_by_region",
@@ -641,7 +641,7 @@ struct MinMaxIndexTests {
         await #expect(throws: RecordLayerError.self) {
             try await database.withRecordContext { context in
                 let transaction = context.getTransaction()
-                let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+                let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
                 let index = Index(
                     name: "amount_min_by_region",
@@ -667,7 +667,7 @@ struct MinMaxIndexTests {
         await #expect(throws: RecordLayerError.self) {
             try await database.withRecordContext { context in
                 let transaction = context.getTransaction()
-                let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+                let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
                 let index = Index(
                     name: "amount_max_by_region",
@@ -729,7 +729,7 @@ struct MinMaxIndexTests {
         // Query MIN quantity (Int type)
         let minQuantity = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["quantity_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("quantity_min_by_region")
 
             let index = Index(
                 name: "quantity_min_by_region",
@@ -751,7 +751,7 @@ struct MinMaxIndexTests {
 
         let maxQuantity = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["quantity_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("quantity_max_by_region")
 
             let index = Index(
                 name: "quantity_max_by_region",
@@ -804,7 +804,7 @@ struct MinMaxIndexTests {
         // MIN and MAX should both be 999
         let minValue = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -826,7 +826,7 @@ struct MinMaxIndexTests {
 
         let maxValue = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let maxIndexSubspace = indexSubspace.subspace(Tuple(["amount_max_by_region"]))
+            let maxIndexSubspace = indexSubspace.subspace("amount_max_by_region")
 
             let index = Index(
                 name: "amount_max_by_region",
@@ -879,7 +879,7 @@ struct MinMaxIndexTests {
         // Verify initial MIN
         let initialMin = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -922,7 +922,7 @@ struct MinMaxIndexTests {
         // Verify updated MIN
         let updatedMin = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
             let index = Index(
                 name: "amount_min_by_region",
@@ -975,7 +975,7 @@ struct MinMaxIndexTests {
         // Scan all keys in the index subspace to see what was written
         let allKeys = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
-            let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+            let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
             let range = minIndexSubspace.range()
 
             var keys: [String] = []
@@ -1000,7 +1000,7 @@ struct MinMaxIndexTests {
 
         // Now test querying with findMinValue
         print("\nDEBUG: Testing findMinValue query:")
-        let minIndexSubspace = indexSubspace.subspace(Tuple(["amount_min_by_region"]))
+        let minIndexSubspace = indexSubspace.subspace("amount_min_by_region")
 
         let testResult = try await database.withRecordContext { context in
             let transaction = context.getTransaction()
@@ -1063,7 +1063,7 @@ struct MinMaxIndexTests {
             // Create index subspace
             let indexSubspace = testSubspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
-                .subspace(Tuple(["test_min_index"]))
+                .subspace("test_min_index")
 
             // Insert test data manually
             try await database.withRecordContext { context in
@@ -1132,7 +1132,7 @@ struct MinMaxIndexTests {
             // Also test MAX
             let maxIndexSubspace = testSubspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
-                .subspace(Tuple(["test_max_index"]))
+                .subspace("test_max_index")
 
             try await database.withRecordContext { context in
                 let transaction = context.getTransaction()
@@ -2200,5 +2200,72 @@ struct MinMaxIndexTests {
         #expect(finalMin == 0, "MIN should be 0 (first record)")
 
         print("✅ MIN/MAX consistency maintained despite concurrent updates")
+    }
+
+    @Test("No race condition between state check and query execution")
+    func testNoRaceConditionInSameTransaction() async throws {
+        let database = try createTestDatabase()
+        let subspace = createTestSubspace()
+
+        // Create schema with MIN index
+        let minIndex = Index(
+            name: "amount_min_by_region",
+            type: .min,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "amount")
+            ]),
+            recordTypes: ["SalesRecord"]
+        )
+
+        let schema = Schema(
+            [SalesRecord.self],
+            indexes: [minIndex]
+        )
+
+        // Create RecordStore
+        let store = RecordStore<SalesRecord>(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: database, subspace: subspace.subspace("stats"))
+        )
+
+        // Save test records
+        let records = [
+            SalesRecord(saleID: 1, region: "Tokyo", amount: 100, quantity: 5, discount: 10),
+            SalesRecord(saleID: 2, region: "Tokyo", amount: 200, quantity: 3, discount: 5),
+            SalesRecord(saleID: 3, region: "Tokyo", amount: 50, quantity: 2, discount: 0)
+        ]
+
+        for record in records {
+            try await store.save(record)
+        }
+
+        // Enable index (disabled → writeOnly)
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        try await indexStateManager.enable("amount_min_by_region")
+
+        // Make readable (writeOnly → readable)
+        try await indexStateManager.makeReadable("amount_min_by_region")
+
+        // Immediately query - should see the readable state in the same transaction
+        // This verifies the race condition fix: state check and query execution
+        // happen in the same transaction via withRecordContext
+        let minAmount = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["Tokyo"]
+        )
+
+        #expect(minAmount == 50, "Should get minimum amount without race condition")
+
+        print("✅ No race condition: state check and query execution in same transaction")
+
+        // Cleanup
+        try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
     }
 }

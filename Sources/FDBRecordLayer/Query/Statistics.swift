@@ -208,9 +208,17 @@ public struct Histogram: Codable, Sendable {
 
     /// Find bucket containing a value
     private func findBucket(_ value: ComparableValue) -> Bucket? {
-        // Check all buckets except last
+        // Check all buckets
         for (index, bucket) in buckets.enumerated() {
             let isLastBucket = (index == buckets.count - 1)
+
+            // Special case: single-value bucket (lowerBound == upperBound)
+            if bucket.lowerBound == bucket.upperBound {
+                if value == bucket.lowerBound {
+                    return bucket
+                }
+                continue
+            }
 
             if isLastBucket {
                 // Last bucket: include upper bound

@@ -181,7 +181,7 @@ public final class IndexManager: Sendable {
     /// - Parameter indexName: The index name
     /// - Returns: The subspace for storing this index's data
     internal func indexSubspace(for indexName: String) -> Subspace {
-        return subspace.subspace(Tuple([indexName]))
+        return subspace.subspace(indexName)
     }
 
     /// Create an index maintainer for a specific index type
