@@ -2,32 +2,32 @@ import Foundation
 
 // MARK: - ScrubberResult
 
-/// スクラバー実行結果（最小限）
+/// Scrubber execution result (minimal)
 ///
-/// 詳細な統計情報はメトリクスシステムで確認してください。
+/// Check the metrics system for detailed statistics.
 /// - Prometheus Query: `fdb_scrubber_*{index="your_index_name"}`
 public struct ScrubberResult: Sendable {
-    /// 健全性フラグ
+    /// Health flag
     ///
-    /// `true` の場合、インデックスに問題は検出されませんでした。
-    /// `false` の場合、Issue が検出されたか、スキャンが途中終了しました。
+    /// `true` if no issues were detected in the index.
+    /// `false` if issues were detected or scanning was terminated early.
     public let isHealthy: Bool
 
-    /// 正常完了フラグ
+    /// Successful completion flag
     ///
-    /// `true` の場合、Phase 1 と Phase 2 が完全に実行されました。
-    /// `false` の場合、エラーにより途中終了しました。
+    /// `true` if Phase 1 and Phase 2 were fully executed.
+    /// `false` if terminated early due to error.
     public let completedSuccessfully: Bool
 
-    /// 実行サマリ（部分進捗も含む）
+    /// Execution summary (includes partial progress)
     public let summary: ScrubberSummary
 
-    /// 途中終了の理由（正常完了時は nil）
+    /// Reason for early termination (nil if completed successfully)
     public let terminationReason: String?
 
-    /// エラー情報（エラーが発生した場合のみ）
+    /// Error information (only when error occurred)
     ///
-    /// **Note**: エラー発生時でもsummaryには部分的な進捗が記録されています。
+    /// **Note**: Even when an error occurs, partial progress is recorded in summary.
     public let error: (any Error)?
 
     public init(
@@ -47,15 +47,15 @@ public struct ScrubberResult: Sendable {
 
 // MARK: - ScrubberSummary
 
-/// スクラバー実行のサマリ情報
+/// Scrubber execution summary information
 public struct ScrubberSummary: Sendable {
-    /// 実行時間（秒）
+    /// Execution time (seconds)
     public let timeElapsed: TimeInterval
 
-    /// スキャンしたインデックスエントリ数
+    /// Number of scanned index entries
     public let entriesScanned: Int
 
-    /// スキャンしたレコード数
+    /// Number of scanned records
     public let recordsScanned: Int
 
     // MARK: - Detailed Issue Breakdown
@@ -74,18 +74,18 @@ public struct ScrubberSummary: Sendable {
 
     // MARK: - Aggregated Totals
 
-    /// 検出された Issue の総数
+    /// Total number of detected issues
     ///
     /// - Dangling entries
     /// - Missing entries
     public let issuesDetected: Int
 
-    /// 修復された Issue の数
+    /// Number of repaired issues
     ///
-    /// `configuration.allowRepair=true` の場合のみ 0 以外になります。
+    /// Will be non-zero only when `configuration.allowRepair=true`.
     public let issuesRepaired: Int
 
-    /// インデックス名（メトリクスクエリ用のヒント）
+    /// Index name (hint for metrics queries)
     public let indexName: String
 
     public init(
@@ -110,9 +110,9 @@ public struct ScrubberSummary: Sendable {
         self.indexName = indexName
     }
 
-    /// メトリクスシステムへのヒント
+    /// Hint for metrics system
     ///
-    /// 詳細な統計情報を確認する方法を示します。
+    /// Shows how to check detailed statistics.
     public var metricsHint: String {
         """
         For detailed statistics, query the metrics system:

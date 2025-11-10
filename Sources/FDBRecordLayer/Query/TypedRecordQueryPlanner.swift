@@ -782,11 +782,11 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     /// Generate key range for a field filter
     ///
     /// FoundationDB Range API:
-    /// - beginSelector: .firstGreaterOrEqual(beginKey) → beginKey 以上（inclusive）
-    /// - endSelector: .firstGreaterThan(endKey) → endKey より大きい（exclusive）
-    /// Result: [beginKey, endKey) の半開区間
+    /// - beginSelector: .firstGreaterOrEqual(beginKey) → beginKey or greater (inclusive)
+    /// - endSelector: .firstGreaterThan(endKey) → greater than endKey (exclusive)
+    /// Result: Half-open interval [beginKey, endKey)
     ///
-    /// For <= and >: 値を調整して inclusive/exclusive を正しく表現
+    /// For <= and >: Adjust values to correctly express inclusive/exclusive
     ///
     /// **CRITICAL**: Returns `nil` if boundary values cannot be safely computed.
     /// This prevents incorrect results at max/min values (e.g., `age > Int64.max`).
@@ -796,7 +796,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         switch fieldFilter.comparison {
         case .equals:
             // [value, value] with .firstGreaterOrEqual and .firstGreaterThan
-            // → value だけを含む
+            // → Includes only value
             return ([fieldFilter.value], [fieldFilter.value])
 
         case .notEquals:
@@ -804,12 +804,12 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         case .lessThan:
             // [min, value) with empty begin and .firstGreaterThan(value)
-            // → value を含まない
+            // → Does not include value
             return ([], [fieldFilter.value])
 
         case .lessThanOrEquals:
-            // [min, value] を実現するには endKey を value の次の値にする
-            // .firstGreaterThan(nextValue) → value を含む
+            // To achieve [min, value], set endKey to the next value after value
+            // .firstGreaterThan(nextValue) → Includes value
             //
             // If nextValue cannot be computed (e.g., value == Int64.max),
             // return nil to fall back to full scan
@@ -819,8 +819,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return ([], [nextValue])
 
         case .greaterThan:
-            // (value, max] を実現するには beginKey を value の次の値にする
-            // .firstGreaterOrEqual(nextValue) → value を含まない
+            // To achieve (value, max], set beginKey to the next value after value
+            // .firstGreaterOrEqual(nextValue) → Does not include value
             //
             // If nextValue cannot be computed (e.g., value == Int64.max),
             // return nil to indicate empty result set
@@ -831,7 +831,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         case .greaterThanOrEquals:
             // [value, max] with .firstGreaterOrEqual(value)
-            // → value を含む
+            // → Includes value
             return ([fieldFilter.value], [])
 
         case .startsWith, .contains:
@@ -856,7 +856,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return ([], [fieldFilter.value])
 
         case .lessThanOrEquals:
-            // <= の場合: endKey を value の次の値にする
+            // For <=: Set endKey to the next value after value
             // If nextValue cannot be computed (e.g., Int64.max), return nil
             // to abort index optimization instead of creating incorrect full scan
             guard let nextValue = nextTupleValue(fieldFilter.value) else {
@@ -865,7 +865,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             return ([], [nextValue])
 
         case .greaterThan:
-            // > の場合: beginKey を value の次の値にする
+            // For >: Set beginKey to the next value after value
             // If nextValue cannot be computed (e.g., Int64.max), return nil
             // to abort index optimization instead of creating incorrect full scan
             guard let nextValue = nextTupleValue(fieldFilter.value) else {
@@ -1107,10 +1107,21 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 return false // Field mismatch
             }
 
-            // Note: We assume ascending order for now
-            // TODO: Support descending indexes
+            // Technical limitation: Descending indexes require reverse scan support
+            //
+            // FoundationDB supports reverse range scans via the `reverse` parameter in
+            // fdb_transaction_get_range(). However, fdb-swift-bindings currently does not
+            // expose this parameter in its public API.
+            //
+            // Once fdb-swift-bindings adds reverse parameter support to getRange():
+            // 1. Remove this guard clause
+            // 2. Add `reverse: Bool` parameter to TypedIndexScanPlan
+            // 3. Pass `reverse: !sortKey.ascending` to getRange() call
+            //
+            // See: https://github.com/apple/foundationdb/blob/main/fdbclient/NativeAPI.actor.cpp
+            // (fdb_transaction_get_range has reverse parameter)
             guard sortKey.ascending else {
-                return false // Descending not yet supported
+                return false // Descending not supported due to fdb-swift-bindings limitation
             }
         }
 

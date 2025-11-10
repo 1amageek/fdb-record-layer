@@ -17,7 +17,7 @@ import FoundationDB
 /// - **VERSION**: Version tracking indexes (OCC)
 /// - **PERMUTED**: Permuted indexes (alternative orderings)
 ///
-/// **使用例**:
+/// **Usage Example**:
 /// ```swift
 /// let indexManager = IndexManager(metaData: metaData, subspace: indexSubspace)
 ///
@@ -219,6 +219,22 @@ public final class IndexManager: Sendable {
             let maintainer = GenericSumIndexMaintainer<T>(
                 index: index,
                 subspace: indexSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .min:
+            let maintainer = GenericMinIndexMaintainer<T>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .max:
+            let maintainer = GenericMaxIndexMaintainer<T>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
 

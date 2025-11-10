@@ -358,6 +358,22 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
             )
             return AnyGenericIndexMaintainer(maintainer)
 
+        case .min:
+            let maintainer = GenericMinIndexMaintainer<Record>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .max:
+            let maintainer = GenericMaxIndexMaintainer<Record>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
         case .version:
             let maintainer = VersionIndexMaintainer<Record>(
                 index: index,

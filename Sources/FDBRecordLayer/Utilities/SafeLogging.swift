@@ -6,19 +6,19 @@ import CryptoKit
 
 /// Extensions for safe logging without exposing PII
 extension FDB.Bytes {
-    /// ログ出力用の安全な表現
+    /// Safe representation for logging
     ///
-    /// 先頭8バイトとSHA256ハッシュのみを表示し、中間部分は隠蔽します。
-    /// これにより、PII（個人識別情報）を含む可能性があるキーを安全にログに記録できます。
+    /// Only displays the first 8 bytes and SHA256 hash, hiding the middle portion.
+    /// This allows keys that may contain PII (Personally Identifiable Information) to be safely logged.
     ///
-    /// - Returns: 安全化されたキーの文字列表現
+    /// - Returns: Sanitized string representation of the key
     public var safeLogRepresentation: String {
         guard !self.isEmpty else { return "<empty>" }
 
-        // 先頭8バイト
+        // First 8 bytes
         let prefix = self.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
 
-        // SHA256ハッシュの先頭8バイト
+        // First 8 bytes of SHA256 hash
         let hash = SHA256.hash(data: Data(self))
         let hashHex = hash.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
 
@@ -27,9 +27,9 @@ extension FDB.Bytes {
 }
 
 extension Error {
-    /// ログ出力用の安全な説明
+    /// Safe description for logging
     ///
-    /// ユーザーパスや機密情報を除去します。
+    /// Removes user paths and sensitive information.
     public var safeDescription: String {
         let desc = String(describing: self)
         return desc

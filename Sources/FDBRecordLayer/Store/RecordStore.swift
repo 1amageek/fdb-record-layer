@@ -4,15 +4,14 @@ import Logging
 
 /// Record store for managing a specific record type
 ///
-/// RecordStore は単一のレコード型を管理します。
-/// 型パラメータによって、コンパイル時に型安全性を保証します。
+/// RecordStore manages a single record type with type safety guaranteed at compile time.
 ///
-/// **基本的な使用例**:
+/// **Basic Usage Example**:
 /// ```swift
-/// // Schemaを作成（型とインデックスを定義）
+/// // Create Schema (define types and indexes)
 /// let schema = Schema([User.self])
 ///
-/// // 型付きRecordStoreを初期化
+/// // Initialize typed RecordStore
 /// let userStore = RecordStore<User>(
 ///     database: database,
 ///     subspace: subspace,
@@ -20,29 +19,29 @@ import Logging
 ///     statisticsManager: statisticsManager
 /// )
 ///
-/// // 型安全な保存（型パラメータ不要）
+/// // Type-safe save (no type parameter needed)
 /// try await userStore.save(user)
 ///
-/// // 型安全な取得（User.self不要）
+/// // Type-safe fetch (no User.self needed)
 /// if let user = try await userStore.fetch(by: 1) {
 ///     print(user.name)
 /// }
 ///
-/// // 型安全なクエリ（User.self不要）
+/// // Type-safe query (no User.self needed)
 /// let users = try await userStore.query()
 ///     .where(\.name == "Alice")
 ///     .execute()
 /// ```
 ///
-/// **複合主キーの使用例**:
+/// **Composite Primary Key Example**:
 ///
-/// 複合主キーは複数のフィールドの組み合わせで一意性を保証します。
-/// 2つの方法でサポートされています：
+/// Composite primary keys ensure uniqueness through a combination of multiple fields.
+/// Supported in two ways:
 ///
-/// 1. **Tuple型を使用する方法**:
+/// 1. **Using Tuple Type**:
 /// ```swift
 /// struct OrderItem: Recordable {
-///     // 複合主キー: (orderID, itemID)
+///     // Composite primary key: (orderID, itemID)
 ///     static var primaryKey: KeyPath<OrderItem, Tuple> = \.compositeKey
 ///
 ///     let orderID: String
@@ -54,31 +53,31 @@ import Logging
 ///     }
 /// }
 ///
-/// // 保存
+/// // Save
 /// let item = OrderItem(orderID: "order-001", itemID: "item-456", quantity: 2)
 /// try await store.save(item)
 ///
-/// // 取得: Tupleを使用
+/// // Fetch: using Tuple
 /// let key = Tuple("order-001", "item-456")
 /// if let item = try await store.fetch(by: key) {
 ///     print("Found: \(item.quantity)")
 /// }
 ///
-/// // 削除: Tupleを使用
+/// // Delete: using Tuple
 /// try await store.delete(by: Tuple("order-001", "item-456"))
 /// ```
 ///
-/// 2. **可変長引数を使用する方法（推奨）**:
+/// 2. **Using Variadic Arguments (Recommended)**:
 /// ```swift
-/// // 取得: 可変長引数（より簡潔）
+/// // Fetch: variadic arguments (more concise)
 /// if let item = try await store.fetch(by: "order-001", "item-456") {
 ///     print("Found: \(item.quantity)")
 /// }
 ///
-/// // 削除: 可変長引数
+/// // Delete: variadic arguments
 /// try await store.delete(by: "order-001", "item-456")
 ///
-/// // トランザクション内でも使用可能
+/// // Can also be used within transactions
 /// try await store.transaction { transaction in
 ///     if let item = try await transaction.fetch(by: "order-001", "item-456") {
 ///         var updated = item
@@ -88,10 +87,10 @@ import Logging
 /// }
 /// ```
 ///
-/// **重要な注意事項**:
-/// - 単一主キーと複合主キーで内部キー形式が統一されています
-/// - `fetchInternal`/`deleteInternal`は自動的にキーを正規化します
-/// - 可変長引数版は、単一キー・複合キーの両方に対応しています
+/// **Important Notes**:
+/// - Internal key format is unified for single and composite primary keys
+/// - `fetchInternal`/`deleteInternal` automatically normalize keys
+/// - Variadic argument versions support both single and composite keys
 public final class RecordStore<Record: Recordable>: Sendable {
     // MARK: - Properties
 
@@ -180,8 +179,29 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let bytes = try recordAccess.serialize(record)
         let primaryKey = recordAccess.extractPrimaryKey(from: record)
 
-        // Subspace control: Always automatically add record type name (Phase 2a-1)
-        // TODO: Add #Subspace support in Phase 2a-3
+        // Subspace control: Always automatically add record type name
+        //
+        // Future enhancement: #Subspace macro support for custom partitioning
+        //
+        // The #Subspace macro would allow declarative multi-tenant or regional partitioning:
+        // ```swift
+        // @Recordable
+        // #Subspace([\.tenantID, \.region])
+        // struct Order {
+        //     var tenantID: String
+        //     var region: String
+        //     @PrimaryKey var orderID: Int64
+        // }
+        // ```
+        //
+        // Implementation requirements:
+        // 1. Macro generates `subspaceKeyPath` static property on Recordable
+        // 2. RecordAccess.extractSubspaceKey(from:) method
+        // 3. Migration strategy for existing data
+        // 4. Query planner awareness of subspace structure
+        //
+        // Current design (record type name) is sufficient for most use cases and
+        // maintains compatibility with standard Record Layer patterns.
         let effectiveSubspace = recordSubspace.subspace(Tuple([Record.recordName]))
         let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
 
@@ -276,20 +296,20 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Save
 
-    /// レコードを保存（型安全）
+    /// Save a record (type-safe)
     ///
-    /// - Parameter record: 保存するレコード
+    /// - Parameter record: Record to save
     /// - Throws: RecordLayerError if save fails
     public func save(_ record: Record) async throws {
         let start = DispatchTime.now()
 
         do {
-            // トランザクション作成
+            // Create transaction
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            // 共通ロジックを使用
+            // Use common logic
             try await saveInternal(record, context: context)
 
             try await context.commit()
@@ -324,10 +344,10 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Fetch
 
-    /// プライマリキーでレコードを取得
+    /// Fetch a record by primary key
     ///
-    /// - Parameter primaryKey: プライマリキー値
-    /// - Returns: レコード（存在しない場合は nil）
+    /// - Parameter primaryKey: Primary key value
+    /// - Returns: Record (nil if not found)
     /// - Throws: RecordLayerError if fetch fails
     public func record(
         for primaryKey: any TupleElement
@@ -335,12 +355,12 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let start = DispatchTime.now()
 
         do {
-            // トランザクション作成
+            // Create transaction
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            // 共通ロジックを使用
+            // Use common logic
             let result = try await fetchInternal(by: primaryKey, context: context)
 
             // Record success metrics
@@ -374,19 +394,19 @@ public final class RecordStore<Record: Recordable>: Sendable {
         }
     }
 
-    /// 複合主キーでレコードを取得（可変長引数版）
+    /// Fetch a record by composite primary key (variadic argument version)
     ///
-    /// **使用例**:
+    /// **Usage Example**:
     /// ```swift
-    /// // 単一キー
+    /// // Single key
     /// let user = try await store.fetch(by: 123)
     ///
-    /// // 複合キー（可変長引数）
+    /// // Composite key (variadic arguments)
     /// let orderItem = try await store.record(forCompositeKey: "order-001", "item-456")
     /// ```
     ///
-    /// - Parameter keys: プライマリキーの要素（可変長）
-    /// - Returns: レコード（存在しない場合は nil）
+    /// - Parameter keys: Primary key elements (variadic)
+    /// - Returns: Record (nil if not found)
     /// - Throws: RecordLayerError if fetch fails
     public func record(
         forCompositeKey keys: any TupleElement...
@@ -405,9 +425,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Query
 
-    /// クエリビルダーを作成（型パラメータ不要）
+    /// Create a query builder (no type parameter needed)
     ///
-    /// - Returns: クエリビルダー
+    /// - Returns: Query builder
     public func query() -> QueryBuilder<Record> {
         return QueryBuilder(
             store: self,
@@ -421,9 +441,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Delete
 
-    /// レコードを削除
+    /// Delete a record
     ///
-    /// - Parameter primaryKey: プライマリキー値
+    /// - Parameter primaryKey: Primary key value
     /// - Throws: RecordLayerError if delete fails
     public func delete(
         by primaryKey: any TupleElement
@@ -431,12 +451,12 @@ public final class RecordStore<Record: Recordable>: Sendable {
         let start = DispatchTime.now()
 
         do {
-            // トランザクション作成
+            // Create transaction
             let transaction = try database.createTransaction()
             let context = RecordContext(transaction: transaction)
             defer { context.cancel() }
 
-            // 共通ロジックを使用
+            // Use common logic
             try await deleteInternal(by: primaryKey, context: context)
 
             try await context.commit()
@@ -469,18 +489,18 @@ public final class RecordStore<Record: Recordable>: Sendable {
         }
     }
 
-    /// 複合主キーでレコードを削除（可変長引数版）
+    /// Delete a record by composite primary key (variadic argument version)
     ///
-    /// **使用例**:
+    /// **Usage Example**:
     /// ```swift
-    /// // 単一キー
+    /// // Single key
     /// try await store.delete(by: 123)
     ///
-    /// // 複合キー（可変長引数）
+    /// // Composite key (variadic arguments)
     /// try await store.delete(by: "order-001", "item-456")
     /// ```
     ///
-    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Parameter keys: Primary key elements (variadic)
     /// - Throws: RecordLayerError if delete fails
     public func delete(
         by keys: any TupleElement...
@@ -499,11 +519,11 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
     // MARK: - Transaction
 
-    /// トランザクション内で操作を実行
+    /// Execute operations within a transaction
     ///
-    /// - Parameter block: トランザクション内で実行するブロック
-    /// - Returns: ブロックの戻り値
-    /// - Throws: ブロックがスローしたエラー
+    /// - Parameter block: Block to execute within the transaction
+    /// - Returns: Return value of the block
+    /// - Throws: Error thrown by the block
     public func transaction<T>(
         _ block: (RecordTransaction<Record>) async throws -> T
     ) async throws -> T {
@@ -525,9 +545,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
 
 // MARK: - RecordTransaction
 
-/// トランザクション内で使用するRecordStoreのラッパー
+/// RecordStore wrapper for use within a transaction
 ///
-/// トランザクション内でレコード操作を行うために使用します。
+/// Used to perform record operations within a transaction.
 public struct RecordTransaction<Record: Recordable> {
     private let store: RecordStore<Record>
     internal let context: RecordContext
@@ -537,35 +557,35 @@ public struct RecordTransaction<Record: Recordable> {
         self.context = context
     }
 
-    /// レコードを保存
+    /// Save a record
     public func save(_ record: Record) async throws {
-        // 共通ロジックを使用
+        // Use common logic
         try await store.saveInternal(record, context: context)
     }
 
-    /// レコードを取得
+    /// Fetch a record
     public func record(
         for primaryKey: any TupleElement
     ) async throws -> Record? {
-        // 共通ロジックを使用
+        // Use common logic
         return try await store.fetchInternal(by: primaryKey, context: context)
     }
 
-    /// 複合主キーでレコードを取得（可変長引数版）
+    /// Fetch a record by composite primary key (variadic argument version)
     ///
-    /// **使用例**:
+    /// **Usage Example**:
     /// ```swift
     /// try await store.transaction { transaction in
-    ///     // 単一キー
+    ///     // Single key
     ///     let user = try await transaction.record(for: 123)
     ///
-    ///     // 複合キー（可変長引数）
+    ///     // Composite key (variadic arguments)
     ///     let orderItem = try await transaction.record(forCompositeKey: "order-001", "item-456")
     /// }
     /// ```
     ///
-    /// - Parameter keys: プライマリキーの要素（可変長）
-    /// - Returns: レコード（存在しない場合は nil）
+    /// - Parameter keys: Primary key elements (variadic)
+    /// - Returns: Record (nil if not found)
     /// - Throws: RecordLayerError if fetch fails
     public func record(
         forCompositeKey keys: any TupleElement...
@@ -582,28 +602,28 @@ public struct RecordTransaction<Record: Recordable> {
         return try await record(for: primaryKey)
     }
 
-    /// レコードを削除
+    /// Delete a record
     public func delete(
         by primaryKey: any TupleElement
     ) async throws {
-        // 共通ロジックを使用
+        // Use common logic
         try await store.deleteInternal(by: primaryKey, context: context)
     }
 
-    /// 複合主キーでレコードを削除（可変長引数版）
+    /// Delete a record by composite primary key (variadic argument version)
     ///
-    /// **使用例**:
+    /// **Usage Example**:
     /// ```swift
     /// try await store.transaction { transaction in
-    ///     // 単一キー
+    ///     // Single key
     ///     try await transaction.delete(by: 123)
     ///
-    ///     // 複合キー（可変長引数）
+    ///     // Composite key (variadic arguments)
     ///     try await transaction.delete(by: "order-001", "item-456")
     /// }
     /// ```
     ///
-    /// - Parameter keys: プライマリキーの要素（可変長）
+    /// - Parameter keys: Primary key elements (variadic)
     /// - Throws: RecordLayerError if delete fails
     public func delete(
         by keys: any TupleElement...
@@ -670,7 +690,7 @@ extension RecordStore {
         )
     }
 
-    /// Evaluate an aggregate function with no grouping (全体の集約)
+    /// Evaluate an aggregate function with no grouping (aggregate over all records)
     ///
     /// For cases where you want the aggregate over all records without grouping.
     ///
@@ -733,9 +753,10 @@ extension RecordStore {
             // Extract group key from the index key
             let unpacked = try indexSubspace.unpack(key)
 
-            // Build group key string (simplified: use string representation of tuple)
-            // TODO: Improve this to properly handle multi-element tuples
-            let groupKeyString = "\(unpacked)"
+            // Build group key: serialize tuple to bytes for reliable hashing
+            // This properly handles multi-element tuples by using FDB's tuple encoding
+            let groupKeyBytes = unpacked.pack()
+            let groupKeyString = groupKeyBytes.map { String(format: "%02x", $0) }.joined()
 
             // Decode aggregate value
             let aggregateValue = TupleHelpers.bytesToInt64(value)

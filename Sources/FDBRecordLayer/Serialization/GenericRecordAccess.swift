@@ -1,12 +1,12 @@
 import Foundation
 import FoundationDB
 
-/// Recordableプロトコルを利用した汎用RecordAccess実装
+/// Generic RecordAccess implementation using the Recordable protocol
 ///
-/// `Recordable` プロトコルに準拠している型であれば、このクラスを使用して
-/// 自動的にシリアライズ/デシリアライズが可能になります。
+/// For any type conforming to the `Recordable` protocol, this class enables
+/// automatic serialization/deserialization.
 ///
-/// **使用例**:
+/// **Usage Example**:
 /// ```swift
 /// @Recordable
 /// struct User {
@@ -15,25 +15,25 @@ import FoundationDB
 ///     var name: String
 /// }
 ///
-/// // Recordableに準拠していれば自動的に使用可能
+/// // Can be used automatically if conforming to Recordable
 /// let recordAccess = GenericRecordAccess<User>()
 ///
-/// // シリアライズ
+/// // Serialize
 /// let data = try recordAccess.serialize(user)
 ///
-/// // デシリアライズ
+/// // Deserialize
 /// let user = try recordAccess.deserialize(data)
 /// ```
 ///
-/// **設計の意図**:
-/// - `Recordable` プロトコルの実装を再利用
-/// - マクロが `Recordable` を実装すれば、自動的に `RecordAccess` として使用可能
-/// - ボイラープレートコードの削減
+/// **Design Intent**:
+/// - Reuse the `Recordable` protocol implementation
+/// - If a macro implements `Recordable`, it can automatically be used as `RecordAccess`
+/// - Reduce boilerplate code
 public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
-    /// デフォルトイニシャライザ
+    /// Default initializer
     ///
-    /// `Recordable` プロトコルに準拠している型であれば、
-    /// 特別な設定なしで使用できます。
+    /// Can be used without special configuration for any type
+    /// conforming to the `Recordable` protocol.
     public init() {}
 
     // MARK: - RecordAccess Implementation
@@ -65,12 +65,12 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
 
     // MARK: - Additional Helpers (not in RecordAccess protocol)
 
-    /// プライマリキーを抽出
+    /// Extract primary key
     ///
-    /// RecordAccessプロトコルには含まれませんが、RecordStoreで使用されます。
+    /// Not included in the RecordAccess protocol, but used by RecordStore.
     ///
-    /// - Parameter record: レコード
-    /// - Returns: プライマリキーのTuple
+    /// - Parameter record: Record
+    /// - Returns: Primary key Tuple
     public func extractPrimaryKey(from record: Record) -> Tuple {
         return record.extractPrimaryKey()
     }
@@ -79,25 +79,25 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
 // MARK: - Convenience Methods
 
 extension GenericRecordAccess {
-    /// レコードタイプ名を取得（静的メソッド）
+    /// Get record type name (static method)
     ///
-    /// インスタンスを作成せずにレコードタイプ名を取得できます。
+    /// Can retrieve the record type name without creating an instance.
     ///
-    /// - Returns: レコードタイプ名
+    /// - Returns: Record type name
     public static var recordName: String {
         return Record.recordName
     }
 
-    /// プライマリキーフィールドのリストを取得
+    /// Get list of primary key fields
     ///
-    /// - Returns: プライマリキーフィールド名のリスト
+    /// - Returns: List of primary key field names
     public static var primaryKeyFields: [String] {
         return Record.primaryKeyFields
     }
 
-    /// すべてのフィールド名のリストを取得
+    /// Get list of all field names
     ///
-    /// - Returns: フィールド名のリスト
+    /// - Returns: List of field names
     public static var allFields: [String] {
         return Record.allFields
     }

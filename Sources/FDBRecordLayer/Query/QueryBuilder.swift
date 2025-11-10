@@ -1,27 +1,33 @@
 import Foundation
 import FoundationDB
 
-/// 型安全なクエリビルダー
+/// Type-safe query builder
 ///
-/// QueryBuilderは、Recordable型に対する型安全なクエリAPIを提供します。
-/// KeyPathを使用してフィールドを指定し、型チェックされたフィルタ条件を構築できます。
+/// QueryBuilder provides a type-safe query API for Recordable types.
+/// Uses KeyPaths to specify fields and construct type-checked filter conditions.
 ///
-/// **使用例**:
+/// **Example Usage**:
 /// ```swift
 /// let userStore: RecordStore<User> = ...
 ///
-/// // 単純な等価比較
+/// // Simple equality comparison
 /// let users = try await userStore.query()
 ///     .where(\.email, .equals, "alice@example.com")
 ///     .execute()
 ///
-/// // 複数条件
+/// // Multiple conditions
 /// let tokyoUsers = try await userStore.query()
 ///     .where(\.country, .equals, "Japan")
 ///     .where(\.city, .equals, "Tokyo")
 ///     .limit(10)
 ///     .execute()
 /// ```
+/// Sort direction for ORDER BY
+public enum SortDirection: Sendable {
+    case ascending
+    case descending
+}
+
 public final class QueryBuilder<T: Recordable> {
     private let store: RecordStore<T>
     private let recordType: T.Type
@@ -30,6 +36,7 @@ public final class QueryBuilder<T: Recordable> {
     private let subspace: Subspace
     private let statisticsManager: any StatisticsManagerProtocol
     private var filters: [any TypedQueryComponent<T>] = []
+    internal var sortOrders: [(field: String, direction: SortDirection)] = []
     private var limitValue: Int?
 
     internal init(
@@ -50,13 +57,13 @@ public final class QueryBuilder<T: Recordable> {
 
     // MARK: - Query Construction
 
-    /// フィルタを追加
+    /// Add a filter condition
     ///
     /// - Parameters:
-    ///   - keyPath: フィールドへのKeyPath
-    ///   - comparison: 比較演算子
-    ///   - value: 比較値
-    /// - Returns: Self（メソッドチェーン用）
+    ///   - keyPath: KeyPath to the field
+    ///   - comparison: Comparison operator
+    ///   - value: Comparison value
+    /// - Returns: Self (for method chaining)
     public func `where`<Value: TupleElement>(
         _ keyPath: KeyPath<T, Value>,
         is comparison: TypedFieldQueryComponent<T>.Comparison,
@@ -72,10 +79,51 @@ public final class QueryBuilder<T: Recordable> {
         return self
     }
 
-    /// リミットを設定
+    /// Add a filter condition (Predicate version)
     ///
-    /// - Parameter limit: 最大取得件数
-    /// - Returns: Self（メソッドチェーン用）
+    /// Adds a filter condition using operator overloading.
+    ///
+    /// **Example Usage**:
+    /// ```swift
+    /// let users = try await store.query()
+    ///     .where(\.email == "alice@example.com")
+    ///     .where(\.age > 18 && \.city == "Tokyo")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameter predicate: Predicate condition
+    /// - Returns: Self (for method chaining)
+    public func `where`(_ predicate: Predicate<T>) -> Self {
+        filters.append(predicate.component)
+        return self
+    }
+
+    /// Set sort order
+    ///
+    /// **Example Usage**:
+    /// ```swift
+    /// let users = try await store.query()
+    ///     .orderBy(\.createdAt, .descending)
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the field to sort by
+    ///   - direction: Sort direction (default: .ascending)
+    /// - Returns: Self (for method chaining)
+    public func orderBy<Value: TupleElement & Comparable>(
+        _ keyPath: KeyPath<T, Value>,
+        _ direction: SortDirection = .ascending
+    ) -> Self {
+        let fieldName = T.fieldName(for: keyPath)
+        sortOrders.append((field: fieldName, direction: direction))
+        return self
+    }
+
+    /// Set result limit
+    ///
+    /// - Parameter limit: Maximum number of records to fetch
+    /// - Returns: Self (for method chaining)
     public func limit(_ limit: Int) -> Self {
         self.limitValue = limit
         return self
@@ -83,19 +131,26 @@ public final class QueryBuilder<T: Recordable> {
 
     // MARK: - Execution
 
-    /// クエリを実行
+    /// Execute the query
     ///
-    /// - Returns: レコードの配列
+    /// - Returns: Array of records
     /// - Throws: RecordLayerError if execution fails
     public func execute() async throws -> [T] {
-        // TypedRecordQuery を構築
+        // Build TypedRecordQuery
         let filter: (any TypedQueryComponent<T>)? = filters.isEmpty ? nil : (filters.count == 1 ? filters[0] : TypedAndQueryComponent<T>(children: filters))
+
+        // Convert sort orders to TypedSortKey
+        let sortKeys: [TypedSortKey<T>]? = sortOrders.isEmpty ? nil : sortOrders.map { order in
+            TypedSortKey<T>(fieldName: order.field, ascending: order.direction == .ascending)
+        }
+
         let query = TypedRecordQuery<T>(
             filter: filter,
+            sort: sortKeys,
             limit: limitValue
         )
 
-        // QueryPlanner を使用して最適な実行プランを作成
+        // Use QueryPlanner to create optimal execution plan
         // Use real StatisticsManager for cost-based optimization
         let planner = TypedRecordQueryPlanner<T>(
             schema: schema,
@@ -104,7 +159,7 @@ public final class QueryBuilder<T: Recordable> {
         )
         let plan = try await planner.plan(query: query)
 
-        // プランを実行
+        // Execute the plan
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
         defer { context.cancel() }
@@ -117,7 +172,7 @@ public final class QueryBuilder<T: Recordable> {
             snapshot: true
         )
 
-        // 結果を収集
+        // Collect results
         var results: [T] = []
         for try await record in cursor {
             results.append(record)
@@ -129,9 +184,9 @@ public final class QueryBuilder<T: Recordable> {
         return results
     }
 
-    /// 最初のレコードを取得
+    /// Get the first record
     ///
-    /// - Returns: 最初のレコード、または nil
+    /// - Returns: First record, or nil if none found
     /// - Throws: RecordLayerError if execution fails
     public func first() async throws -> T? {
         let originalLimit = limitValue
@@ -141,36 +196,122 @@ public final class QueryBuilder<T: Recordable> {
         return results.first
     }
 
-    /// レコード数をカウント
+    /// Count records matching the query
     ///
-    /// **注意**: 現在の実装ではすべてのレコードを取得してカウントします。
-    /// 将来的にはCOUNTインデックスを使用した最適化を実装予定です。
+    /// **Implementation**: Automatically uses COUNT index when available, otherwise falls back to full scan.
     ///
-    /// - Returns: レコード数
+    /// **COUNT Index Optimization**:
+    /// - Optimizes queries with equality filters that match a COUNT index grouping
+    /// - Example: `.where(\.city == "Tokyo")` uses COUNT index grouped by `city`
+    /// - Falls back to full scan for complex filters (OR, NOT, range comparisons)
+    ///
+    /// - Returns: Number of records
     /// - Throws: RecordLayerError if execution fails
     public func count() async throws -> Int {
+        // Try COUNT index optimization
+        if let countResult = try await tryCountIndexOptimization() {
+            return countResult
+        }
+
+        // Fallback: fetch all and count
         let results = try await execute()
         return results.count
     }
+
+    /// Try to optimize count using COUNT index
+    private func tryCountIndexOptimization() async throws -> Int? {
+        // Only optimize for simple equality filters
+        guard !filters.isEmpty else { return nil }
+
+        // Extract equality filters
+        var equalityFilters: [(field: String, value: any TupleElement)] = []
+        for filter in filters {
+            if let fieldFilter = filter as? TypedFieldQueryComponent<T>,
+               fieldFilter.comparison == .equals {
+                equalityFilters.append((field: fieldFilter.fieldName, value: fieldFilter.value))
+            } else {
+                // Non-equality filter found, cannot use COUNT index
+                return nil
+            }
+        }
+
+        guard !equalityFilters.isEmpty else { return nil }
+
+        // Get all COUNT indexes for this record type
+        let allIndexes = schema.indexes(for: T.recordName)
+        let countIndexes = allIndexes.filter { $0.type == .count }
+
+        // Try to find a matching COUNT index
+        for index in countIndexes {
+            if let groupingValues = try matchCountIndex(
+                index: index,
+                equalityFilters: equalityFilters
+            ) {
+                // Use COUNT index
+                let transaction = try database.createTransaction()
+                defer { transaction.cancel() }
+
+                let indexSubspace = subspace
+                    .subspace(Tuple("I"))
+                    .subspace(Tuple([index.name]))
+
+                let maintainer = GenericCountIndexMaintainer<T>(
+                    index: index,
+                    subspace: indexSubspace
+                )
+
+                let count = try await maintainer.getCount(
+                    groupingValues: groupingValues,
+                    transaction: transaction
+                )
+
+                return Int(count)
+            }
+        }
+
+        return nil
+    }
+
+    /// Check if equality filters match a COUNT index and extract grouping values
+    private func matchCountIndex(
+        index: Index,
+        equalityFilters: [(field: String, value: any TupleElement)]
+    ) throws -> [any TupleElement]? {
+        // Extract field names from index expression
+        let indexFields = extractFieldNames(from: index.rootExpression)
+
+        // Check if filters exactly match index fields (in order)
+        guard indexFields.count == equalityFilters.count else {
+            return nil
+        }
+
+        var groupingValues: [any TupleElement] = []
+        for indexField in indexFields {
+            if let matchingFilter = equalityFilters.first(where: { $0.field == indexField }) {
+                groupingValues.append(matchingFilter.value)
+            } else {
+                // Field not found in filters
+                return nil
+            }
+        }
+
+        // Verify order matches
+        for (i, filter) in equalityFilters.enumerated() {
+            if indexFields[i] != filter.field {
+                return nil
+            }
+        }
+
+        return groupingValues
+    }
+
+    /// Extract field names from a key expression
+    private func extractFieldNames(from expression: any KeyExpression) -> [String] {
+        if let fieldExpr = expression as? FieldKeyExpression {
+            return [fieldExpr.fieldName]
+        } else if let concatExpr = expression as? ConcatenateKeyExpression {
+            return concatExpr.children.flatMap { extractFieldNames(from: $0) }
+        }
+        return []
+    }
 }
-
-// MARK: - Operator Overloads
-
-// TODO: Future macro-based implementation
-// extension QueryBuilder {
-//     /// WHERE field == value のショートカット
-//     ///
-//     /// **使用例**:
-//     /// ```swift
-//     /// let users = try await store.query(User.self)
-//     ///     .where(\.email == "alice@example.com")
-//     ///     .execute()
-//     /// ```
-//     public func `where`<Value: TupleElement & Equatable>(
-//         _ condition: @autoclosure () -> Bool
-//     ) -> Self {
-//         // Note: この実装は演算子オーバーロードでは動作しません
-//         // 将来的にマクロで実装予定
-//         return self
-//     }
-// }

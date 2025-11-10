@@ -254,6 +254,8 @@ public enum IndexType: String, Sendable {
     case rank       // Rank/leaderboard index
     case count      // Count aggregation index
     case sum        // Sum aggregation index
+    case min        // MIN aggregation index
+    case max        // MAX aggregation index
     case version    // Version index
     case permuted   // Permuted index (multiple orderings)
 }

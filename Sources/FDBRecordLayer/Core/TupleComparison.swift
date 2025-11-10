@@ -39,6 +39,25 @@ public enum TupleComparison {
             return lhsInt64 == Int64(rhsInt)
         }
 
+        // Int32 comparison
+        if let lhsInt32 = lhs as? Int32, let rhsInt32 = rhs as? Int32 {
+            return lhsInt32 == rhsInt32
+        }
+
+        // Int32 vs Int/Int64 cross-type comparison
+        if let lhsInt32 = lhs as? Int32, let rhsInt = rhs as? Int {
+            return Int(lhsInt32) == rhsInt
+        }
+        if let lhsInt = lhs as? Int, let rhsInt32 = rhs as? Int32 {
+            return lhsInt == Int(rhsInt32)
+        }
+        if let lhsInt32 = lhs as? Int32, let rhsInt64 = rhs as? Int64 {
+            return Int64(lhsInt32) == rhsInt64
+        }
+        if let lhsInt64 = lhs as? Int64, let rhsInt32 = rhs as? Int32 {
+            return lhsInt64 == Int64(rhsInt32)
+        }
+
         // Bool comparison
         if let lhsBool = lhs as? Bool, let rhsBool = rhs as? Bool {
             return lhsBool == rhsBool
@@ -82,6 +101,25 @@ public enum TupleComparison {
         }
         if let lhsInt64 = lhs as? Int64, let rhsInt = rhs as? Int {
             return lhsInt64 < Int64(rhsInt)
+        }
+
+        // Int32 comparison
+        if let lhsInt32 = lhs as? Int32, let rhsInt32 = rhs as? Int32 {
+            return lhsInt32 < rhsInt32
+        }
+
+        // Int32 vs Int/Int64 cross-type comparison
+        if let lhsInt32 = lhs as? Int32, let rhsInt = rhs as? Int {
+            return Int(lhsInt32) < rhsInt
+        }
+        if let lhsInt = lhs as? Int, let rhsInt32 = rhs as? Int32 {
+            return lhsInt < Int(rhsInt32)
+        }
+        if let lhsInt32 = lhs as? Int32, let rhsInt64 = rhs as? Int64 {
+            return Int64(lhsInt32) < rhsInt64
+        }
+        if let lhsInt64 = lhs as? Int64, let rhsInt32 = rhs as? Int32 {
+            return lhsInt64 < Int64(rhsInt32)
         }
 
         // Double comparison

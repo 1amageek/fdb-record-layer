@@ -1408,12 +1408,12 @@ public struct ScrubberConfiguration: Sendable {
     public let entriesScanLimit: Int
 
     /// Maximum transaction size in bytes (for read data)
-    /// - Default: 9 MB (留有10MB限制的余地)
+    /// - Default: 9 MB (leaving room for 10MB limit)
     /// - Note: FoundationDB's getRange has 10MB response limit
     public let maxTransactionBytes: Int
 
     /// Maximum transaction execution time in milliseconds
-    /// - Default: 4,000 ms (留有5秒限制的余地)
+    /// - Default: 4,000 ms (leaving room for 5 second limit)
     /// - Note: FoundationDB's default transaction timeout is 5 seconds
     public let transactionTimeoutMillis: Int
 

@@ -1,0 +1,293 @@
+import Testing
+import Foundation
+import FoundationDB
+@testable import FDBRecordLayer
+
+/// Tests for MIN and MAX aggregate indexes
+@Suite("MIN/MAX Index Tests")
+struct MinMaxIndexTests {
+
+    // Test record type
+    @Recordable
+    struct SalesRecord {
+        @PrimaryKey var saleID: Int64
+        var region: String
+        var amount: Int64
+        var quantity: Int64
+    }
+
+    // Helper to create clean test environment
+    func setupTestEnvironment() async throws -> (RecordStore<SalesRecord>, Subspace) {
+        let db = try FDB.selectAPIVersion(730).createDatabase()
+        let testSubspace = Subspace(rootPrefix: "min-max-test-\(UUID().uuidString)")
+
+        // Create schema with MIN and MAX indexes
+        let schema = Schema([SalesRecord.self])
+
+        // MIN index: minimum amount by region
+        let minIndex = Index(
+            name: "amount_min_by_region",
+            type: .min,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "amount")
+            ])
+        )
+
+        // MAX index: maximum amount by region
+        let maxIndex = Index(
+            name: "amount_max_by_region",
+            type: .max,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "amount")
+            ])
+        )
+
+        // MIN index: minimum quantity by region
+        let minQuantityIndex = Index(
+            name: "quantity_min_by_region",
+            type: .min,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "quantity")
+            ])
+        )
+
+        // MAX index: maximum quantity by region
+        let maxQuantityIndex = Index(
+            name: "quantity_max_by_region",
+            type: .max,
+            rootExpression: ConcatenateKeyExpression(children: [
+                FieldKeyExpression(fieldName: "region"),
+                FieldKeyExpression(fieldName: "quantity")
+            ])
+        )
+
+        try schema.registerRecordType(SalesRecord.self, indexes: [minIndex, maxIndex, minQuantityIndex, maxQuantityIndex])
+
+        let store = RecordStore<SalesRecord>(
+            database: db,
+            subspace: testSubspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: db, subspace: testSubspace.subspace("stats"))
+        )
+
+        return (store, testSubspace)
+    }
+
+    @Test("MIN index returns minimum value")
+    func testMinIndex() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert test data
+        let sales = [
+            SalesRecord(saleID: 1, region: "East", amount: 1000, quantity: 5),
+            SalesRecord(saleID: 2, region: "East", amount: 500, quantity: 3),   // MIN for East
+            SalesRecord(saleID: 3, region: "East", amount: 1500, quantity: 10),
+            SalesRecord(saleID: 4, region: "West", amount: 2000, quantity: 8),
+            SalesRecord(saleID: 5, region: "West", amount: 800, quantity: 2),   // MIN for West
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Query MIN for East region
+        let eastMin = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["East"]
+        )
+
+        #expect(eastMin == 500, "East region minimum should be 500")
+
+        // Query MIN for West region
+        let westMin = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["West"]
+        )
+
+        #expect(westMin == 800, "West region minimum should be 800")
+    }
+
+    @Test("MAX index returns maximum value")
+    func testMaxIndex() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert test data
+        let sales = [
+            SalesRecord(saleID: 1, region: "East", amount: 1000, quantity: 5),
+            SalesRecord(saleID: 2, region: "East", amount: 500, quantity: 3),
+            SalesRecord(saleID: 3, region: "East", amount: 1500, quantity: 10),  // MAX for East
+            SalesRecord(saleID: 4, region: "West", amount: 2000, quantity: 8),   // MAX for West
+            SalesRecord(saleID: 5, region: "West", amount: 800, quantity: 2),
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Query MAX for East region
+        let eastMax = try await store.evaluateAggregate(
+            .max(indexName: "amount_max_by_region"),
+            groupBy: ["East"]
+        )
+
+        #expect(eastMax == 1500, "East region maximum should be 1500")
+
+        // Query MAX for West region
+        let westMax = try await store.evaluateAggregate(
+            .max(indexName: "amount_max_by_region"),
+            groupBy: ["West"]
+        )
+
+        #expect(westMax == 2000, "West region maximum should be 2000")
+    }
+
+    @Test("MIN index updates when records are deleted")
+    func testMinIndexAfterDeletion() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert test data
+        let sales = [
+            SalesRecord(saleID: 1, region: "East", amount: 1000, quantity: 5),
+            SalesRecord(saleID: 2, region: "East", amount: 500, quantity: 3),   // Initial MIN
+            SalesRecord(saleID: 3, region: "East", amount: 750, quantity: 4),
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Verify initial MIN
+        let initialMin = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["East"]
+        )
+        #expect(initialMin == 500)
+
+        // Delete the minimum record
+        try await store.delete(by: 2)
+
+        // Verify new MIN
+        let newMin = try await store.evaluateAggregate(
+            .min(indexName: "amount_min_by_region"),
+            groupBy: ["East"]
+        )
+        #expect(newMin == 750, "Minimum should update to 750 after deletion")
+    }
+
+    @Test("MAX index updates when records are deleted")
+    func testMaxIndexAfterDeletion() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert test data
+        let sales = [
+            SalesRecord(saleID: 1, region: "West", amount: 1000, quantity: 5),
+            SalesRecord(saleID: 2, region: "West", amount: 2000, quantity: 10),  // Initial MAX
+            SalesRecord(saleID: 3, region: "West", amount: 1500, quantity: 8),
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Verify initial MAX
+        let initialMax = try await store.evaluateAggregate(
+            .max(indexName: "amount_max_by_region"),
+            groupBy: ["West"]
+        )
+        #expect(initialMax == 2000)
+
+        // Delete the maximum record
+        try await store.delete(by: 2)
+
+        // Verify new MAX
+        let newMax = try await store.evaluateAggregate(
+            .max(indexName: "amount_max_by_region"),
+            groupBy: ["West"]
+        )
+        #expect(newMax == 1500, "Maximum should update to 1500 after deletion")
+    }
+
+    @Test("MIN/MAX with Int64 type")
+    func testMinMaxWithInt64Type() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert test data with quantity (Int64 type)
+        let sales = [
+            SalesRecord(saleID: 1, region: "North", amount: 1000, quantity: 5),
+            SalesRecord(saleID: 2, region: "North", amount: 1500, quantity: 2),   // MIN quantity
+            SalesRecord(saleID: 3, region: "North", amount: 2000, quantity: 15),  // MAX quantity
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Query MIN quantity
+        let minQuantity = try await store.evaluateAggregate(
+            .min(indexName: "quantity_min_by_region"),
+            groupBy: ["North"]
+        )
+        #expect(minQuantity == 2, "Minimum quantity should be 2")
+
+        // Query MAX quantity
+        let maxQuantity = try await store.evaluateAggregate(
+            .max(indexName: "quantity_max_by_region"),
+            groupBy: ["North"]
+        )
+        #expect(maxQuantity == 15, "Maximum quantity should be 15")
+    }
+
+    @Test("MIN/MAX throws error for empty group")
+    func testMinMaxEmptyGroup() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Don't insert any data for "Empty" region
+
+        // Query MIN for non-existent region should throw
+        await #expect(throws: RecordLayerError.self) {
+            try await store.evaluateAggregate(
+                .min(indexName: "amount_min_by_region"),
+                groupBy: ["Empty"]
+            )
+        }
+
+        // Query MAX for non-existent region should throw
+        await #expect(throws: RecordLayerError.self) {
+            try await store.evaluateAggregate(
+                .max(indexName: "amount_max_by_region"),
+                groupBy: ["Empty"]
+            )
+        }
+    }
+
+    @Test("MIN/MAX with multiple regions")
+    func testMinMaxMultipleRegions() async throws {
+        let (store, _) = try await setupTestEnvironment()
+
+        // Insert data for 3 regions
+        let sales = [
+            SalesRecord(saleID: 1, region: "North", amount: 100, quantity: 1),   // MIN North
+            SalesRecord(saleID: 2, region: "North", amount: 300, quantity: 3),   // MAX North
+            SalesRecord(saleID: 3, region: "South", amount: 200, quantity: 2),   // MIN/MAX South
+            SalesRecord(saleID: 4, region: "Central", amount: 50, quantity: 5),  // MIN Central
+            SalesRecord(saleID: 5, region: "Central", amount: 400, quantity: 4), // MAX Central
+        ]
+
+        for sale in sales {
+            try await store.save(sale)
+        }
+
+        // Verify MIN for each region
+        #expect(try await store.evaluateAggregate(.min(indexName: "amount_min_by_region"), groupBy: ["North"]) == 100)
+        #expect(try await store.evaluateAggregate(.min(indexName: "amount_min_by_region"), groupBy: ["South"]) == 200)
+        #expect(try await store.evaluateAggregate(.min(indexName: "amount_min_by_region"), groupBy: ["Central"]) == 50)
+
+        // Verify MAX for each region
+        #expect(try await store.evaluateAggregate(.max(indexName: "amount_max_by_region"), groupBy: ["North"]) == 300)
+        #expect(try await store.evaluateAggregate(.max(indexName: "amount_max_by_region"), groupBy: ["South"]) == 200)
+        #expect(try await store.evaluateAggregate(.max(indexName: "amount_max_by_region"), groupBy: ["Central"]) == 400)
+    }
+}
