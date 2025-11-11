@@ -54,16 +54,31 @@ public struct TypedIntersectionPlan<Record: Sendable>: TypedQueryPlan {
         context: RecordContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
-        // Execute all child plans
-        var cursors: [AnyTypedRecordCursor<Record>] = []
-        for childPlan in childPlans {
-            let cursor = try await childPlan.execute(
-                subspace: subspace,
-                recordAccess: recordAccess,
-                context: context,
-                snapshot: snapshot
-            )
-            cursors.append(cursor)
+        // Execute all child plans concurrently
+        let cursors: [AnyTypedRecordCursor<Record>] = try await withThrowingTaskGroup(
+            of: (Int, AnyTypedRecordCursor<Record>).self
+        ) { group in
+            // Schedule all child plans
+            for (index, childPlan) in childPlans.enumerated() {
+                group.addTask {
+                    let cursor = try await childPlan.execute(
+                        subspace: subspace,
+                        recordAccess: recordAccess,
+                        context: context,
+                        snapshot: snapshot
+                    )
+                    return (index, cursor)
+                }
+            }
+
+            // Collect results in order
+            var results: [(Int, AnyTypedRecordCursor<Record>)] = []
+            for try await result in group {
+                results.append(result)
+            }
+
+            // Sort by index to preserve plan order
+            return results.sorted(by: { $0.0 < $1.0 }).map { $0.1 }
         }
 
         // Return intersection cursor

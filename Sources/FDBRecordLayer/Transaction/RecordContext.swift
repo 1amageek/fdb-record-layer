@@ -19,6 +19,12 @@ public final class RecordContext: Sendable {
     /// Metadata storage for context-specific data
     private let metadata: Mutex<[String: Any]>
 
+    /// Pre-commit hooks (executed before transaction commits)
+    private let preCommitHooks: Mutex<[any CommitHook]>
+
+    /// Post-commit hooks (executed after transaction commits)
+    private let postCommitHooks: Mutex<[@Sendable () async throws -> Void]>
+
     /// Whether this context has been closed (committed or cancelled)
     public var closed: Bool {
         return isClosed.withLock { $0 }
@@ -32,6 +38,8 @@ public final class RecordContext: Sendable {
         self.transaction = transaction
         self.isClosed = Mutex(false)
         self.metadata = Mutex([:])
+        self.preCommitHooks = Mutex([])
+        self.postCommitHooks = Mutex([])
     }
 
     /// Create a new context with a new transaction
@@ -40,6 +48,24 @@ public final class RecordContext: Sendable {
     public convenience init(database: any DatabaseProtocol) throws {
         let transaction = try database.createTransaction()
         self.init(transaction: transaction)
+    }
+
+    // MARK: - Commit Hooks
+
+    /// Add a pre-commit hook that executes before transaction commits
+    /// - Parameter hook: The hook to execute
+    public func addPreCommitHook(_ hook: any CommitHook) {
+        preCommitHooks.withLock { hooks in
+            hooks.append(hook)
+        }
+    }
+
+    /// Add a post-commit hook that executes after transaction commits successfully
+    /// - Parameter closure: The closure to execute after commit
+    public func addPostCommitHook(_ closure: @escaping @Sendable () async throws -> Void) {
+        postCommitHooks.withLock { hooks in
+            hooks.append(closure)
+        }
     }
 
     // MARK: - Transaction Operations
@@ -54,9 +80,23 @@ public final class RecordContext: Sendable {
             throw RecordLayerError.contextAlreadyClosed
         }
 
+        // Execute pre-commit hooks
+        let preHooks = preCommitHooks.withLock { Array($0) }
+        for hook in preHooks {
+            try await hook.execute(context: self)
+        }
+
+        // Commit transaction
         _ = try await transaction.commit()
 
+        // Mark as closed
         isClosed.withLock { $0 = true }
+
+        // Execute post-commit hooks
+        let postHooks = postCommitHooks.withLock { Array($0) }
+        for hook in postHooks {
+            try await hook()
+        }
     }
 
     /// Cancel the transaction

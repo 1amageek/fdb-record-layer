@@ -287,14 +287,40 @@ public struct FilteredTypedCursor<C: TypedRecordCursor>: TypedRecordCursor {
 // MARK: - Type Erased Cursor
 
 /// Type-erased cursor wrapper
-public struct AnyTypedRecordCursor<Record: Sendable>: TypedRecordCursor {
+public struct AnyTypedRecordCursor<Record: Sendable>: TypedRecordCursor, Sendable {
     public typealias Element = Record
 
-    private let _makeAsyncIterator: () -> AnyAsyncIterator
+    /// Heap-allocated cursor wrapper
+    ///
+    /// Marked `@unchecked Sendable` because:
+    /// - Cursor usage follows single-owner pattern (no concurrent access to makeAsyncIterator)
+    /// - Each iterator instance is used from a single task
+    /// - AsyncIteratorProtocol contract ensures no concurrent calls to next()
+    private final class CursorBox<C: TypedRecordCursor>: @unchecked Sendable where C.Record == Record {
+        var cursor: C
+
+        init(_ cursor: C) {
+            self.cursor = cursor
+        }
+
+        func makeAsyncIterator() -> C.AsyncIterator {
+            return cursor.makeAsyncIterator()
+        }
+    }
+
+    /// Type-erased box holder
+    private struct BoxHolder: @unchecked Sendable {
+        let value: Any
+    }
+
+    private let box: BoxHolder  // Type-erased CursorBox
+    private let _makeAsyncIterator: @Sendable () -> AnyAsyncIterator
 
     public init<C: TypedRecordCursor>(_ cursor: C) where C.Record == Record {
+        let cursorBox = CursorBox(cursor)
+        self.box = BoxHolder(value: cursorBox)
         self._makeAsyncIterator = {
-            AnyAsyncIterator(cursor.makeAsyncIterator())
+            AnyAsyncIterator(cursorBox.makeAsyncIterator())
         }
     }
 
@@ -302,13 +328,37 @@ public struct AnyTypedRecordCursor<Record: Sendable>: TypedRecordCursor {
         return _makeAsyncIterator()
     }
 
+    /// Type-erased async iterator
+    ///
+    /// Uses a final class wrapper to hold the mutable iterator state on the heap.
+    /// This allows the closure to capture a reference instead of a mutable value,
+    /// satisfying Swift 6 concurrency requirements.
+    ///
+    /// **Concurrency Safety:**
+    /// - AsyncIteratorProtocol contract guarantees single-threaded access to `next()`
+    /// - No concurrent calls to `next()` on the same iterator instance
+    /// - The wrapper class is marked `@unchecked Sendable` because the protocol
+    ///   contract ensures thread safety, even though the class contains mutable state
     public struct AnyAsyncIterator: AsyncIteratorProtocol {
-        private var _next: () async throws -> Record?
+        /// Heap-allocated iterator wrapper
+        private final class IteratorBox<I: AsyncIteratorProtocol>: @unchecked Sendable where I.Element == Record {
+            var iterator: I
+
+            init(_ iterator: I) {
+                self.iterator = iterator
+            }
+
+            func next() async throws -> Record? {
+                return try await iterator.next()
+            }
+        }
+
+        private let _next: () async throws -> Record?
 
         init<I: AsyncIteratorProtocol>(_ iterator: I) where I.Element == Record {
-            var iterator = iterator
+            let box = IteratorBox(iterator)
             self._next = {
-                try await iterator.next()
+                try await box.next()
             }
         }
 

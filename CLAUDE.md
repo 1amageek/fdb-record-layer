@@ -1,5 +1,7 @@
 # FoundationDB Record Layer 開発ガイド
 
+テストはSwiftTestingで実装してください。
+
 ## 目次
 
 ### Part 1: FoundationDB基礎

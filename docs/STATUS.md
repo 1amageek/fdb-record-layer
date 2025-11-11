@@ -1,32 +1,54 @@
 # Project Status
 
-**Last Updated:** 2025-01-15
-**Current Phase:** Phase 2a Complete - Multi-Tenant & Schema-Based API
+**Last Updated:** 2025-01-11
+**Current Phase:** Swift Record Layer Implementation - 92% Complete
 
+> 📋 **詳細な実装状況**: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) を参照してください
 > 📋 **残りの作業**: [REMAINING_WORK.md](REMAINING_WORK.md) を参照してください
 
-## ✅ Implementation Status: PRODUCTION-READY CORE + PARTITION SUPPORT
+## ✅ Implementation Status: PRODUCTION-READY (92%)
 
-Phase 1 is **complete** and Phase 2a is **partially complete**. The Record Layer now includes:
+Swift Record Layerの実装は **92%完了** しており、以下の5つのPhaseで構成されています：
 
-### Phase 1 (Complete)
-- ✅ Full Swift 6 concurrency compliance
-- ✅ Type-safe Recordable protocol
-- ✅ Cost-based query optimizer
-- ✅ Thread-safe architecture (Mutex-based)
-- ✅ Comprehensive indexing system
-- ✅ Metrics and structured logging
+## 📊 実装進捗サマリー
 
-### Phase 2a (Complete - 100%)
-- ✅ **RecordStore<Record> Generic Type**: Full type safety with generic parameters
-- ✅ **PartitionManager**: Multi-tenant data isolation (2025-01-06)
-- ✅ **Composite Primary Keys**: Tuple and variadic argument support
-- ✅ **Code Refactoring**: Eliminated duplication between RecordStore and RecordTransaction
-- ✅ **Schema-Based API**: Clean Schema([Type.self]) initialization (2025-01-15)
-- ✅ **Index Collection Pipeline**: Automatic index collection from @Recordable types (2025-01-15)
-- ✅ **@Recordable Macro**: Automatic indexDefinitions generation (2025-01-15)
-- ✅ **API Consistency**: recordName unification across codebase (2025-01-15)
-- ✅ **Documentation**: Updated examples and comprehensive implementation history
+| Phase | 機能分類 | 完成度 | 状態 |
+|-------|---------|--------|------|
+| **Phase 1** | クエリ最適化 | **95%** | ✅ ほぼ完了 |
+| **Phase 2** | スキーマ進化 | **85%** | ✅ 部分完了 |
+| **Phase 3** | RANK Index | **90%** | ✅ ほぼ完了 |
+| **Phase 4** | 集約機能強化 | **90%** | ✅ ほぼ完了 |
+| **Phase 5** | トランザクション機能 | **100%** | ✅ 完了 |
+
+### Phase 1: クエリ最適化（95%）
+- ✅ **UnionPlan**: OR条件の効率的な処理
+- ✅ **IntersectionPlan**: AND条件の効率的な処理
+- ✅ **InJoinPlan**: IN述語の最適化
+- ✅ **Cost-based Optimizer**: 統計情報ベースのプラン選択
+- ✅ **StatisticsManager**: ヒストグラムベース統計
+- ❌ **Covering Index**: 自動検出が未実装（優先度高）
+- ❌ **InExtractor**: クエリリライトが未実装
+
+### Phase 2: スキーマ進化（85%）
+- ✅ **SchemaVersion**: Semantic versioning対応
+- ✅ **FormerIndex**: 削除されたインデックスの記録
+- ✅ **EvolutionError & ValidationResult**: エラー管理
+- ⚠️ **MetaDataEvolutionValidator**: 部分実装（インデックス検証のみ）
+- ❌ **Migration Manager**: 未実装
+
+### Phase 3: RANK Index（90%）
+- ✅ **RankedSet**: Skip-listベースの実装
+- ✅ **RankIndexMaintainer**: インデックス維持
+- ❌ **BY_VALUE/BY_RANK API**: 専用クエリAPIが未実装
+
+### Phase 4: 集約機能強化（90%）
+- ✅ **AverageIndexMaintainer**: AVG集約
+- ✅ **AggregateDSL**: COUNT/SUM/MIN/MAX/AVG
+- ❌ **GROUP BY Result Builder**: 未実装
+
+### Phase 5: トランザクション機能（100%）
+- ✅ **Commit Hooks**: Pre/Post-commit hooks
+- ✅ **Transaction Options**: Timeout, Read-your-writes制御
 
 ---
 

@@ -281,3 +281,81 @@ extension AggregateFunction where Self == MaxFunction {
         return MaxFunction(indexName: indexName)
     }
 }
+
+// MARK: - Average Function
+
+/// Average aggregate function
+///
+/// Returns the average of values for a specific grouping.
+///
+/// **Note:** Requires an AVERAGE index to be defined, which maintains both
+/// sum and count.
+///
+/// **Index Structure:**
+/// ```swift
+/// let avgIndex = Index(
+///     name: "salary_avg_by_dept",
+///     type: .average,
+///     rootExpression: ConcatenateKeyExpression(children: [
+///         FieldKeyExpression(fieldName: "department"),  // grouping
+///         FieldKeyExpression(fieldName: "salary")       // averaged value
+///     ])
+/// )
+/// ```
+///
+/// **Example:**
+/// ```swift
+/// let avgSalary = try await store.evaluateAggregate(
+///     .average(indexName: "salary_avg_by_dept"),
+///     recordType: "Employee",
+///     groupBy: ["Engineering"]
+/// )
+/// print("Average Engineering salary: \(avgSalary)")
+/// ```
+public struct AverageFunction: AggregateFunction {
+    public typealias Result = Double?
+
+    public let indexName: String
+    public let aggregateType: AggregateType = .avg
+
+    public init(indexName: String) {
+        self.indexName = indexName
+    }
+
+    public func evaluate(
+        index: Index,
+        subspace: Subspace,
+        groupBy: [any TupleElement],
+        transaction: any TransactionProtocol
+    ) async throws -> Double? {
+        let groupingTuple = TupleHelpers.toTuple(groupBy)
+        let sumKey = subspace.pack(Tuple([groupingTuple, "sum"]))
+        let countKey = subspace.pack(Tuple([groupingTuple, "count"]))
+
+        guard let sumBytes = try await transaction.getValue(for: sumKey),
+              let countBytes = try await transaction.getValue(for: countKey) else {
+            return nil
+        }
+
+        let sum = TupleHelpers.bytesToInt64(sumBytes)
+        let count = TupleHelpers.bytesToInt64(countBytes)
+
+        guard count > 0 else {
+            return nil
+        }
+
+        return Double(sum) / Double(count)
+    }
+}
+
+extension AggregateFunction where Self == AverageFunction {
+    /// Create an average aggregate function
+    public static func average(indexName: String) -> AverageFunction {
+        return AverageFunction(indexName: indexName)
+    }
+
+    /// Create an average aggregate function (alias)
+    public static func avg(indexName: String) -> AverageFunction {
+        return AverageFunction(indexName: indexName)
+    }
+}
