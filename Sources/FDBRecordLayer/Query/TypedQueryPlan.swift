@@ -74,6 +74,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
     public let endValues: [any TupleElement]
     public let filter: (any TypedQueryComponent<Record>)?
     public let primaryKeyLength: Int
+    public let recordName: String
 
     public init(
         indexName: String,
@@ -81,7 +82,8 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         beginValues: [any TupleElement],
         endValues: [any TupleElement],
         filter: (any TypedQueryComponent<Record>)?,
-        primaryKeyLength: Int
+        primaryKeyLength: Int,
+        recordName: String
     ) {
         self.indexName = indexName
         self.indexSubspaceTupleKey = indexSubspaceTupleKey
@@ -89,6 +91,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         self.endValues = endValues
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
+        self.recordName = recordName
     }
 
     public func execute(
@@ -105,16 +108,54 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         let beginTuple = TupleHelpers.toTuple(beginValues)
         let endTuple = TupleHelpers.toTuple(endValues)
 
-        // CRITICAL FIX: Use Subspace.range() to get correct prefix successors
-        // For equality queries (beginTuple == endTuple), we need:
-        //   beginKey = <prefix><tuple><0x00>
-        //   endKey   = <prefix><tuple><0xFF>
-        // This ensures all index entries <prefix><tuple><primaryKey> are included
-        let beginNestedSubspace = indexSubspace.subspace(beginTuple)
-        let endNestedSubspace = indexSubspace.subspace(endTuple)
+        // CRITICAL FIX: Pack the tuple directly without nesting
+        // Index keys are stored as: <indexSubspace><indexValue><primaryKey>
+        // Example: ...simple_category\x00 + \x02A\x00 + \x15\x01
+        //
+        // For equality queries (beginValues == endValues), we need:
+        //   beginKey = <prefix><tuple>     (inclusive)
+        //   endKey   = <prefix><tuple>\xFF (exclusive to include all primary keys)
+        // This ensures all index entries with matching index values are included
+        //
+        // For range queries (beginValues != endValues), we handle:
+        //   lessThan/lessThanOrEquals: beginValues empty, endValues has value
+        //   greaterThan/greaterThanOrEquals: beginValues has value, endValues empty
+        //   Between: both have values
+        //
+        // For open-ended ranges (empty array), use subspace boundaries:
+        //   Empty beginValues → use indexSubspace.prefix (start of subspace)
+        //   Empty endValues → use strinc(prefix) (end of subspace)
+        //
+        // WARNING: Do NOT use indexSubspace.subspace(tuple) as it creates nested tuples
+        // with the \x05 marker, which won't match the flat encoding used by IndexManager
+        let beginKey: FDB.Bytes
+        if beginValues.isEmpty {
+            // Open lower bound: start from beginning of index
+            let (rangeBegin, _) = indexSubspace.range()
+            beginKey = rangeBegin
+        } else {
+            beginKey = indexSubspace.pack(beginTuple)
+        }
 
-        let (beginKey, _) = beginNestedSubspace.range()
-        let (_, endKey) = endNestedSubspace.range()
+        var endKey: FDB.Bytes
+        if endValues.isEmpty {
+            // Open upper bound: use range end (strinc of prefix)
+            let (_, rangeEnd) = indexSubspace.range()
+            endKey = rangeEnd
+        } else {
+            endKey = indexSubspace.pack(endTuple)
+
+            // Only append 0xFF for equality queries (beginValues == endValues)
+            // For range queries, the endKey is the exact boundary (exclusive)
+            //
+            // IMPORTANT: Compare packed bytes to ensure exact equality including types
+            // (String(describing:) comparison would incorrectly treat Int64(100) == Double(100))
+            let isEqualityQuery = beginKey == endKey
+
+            if isEqualityQuery {
+                endKey.append(0xFF)  // Append successor byte for equality queries
+            }
+        }
 
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(beginKey),
@@ -127,11 +168,13 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
 
         let cursor = IndexScanTypedCursor(
             indexSequence: sequence,
+            indexSubspace: indexSubspace,
             recordSubspace: recordSubspace,
             recordAccess: recordAccess,
             transaction: transaction,
             filter: filter,
             primaryKeyLength: primaryKeyLength,
+            recordName: recordName,
             snapshot: snapshot
         )
 

@@ -83,38 +83,46 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
     public typealias Element = Record
 
     private let indexSequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>
+    private let indexSubspace: Subspace
     private let recordSubspace: Subspace
     private let recordAccess: any RecordAccess<Record>
     private let transaction: any TransactionProtocol
     private let filter: (any TypedQueryComponent<Record>)?
     private let primaryKeyLength: Int
+    private let recordName: String
     private let snapshot: Bool
 
     init(
         indexSequence: any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error>,
+        indexSubspace: Subspace,
         recordSubspace: Subspace,
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol,
         filter: (any TypedQueryComponent<Record>)?,
         primaryKeyLength: Int,
+        recordName: String,
         snapshot: Bool
     ) {
         self.indexSequence = indexSequence
+        self.indexSubspace = indexSubspace
         self.recordSubspace = recordSubspace
         self.recordAccess = recordAccess
         self.transaction = transaction
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
+        self.recordName = recordName
         self.snapshot = snapshot
     }
 
     public struct AsyncIterator: AsyncIteratorProtocol {
         var iterator: any AsyncIteratorProtocol<(FDB.Bytes, FDB.Bytes), Error>
+        let indexSubspace: Subspace
         let recordSubspace: Subspace
         let recordAccess: any RecordAccess<Record>
         let transaction: any TransactionProtocol
         let filter: (any TypedQueryComponent<Record>)?
         let primaryKeyLength: Int
+        let recordName: String
         let snapshot: Bool
 
         public mutating func next() async throws -> Record? {
@@ -128,8 +136,11 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
                 // Index key format: [index_subspace_prefix][indexed_values...][primary_key...]
                 // We need to extract the last primaryKeyLength elements as the primary key
 
-                // Decode the full index key
-                let elements = try Tuple.unpack(from: indexKey)
+                // CRITICAL FIX: Use indexSubspace.unpack() to remove the prefix
+                // indexKey contains the full key with subspace prefix
+                // We need to unpack it relative to indexSubspace to get the tuple elements
+                let indexTuple = try indexSubspace.unpack(indexKey)
+                let elements = Array(0..<indexTuple.count).compactMap { indexTuple[$0] }
 
                 // Extract primary key elements (last N elements)
                 guard elements.count >= primaryKeyLength else {
@@ -139,8 +150,13 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
                 let primaryKeyElements = Array(elements.suffix(primaryKeyLength))
                 let primaryKeyTuple = TupleHelpers.toTuple(primaryKeyElements)
 
-                // Fetch the actual record
-                let recordKey = recordSubspace.pack(primaryKeyTuple)
+                // CRITICAL FIX: RecordStore saves records with record type name in the key
+                // Key structure: <R-subspace> + <recordName> + <nested-primaryKey>
+                // Must match RecordStore.saveInternal() key construction:
+                //   recordSubspace.subspace(Record.recordName).subspace(primaryKey).pack(Tuple())
+                let effectiveSubspace = recordSubspace.subspace(recordName)
+                let recordKey = effectiveSubspace.subspace(primaryKeyTuple).pack(Tuple())
+
                 guard let recordBytes = try await transaction.getValue(for: recordKey, snapshot: snapshot) else {
                     continue
                 }
@@ -163,11 +179,13 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
         let iter = indexSequence.makeAsyncIterator()
         return AsyncIterator(
             iterator: iter,
+            indexSubspace: indexSubspace,
             recordSubspace: recordSubspace,
             recordAccess: recordAccess,
             transaction: transaction,
             filter: filter,
             primaryKeyLength: primaryKeyLength,
+            recordName: recordName,
             snapshot: snapshot
         )
     }

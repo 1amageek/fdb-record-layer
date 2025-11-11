@@ -330,7 +330,7 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             let selectivity: Double
 
             // Extract index name from plan (if it's an index scan)
-            if let indexPlan = plan as? TypedIndexScanPlan<Record> {
+            if let _ = plan as? TypedIndexScanPlan<Record> {
                 // Use statistics to estimate selectivity
                 selectivity = try await statisticsManager.estimateSelectivity(
                     filter: filter,
@@ -684,7 +684,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 beginValues: beginValues,
                 endValues: endValues,
                 filter: nil,  // Filter handled by index
-                primaryKeyLength: primaryKeyLength
+                primaryKeyLength: primaryKeyLength,
+                recordName: recordName
             )
 
             // No remaining filter - fully matched by index
@@ -711,7 +712,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 beginValues: beginValues,
                 endValues: endValues,
                 filter: nil,  // Filter handled by index
-                primaryKeyLength: primaryKeyLength
+                primaryKeyLength: primaryKeyLength,
+                recordName: recordName
             )
 
             // No remaining filter - fully matched by index
@@ -836,7 +838,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             beginValues: beginValues,
             endValues: endValues,
             filter: nil,  // Filter handled by remainingFilter
-            primaryKeyLength: primaryKeyLength
+            primaryKeyLength: primaryKeyLength,
+                recordName: recordName
         )
 
         return IndexMatchResult(plan: plan, remainingFilter: remainingFilter)
@@ -844,9 +847,9 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
     /// Generate key range for a field filter
     ///
-    /// FoundationDB Range API:
+    /// FoundationDB Range API (used by TypedQueryPlan):
     /// - beginSelector: .firstGreaterOrEqual(beginKey) → beginKey or greater (inclusive)
-    /// - endSelector: .firstGreaterThan(endKey) → greater than endKey (exclusive)
+    /// - endSelector: .firstGreaterOrEqual(endKey) → endKey or greater (endKey itself is exclusive)
     /// Result: Half-open interval [beginKey, endKey)
     ///
     /// For <= and >: Adjust values to correctly express inclusive/exclusive
@@ -858,21 +861,21 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
     ) -> ([any TupleElement], [any TupleElement])? {
         switch fieldFilter.comparison {
         case .equals:
-            // [value, value] with .firstGreaterOrEqual and .firstGreaterThan
-            // → Includes only value
+            // [value, value] with .firstGreaterOrEqual(begin) and .firstGreaterOrEqual(end)
+            // → Includes only value (TypedQueryPlan appends 0xFF to endKey for equality)
             return ([fieldFilter.value], [fieldFilter.value])
 
         case .notEquals:
             return nil // Cannot optimize with index scan
 
         case .lessThan:
-            // [min, value) with empty begin and .firstGreaterThan(value)
-            // → Does not include value
+            // [min, value) with empty begin and .firstGreaterOrEqual(value)
+            // → Does not include value (endKey is exclusive)
             return ([], [fieldFilter.value])
 
         case .lessThanOrEquals:
             // To achieve [min, value], set endKey to the next value after value
-            // .firstGreaterThan(nextValue) → Includes value
+            // .firstGreaterOrEqual(nextValue) → Includes value (nextValue is exclusive)
             //
             // If nextValue cannot be computed (e.g., value == Int64.max),
             // return nil to fall back to full scan
@@ -981,7 +984,8 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 beginValues: [fieldFilter.value],
                 endValues: [fieldFilter.value],
                 filter: nil,  // No additional filtering needed
-                primaryKeyLength: getPrimaryKeyLength()
+                primaryKeyLength: getPrimaryKeyLength(),
+                recordName: recordName
             )
         }
 

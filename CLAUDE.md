@@ -59,9 +59,41 @@ let value = try await transaction.getValue(for: key, snapshot: true)
 ### 標準レイヤー
 
 **Tuple Layer**: 型安全なエンコーディング、辞書順保持
+
 ```swift
-let key = Tuple("California", "Los Angeles")
-let packed = key.pack()  // バイト列に変換
+// Tuple作成
+let tuple = Tuple("California", "Los Angeles", 123)
+
+// パック（エンコード）
+let packed = tuple.pack()  // FDB.Bytes
+
+// アンパック（デコード）
+let elements = try Tuple.unpack(from: packed)  // [any TupleElement]
+
+// Tuple構造体の使い方
+let tuple = Tuple("A", "B", 123)
+tuple.count  // 3
+
+// 要素アクセス（subscript）
+for i in 0..<tuple.count {
+    if let element = tuple[i] {
+        if let str = element as? String {
+            print("String: \(str)")
+        } else if let int = element as? Int64 {
+            print("Int64: \(int)")
+        }
+    }
+}
+
+// Subspace.unpack()の使い方
+let subspace = Subspace(prefix: [0x01])
+let key = subspace.pack(Tuple("category", 123))
+let unpacked: Tuple = try subspace.unpack(key)  // Tupleを返す
+let category = unpacked[0] as? String  // subscriptでアクセス
+let id = unpacked[1] as? Int64
+
+// 注意: Tuple.elements は internal なので外部からアクセス不可
+// 必ず subscript または count を使用
 ```
 
 **Subspace Layer**: 名前空間の分離
@@ -96,6 +128,321 @@ try transaction.setOption(to: withUnsafeBytes(of: Int64(50_000_000).littleEndian
 try transaction.setOption(to: withUnsafeBytes(of: Int64(3000).littleEndian) { Array($0) },
                           forOption: .timeout)  // 3秒
 ```
+
+### ⚠️ CRITICAL: Subspace.pack() vs Subspace.subspace() の設計ガイドライン
+
+> **重要**: この違いは**型システムで防げません**。開発者が正しいパターンを理解し、コードレビューで検証する必要があります。
+
+#### 問題の本質
+
+FoundationDBのSubspace APIには**2つの似たメソッド**があり、どちらもコンパイルが通りますが、**異なるキーエンコーディング**を生成します：
+
+| メソッド | エンコーディング | 用途 |
+|---------|----------------|------|
+| `subspace.pack(tuple)` | **フラット** | インデックスキー、効率的なRange読み取り |
+| `subspace.subspace(tuple)` | **ネスト**（\x05マーカー付き） | 階層的な論理構造、Directory Layer代替 |
+
+**誤用の影響**:
+- インデックススキャンが0件を返す（最も頻発するバグ）
+- 実行時にしか検出できない
+- テストで気づきにくい（データが少ない場合）
+
+---
+
+#### エンコーディングの違い（詳細）
+
+```swift
+let subspace = Subspace(prefix: [0x01])
+let tuple = Tuple("category", 123)
+
+// パターン1: pack() - フラットエンコーディング
+let flatKey = subspace.pack(tuple)
+// 結果: [0x01, 0x02, 'c','a','t','e','g','o','r','y', 0x00, 0x15, 0x01]
+//       ^prefix  ^String marker  ^String data      ^end  ^Int64  ^value
+
+// パターン2: subspace() - ネストエンコーディング
+let nestedSubspace = subspace.subspace(tuple)
+let nestedKey = nestedSubspace.pack(Tuple())
+// 結果: [0x01, 0x05, 0x02, 'c','a','t','e','g','o','r','y', 0x00, 0x15, 0x01, 0x00, 0x00]
+//       ^prefix  ^Nested marker  ^Tuple data                         ^end   ^empty tuple
+```
+
+**FoundationDB Tuple型マーカー**:
+- `\x00`: Null / 終端
+- `\x02`: String
+- `\x05`: **Nested Tuple（重要！）**
+- `\x15`: Int64（0の場合はintZero + value）
+
+---
+
+#### なぜインデックスキーはフラットであるべきか
+
+**FoundationDBフォーラムの知見**（[参考](https://forums.foundationdb.org/t/whats-the-purpose-of-the-directory-layer/677/10)）:
+
+> A.J. Beamon氏: "キーはサブスペースのプレフィックスを共有するが、ディレクトリではサブディレクトリのデータは親から分離される"
+
+**インデックスキーの要件**:
+
+1. **効率的なRange読み取り**: インデックス値でソートされ、連続したキー範囲をスキャン
+2. **分散**: 異なるインデックス値が物理的に分散（ホットスポット回避）
+3. **プライマリキーの連結**: `<indexValue><primaryKey>` の自然な順序
+
+**フラットエンコーディングの利点**:
+```
+インデックスキー構造: <indexSubspace><indexValue><primaryKey>
+
+例: category="Electronics", productID=1001
+  キー: ...index_category\x00 + \x02Electronics\x00 + \x15{1001}
+
+Range読み取り: category="Electronics"のすべての製品
+  開始: ...index_category\x00 + \x02Electronics\x00
+  終了: ...index_category\x00 + \x02Electronics\x00\xFF
+  → 自然にソートされた順序で効率的にスキャン
+```
+
+**ネストエンコーディングの問題**:
+```swift
+// ❌ 間違った実装
+let indexSubspace = subspace.subspace("I").subspace("category")
+let categorySubspace = indexSubspace.subspace(Tuple("Electronics"))
+let key = categorySubspace.pack(Tuple(productID))
+
+// 生成されるキー: ...I\x00category\x00\x05\x02Electronics\x00\x00 + \x15{1001}
+//                                      ^^^^^ ← 余計な\x05マーカー
+// → IndexManagerが保存したフラットキーとマッチしない
+```
+
+---
+
+#### レコードキーは階層的であるべき
+
+**RecordStoreの設計意図**:
+
+レコードキーは**論理的なグループ化**を目的としており、ネストエンコーディングが適切です：
+
+```swift
+// RecordStore.saveInternal() の実装
+let recordKey = recordSubspace
+    .subspace(Record.recordName)    // レベル1: レコードタイプ
+    .subspace(primaryKey)            // レベル2: プライマリキー
+    .pack(Tuple())                   // 空のTupleで終端
+
+// 例: User(id=123)
+// キー: <R-prefix> + \x05User\x00 + \x05\x15{123}\x00 + \x00
+//                    ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^   ^^^
+//                    レコードタイプ  プライマリキー      終端
+```
+
+**階層的エンコーディングの利点**:
+1. **レコードタイプごとの分離**: 同じタイプのレコードが論理的にグループ化
+2. **プレフィックススキャン**: 特定タイプのすべてのレコードを効率的に取得
+3. **Directory Layer代替**: 動的ディレクトリ不要の軽量な階層構造
+
+---
+
+#### Java版Record Layerとの比較
+
+Java版も同じSubspace APIを持ちますが、**明確な使い分けパターン**が確立されています：
+
+##### StandardIndexMaintainer（Java版）
+
+```java
+// インデックスキー構築
+public void updateIndexKeys(...) {
+    for (IndexEntry entry : indexEntries) {
+        // ✅ 正しい: pack()を使用（フラット）
+        byte[] key = state.indexSubspace.pack(entry.getKey());
+        tr.set(key, entry.getValue().pack());
+    }
+}
+```
+
+##### RankIndexMaintainer（Java版）
+
+```java
+// グループ化されたランキングインデックス
+Subspace rankSubspace = extraSubspace.subspace(prefix);  // グループ化
+byte[] key = rankSubspace.pack(scoreTuple);              // 最終キー生成
+```
+
+**Java版のルール**:
+- `subspace()`: **論理的な階層構造**の作成（グループ化、Directory代替）
+- `pack()`: **最終的なキー生成**（FoundationDBへの書き込み）
+
+**Swift版が誤用した理由**:
+RankIndexの`subspace(prefix)`パターンを見て、ValueIndexにも適用してしまった。しかしStandardIndexMaintainerの基本は**常にpack()を使用**。
+
+---
+
+#### 型システムで防げない理由
+
+```swift
+// どちらもコンパイルが通る
+let key1 = indexSubspace.pack(tuple)              // ✅ 正しい
+let key2 = indexSubspace.subspace(tuple).pack(Tuple())  // ❌ 間違い、でもコンパイル成功
+
+// 型シグネチャが同じ
+func pack(_ tuple: Tuple) -> FDB.Bytes
+func subspace(_ tuple: Tuple) -> Subspace
+```
+
+**なぜ型で防げないか**:
+1. どちらも有効なAPI（用途が異なるだけ）
+2. 戻り値の型が異なるが、最終的に`FDB.Bytes`になる
+3. Swift型システムでは「どのAPIチェーンを使ったか」を追跡できない
+
+**将来的な改善案**（Optional）:
+```swift
+// 専用のビルダーパターンで型安全性を向上
+protocol IndexKeyBuilder {
+    func buildFlatKey(values: [TupleElement]) -> FDB.Bytes
+}
+
+// subspace()の使用を禁止
+struct FlatIndexKeyBuilder: IndexKeyBuilder {
+    let indexSubspace: Subspace
+
+    func buildFlatKey(values: [TupleElement]) -> FDB.Bytes {
+        return indexSubspace.pack(TupleHelpers.toTuple(values))
+    }
+}
+```
+
+---
+
+#### 設計原則とベストプラクティス
+
+##### ✅ インデックスキー構築の正しいパターン
+
+```swift
+// ValueIndex, CountIndex, SumIndex など
+class GenericValueIndexMaintainer<Record: Sendable>: IndexMaintainer {
+    func buildIndexKey(record: Record, recordAccess: any RecordAccess<Record>) throws -> FDB.Bytes {
+        let indexedValues = try recordAccess.extractIndexValues(...)
+        let primaryKeyValues = recordAccess.extractPrimaryKey(...)
+        let allValues = indexedValues + primaryKeyValues
+
+        // ✅ MUST: pack()を使用（フラット）
+        return subspace.pack(TupleHelpers.toTuple(allValues))
+
+        // ❌ NEVER: subspace()を使用しない
+        // return subspace.subspace(TupleHelpers.toTuple(allValues)).pack(Tuple())
+    }
+}
+```
+
+```swift
+// TypedIndexScanPlan
+func execute(...) async throws -> AnyTypedRecordCursor<Record> {
+    let indexSubspace = subspace.subspace("I").subspace(indexName)
+
+    // ✅ MUST: pack()を使用
+    let beginKey = indexSubspace.pack(beginTuple)
+    var endKey = indexSubspace.pack(endTuple)
+
+    // 等価クエリの場合のみ0xFFを追加
+    if beginKey == endKey {
+        endKey.append(0xFF)
+    }
+}
+```
+
+##### ✅ レコードキー構築の正しいパターン
+
+```swift
+// RecordStore
+func saveInternal(_ record: Record, context: RecordContext) async throws {
+    let primaryKey = recordAccess.extractPrimaryKey(from: record)
+
+    // ✅ MUST: ネストされたsubspace()を使用
+    let effectiveSubspace = recordSubspace.subspace(Record.recordName)
+    let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
+
+    // ❌ NEVER: フラットpack()を使用しない
+    // let key = recordSubspace.pack(Tuple(Record.recordName, primaryKey))
+}
+```
+
+```swift
+// IndexScanTypedCursor
+func next() async throws -> Record? {
+    // インデックスキーからプライマリキーを抽出
+    let primaryKeyTuple = // ...
+
+    // ✅ MUST: RecordStoreと同じパターン
+    let effectiveSubspace = recordSubspace.subspace(recordName)
+    let recordKey = effectiveSubspace.subspace(primaryKeyTuple).pack(Tuple())
+}
+```
+
+---
+
+#### コードレビューチェックリスト
+
+**インデックス関連コード**:
+
+- [ ] `IndexMaintainer`実装でインデックスキー構築に`subspace.pack(tuple)`を使用しているか？
+- [ ] `TypedQueryPlan`実装でインデックススキャンに`indexSubspace.pack(tuple)`を使用しているか？
+- [ ] `subspace.subspace(tuple)`を使っている場合、本当に階層構造が必要か確認したか？
+- [ ] 等価クエリで0xFF追加、範囲クエリでは追加しないパターンを守っているか？
+- [ ] オープンエンド範囲（empty beginValues/endValues）で`subspace.range()`を使用しているか？
+
+**レコード関連コード**:
+
+- [ ] `RecordStore.save*()`でレコードキー構築に`subspace().subspace().pack(Tuple())`を使用しているか？
+- [ ] `IndexScanTypedCursor`でレコードキー生成がRecordStoreと一致しているか？
+- [ ] レコードタイプ名（recordName）をキーに含めているか？
+
+**デバッグ時**:
+
+- [ ] インデックススキャンが0件を返す場合、まずキーエンコーディングを確認したか？
+- [ ] 実際のキーを16進数で出力して\x05マーカーの有無を確認したか？
+- [ ] `IndexManager`と`TypedQueryPlan`で同じエンコーディングパターンを使用しているか確認したか？
+
+---
+
+#### デバッグ時の確認方法
+
+```swift
+// 実際に保存されているキーを16進数で確認
+print("Key hex: \(key.map { String(format: "%02x", $0) }.joined(separator: " "))")
+
+// 期待: ...02 45 6c 65 63 74 72 6f 6e 69 63 73 00 15 03 e9
+//       ^String "Electronics"                   ^Int64 1001
+
+// もし\x05が含まれていたら、ネストエンコーディングが使われている（誤り）
+// 例: ...05 02 45 ... ← この05は間違い
+
+// Tupleをアンパックして内容確認
+if let unpacked = try? indexSubspace.unpack(key) {
+    print("Tuple count: \(unpacked.count)")
+    for i in 0..<unpacked.count {
+        if let element = unpacked[i] {
+            if let str = element as? String {
+                print("[\(i)]: String(\"\(str)\")")
+            } else if let int = element as? Int64 {
+                print("[\(i)]: Int64(\(int))")
+            }
+        }
+    }
+}
+```
+
+---
+
+#### まとめ
+
+| 用途 | パターン | エンコーディング | 理由 |
+|------|---------|----------------|------|
+| **インデックスキー** | `subspace.pack(tuple)` | フラット | Range効率、分散、自然なソート順 |
+| **レコードキー** | `subspace().subspace().pack(Tuple())` | ネスト | 論理的グループ化、階層構造 |
+| **Directory代替** | `subspace(tuple)` | ネスト | 階層的な名前空間管理 |
+
+**重要**:
+- この違いは型システムで強制できない
+- コードレビューとドキュメントで品質を保証
+- Java版StandardIndexMaintainerのパターンを常に参照
+- インデックススキャンが0件を返したら、まずエンコーディングを疑う
 
 ### データモデリングパターン
 
