@@ -258,7 +258,21 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         }
 
         // Generate single-index plans
-        let indexPlans = try await generateSingleIndexPlans(query)
+        var indexPlans = try await generateSingleIndexPlans(query)
+
+        // CRITICAL FIX: Use tableStats to prioritize most selective indexes
+        // Sort index plans by estimated selectivity (lower = more selective = better)
+        if let filter = query.filter {
+            indexPlans = try await sortPlansBySelectivity(
+                plans: indexPlans,
+                filter: filter,
+                tableStats: tableStats
+            )
+
+            logger.debug("Sorted index plans by selectivity", metadata: [
+                "count": "\(indexPlans.count)"
+            ])
+        }
 
         // Add index plans (respecting budget)
         for plan in indexPlans.prefix(config.maxCandidatePlans - 1) {
@@ -273,22 +287,71 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
         }
 
         // Generate multi-index plans (intersection/union) if budget allows
+        // Only generate if we have budget and stats suggest benefit
         if candidates.count < config.maxCandidatePlans {
-            let multiIndexPlans = try await generateMultiIndexPlans(query)
+            // Check if multi-index plans are worth it based on table size
+            let shouldGenerateMultiIndex = tableStats.rowCount > 1000 || candidates.count < 3
 
-            for plan in multiIndexPlans {
-                candidates.append(plan)
+            if shouldGenerateMultiIndex {
+                let multiIndexPlans = try await generateMultiIndexPlans(query)
 
-                if candidates.count >= config.maxCandidatePlans {
-                    logger.debug("Candidate plan budget reached (with multi-index plans)", metadata: [
-                        "count": "\(candidates.count)"
-                    ])
-                    break
+                for plan in multiIndexPlans {
+                    candidates.append(plan)
+
+                    if candidates.count >= config.maxCandidatePlans {
+                        logger.debug("Candidate plan budget reached (with multi-index plans)", metadata: [
+                            "count": "\(candidates.count)"
+                        ])
+                        break
+                    }
                 }
             }
         }
 
         return candidates
+    }
+
+    /// Sort query plans by estimated selectivity using statistics
+    ///
+    /// - Parameters:
+    ///   - plans: Plans to sort
+    ///   - filter: Query filter for selectivity estimation
+    ///   - tableStats: Table statistics for estimation
+    /// - Returns: Sorted plans (most selective first)
+    private func sortPlansBySelectivity(
+        plans: [any TypedQueryPlan<Record>],
+        filter: any TypedQueryComponent<Record>,
+        tableStats: TableStatistics
+    ) async throws -> [any TypedQueryPlan<Record>] {
+        // Estimate selectivity for each plan
+        var planSelectivities: [(plan: any TypedQueryPlan<Record>, selectivity: Double)] = []
+
+        for plan in plans {
+            let selectivity: Double
+
+            // Extract index name from plan (if it's an index scan)
+            if let indexPlan = plan as? TypedIndexScanPlan<Record> {
+                // Use statistics to estimate selectivity
+                selectivity = try await statisticsManager.estimateSelectivity(
+                    filter: filter,
+                    recordType: recordName
+                )
+            } else {
+                // For other plan types, use default selectivity
+                selectivity = 1.0 // Full scan = 100% selectivity
+            }
+
+            planSelectivities.append((plan: plan, selectivity: selectivity))
+        }
+
+        // Sort by selectivity (lower = more selective = better)
+        planSelectivities.sort { $0.selectivity < $1.selectivity }
+
+        logger.debug("Plan selectivities", metadata: [
+            "selectivities": "\(planSelectivities.map { $0.selectivity })"
+        ])
+
+        return planSelectivities.map { $0.plan }
     }
 
     /// Generate single-index scan plans for all applicable indexes

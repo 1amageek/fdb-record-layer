@@ -116,11 +116,11 @@ guides/
 
 ## 🔍 Key Features Documentation
 
-### Type-Safe API (@Recordable Macro) - 95% Complete
+### Type-Safe API (@Recordable Macro) - 100% Complete ✅
 - Design: [design/swift-macro-design.md](design/swift-macro-design.md)
 - Examples: [../Examples/User+Recordable.swift](../Examples/User+Recordable.swift)
-- Status: Core macros complete (@Recordable, @PrimaryKey, #Index, @Relationship)
-- Note: Protobuf definitions are created manually for multi-language compatibility
+- Status: **Fully implemented** - All macros complete (@Recordable, @PrimaryKey, #Index, #Unique, #Directory, @Relationship, @Default, @Transient)
+- Features: Auto-generated store() methods, multi-tenant support with #Directory, SwiftData-style API
 
 ### Directory Layer & Multi-Tenant Architecture
 - Design: [design/directory-layer-design.md](design/directory-layer-design.md)

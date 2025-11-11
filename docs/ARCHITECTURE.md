@@ -71,7 +71,7 @@ This document describes the Swift implementation of FoundationDB Record Layer, a
 ┌──────────────────────▼──────────────────────────────────┐
 │           Query & Index Layer                            │
 │  ┌─────────────────────────────┬───────────────────────┐│
-│  │ TypedRecordQueryPlannerV2   │ IndexManager          ││
+│  │ TypedRecordQueryPlanner   │ IndexManager          ││
 │  │  ├─ CostEstimator           │  ├─ ValueIndex        ││
 │  │  ├─ StatisticsManager       │  ├─ CountIndex        ││
 │  │  └─ PlanCache               │  └─ SumIndex          ││
@@ -208,12 +208,12 @@ public final class IndexManager: Sendable {
 - **Rank Index**: Leaderboards (Phase 2b)
 - **Version Index**: Time-series data (Phase 2b)
 
-### 5. TypedRecordQueryPlannerV2
+### 5. TypedRecordQueryPlanner
 
 Cost-based query optimizer with histogram-based selectivity estimation.
 
 ```swift
-public final class TypedRecordQueryPlannerV2<Record: Recordable & Sendable>: Sendable {
+public final class TypedRecordQueryPlanner<Record: Recordable & Sendable>: Sendable {
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let planCacheLock: Mutex<PlanCache>
 

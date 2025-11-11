@@ -105,12 +105,20 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         let beginTuple = TupleHelpers.toTuple(beginValues)
         let endTuple = TupleHelpers.toTuple(endValues)
 
-        let beginKey = indexSubspace.pack(beginTuple)
-        let endKey = indexSubspace.pack(endTuple)
+        // CRITICAL FIX: Use Subspace.range() to get correct prefix successors
+        // For equality queries (beginTuple == endTuple), we need:
+        //   beginKey = <prefix><tuple><0x00>
+        //   endKey   = <prefix><tuple><0xFF>
+        // This ensures all index entries <prefix><tuple><primaryKey> are included
+        let beginNestedSubspace = indexSubspace.subspace(beginTuple)
+        let endNestedSubspace = indexSubspace.subspace(endTuple)
+
+        let (beginKey, _) = beginNestedSubspace.range()
+        let (_, endKey) = endNestedSubspace.range()
 
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterThan(endKey),
+            endSelector: .firstGreaterOrEqual(endKey),  // Changed from .firstGreaterThan
             snapshot: snapshot
         )
 

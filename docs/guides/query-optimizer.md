@@ -268,9 +268,9 @@ try await statsManager.collectIndexStatistics(
 )
 
 // 3. Create planner
-let planner = TypedRecordQueryPlannerV2(
-    recordType: userType,
-    indexes: [cityIndex, ageIndex, emailIndex],
+let planner = TypedRecordQueryPlanner<User>(
+    schema: schema,
+    recordName: "User",
     statisticsManager: statsManager
 )
 
@@ -302,12 +302,15 @@ let customConfig = QueryRewriter.Config(
     enableDNF: true
 )
 
-let planner = TypedRecordQueryPlannerV2(
-    recordType: userType,
-    indexes: indexes,
+let planner = TypedRecordQueryPlanner<User>(
+    schema: schema,
+    recordName: "User",
     statisticsManager: statsManager,
-    rewriterConfig: customConfig,
-    maxCandidatePlans: 50
+    config: PlanGenerationConfig(
+        maxCandidatePlans: 50,
+        maxDNFBranches: customConfig.maxDNFTerms,
+        enableHeuristicPruning: true
+    )
 )
 ```
 
@@ -494,10 +497,10 @@ let cache = PlanCache<Record>(
 
 ## API Reference
 
-### TypedRecordQueryPlannerV2
+### TypedRecordQueryPlanner
 
 ```swift
-public struct TypedRecordQueryPlannerV2<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Sendable> {
     public init(
         recordType: TypedRecordType<Record>,
         indexes: [TypedIndex<Record>],

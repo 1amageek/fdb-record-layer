@@ -58,28 +58,41 @@ public struct TypedFieldQueryComponent<Record: Sendable>: TypedQueryComponent {
     ) throws -> Bool {
         let fieldValues = try recordAccess.extractField(from: record, fieldName: fieldName)
 
-        guard let fieldValue = fieldValues.first else {
+        guard !fieldValues.isEmpty else {
             return false
         }
 
-        switch comparison {
-        case .equals:
-            return TupleComparison.areEqual(fieldValue, value)
-        case .notEquals:
-            return !TupleComparison.areEqual(fieldValue, value)
-        case .lessThan:
-            return TupleComparison.isLessThan(fieldValue, value)
-        case .lessThanOrEquals:
-            return TupleComparison.isLessThan(fieldValue, value) || TupleComparison.areEqual(fieldValue, value)
-        case .greaterThan:
-            return !TupleComparison.isLessThan(fieldValue, value) && !TupleComparison.areEqual(fieldValue, value)
-        case .greaterThanOrEquals:
-            return !TupleComparison.isLessThan(fieldValue, value)
-        case .startsWith:
-            return TupleComparison.startsWith(fieldValue, value)
-        case .contains:
-            return TupleComparison.contains(fieldValue, value)
+        // CRITICAL FIX: For multi-valued fields (arrays), check ALL values
+        // Use ANY semantics: return true if ANY element matches
+        // This ensures predicates like "tags CONTAINS 'swift'" work correctly
+        // even when 'swift' is not at index 0
+        for fieldValue in fieldValues {
+            let matches: Bool
+            switch comparison {
+            case .equals:
+                matches = TupleComparison.areEqual(fieldValue, value)
+            case .notEquals:
+                matches = !TupleComparison.areEqual(fieldValue, value)
+            case .lessThan:
+                matches = TupleComparison.isLessThan(fieldValue, value)
+            case .lessThanOrEquals:
+                matches = TupleComparison.isLessThan(fieldValue, value) || TupleComparison.areEqual(fieldValue, value)
+            case .greaterThan:
+                matches = !TupleComparison.isLessThan(fieldValue, value) && !TupleComparison.areEqual(fieldValue, value)
+            case .greaterThanOrEquals:
+                matches = !TupleComparison.isLessThan(fieldValue, value)
+            case .startsWith:
+                matches = TupleComparison.startsWith(fieldValue, value)
+            case .contains:
+                matches = TupleComparison.contains(fieldValue, value)
+            }
+
+            if matches {
+                return true // ANY semantics: return true if any element matches
+            }
         }
+
+        return false // No element matched
     }
 }
 

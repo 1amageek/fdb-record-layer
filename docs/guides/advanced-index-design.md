@@ -555,7 +555,7 @@ public struct PermutedIndexMaintainer: IndexMaintainer {
 #### Query Planner Integration
 
 ```swift
-extension TypedRecordQueryPlannerV2 {
+extension TypedRecordQueryPlanner {
     /// Select best permutation for query
     private func selectPermutation(
         query: TypedRecordQuery<Record>,
@@ -1048,7 +1048,7 @@ struct RankIndexTests {
 - [ ] Implement permutation metadata storage
 
 **Week 2: Query Planner Integration**
-- [ ] Extend QueryPlannerV2 to select permutations
+- [ ] Extend TypedRecordQueryPlanner to select permutations
 - [ ] Implement cost estimation for permutations
 - [ ] Add permutation preference hints
 
@@ -1138,7 +1138,7 @@ All existing code continues to work without changes. Advanced index types are op
    - Independent of other features
 
 2. **Phase 2**: Ship Permuted Index
-   - Depends on QueryPlannerV2
+   - Depends on TypedRecordQueryPlanner
    - Requires cost model updates
 
 3. **Phase 3**: Ship Rank Index

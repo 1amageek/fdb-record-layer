@@ -850,7 +850,7 @@ Cost = BaseIndexCost + 0  (no sort needed)
 ##### Implementation: Sort-Aware Planner
 
 ```swift
-public struct TypedRecordQueryPlannerV2<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Sendable> {
     /// Plan query with sort consideration
     public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
         // Generate candidate plans
@@ -1058,10 +1058,10 @@ public struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
 - ❌ No sort consideration in cache key
 - ❌ No metadata versioning for invalidation
 
-##### Integration with TypedRecordQueryPlannerV2
+##### Integration with TypedRecordQueryPlanner
 
 ```swift
-public struct TypedRecordQueryPlannerV2<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Sendable> {
     private let metaData: RecordMetaData
     private let recordTypeName: String
     private let statisticsManager: StatisticsManager
@@ -1179,7 +1179,7 @@ public struct RecordMetaData {
     }
 }
 
-public struct TypedRecordQueryPlannerV2<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Sendable> {
     private var cachedMetadataVersion: Int64 = 0
 
     public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
@@ -1199,7 +1199,7 @@ public struct TypedRecordQueryPlannerV2<Record: Sendable> {
 **Phase 6 Update**: ~~Implement PlanCache~~ → **Integrate Existing PlanCache**
 
 Tasks:
-1. ✅ Add `planCache` parameter to `TypedRecordQueryPlannerV2` init
+1. ✅ Add `planCache` parameter to `TypedRecordQueryPlanner` init
 2. ✅ Check cache before planning
 3. ✅ Store generated plans in cache
 4. ✅ Extend cache key to include sort specification
@@ -1245,7 +1245,7 @@ END
 ##### Implementation: Layered Fallback
 
 ```swift
-public struct TypedRecordQueryPlannerV2<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Sendable> {
     /// Plan query with statistics or heuristics
     public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
         // Try cache first
@@ -1932,7 +1932,7 @@ func testIntersectionWithEmptyChildren() async throws {
 **Goal**: Refactor planner to support multiple plan generation with cost-based selection.
 
 **Tasks**:
-1. Create `TypedRecordQueryPlannerV2<Record>`
+1. Create `TypedRecordQueryPlanner<Record>`
 2. Implement query analysis:
    - `analyzeFilter()`: Parse filter structure
    - `extractIndexableFields()`: Identify fields with indexes
