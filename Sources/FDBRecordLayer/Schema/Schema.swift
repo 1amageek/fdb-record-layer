@@ -232,6 +232,45 @@ public final class Schema: Sendable {
         )
     }
 
+    /// Test-only initializer for manual Schema construction
+    ///
+    /// Allows creating Schema objects with custom Entity objects for testing purposes.
+    /// This is primarily used for schema evolution validation tests where we need
+    /// to construct schemas with specific enum metadata.
+    ///
+    /// - Parameters:
+    ///   - entities: Array of Entity objects
+    ///   - version: Schema version
+    ///   - indexes: Index definitions (optional)
+    public init(
+        entities: [Entity],
+        version: Version = Version(1, 0, 0),
+        indexes: [Index] = []
+    ) {
+        self.version = version
+        self.encodingVersion = version
+
+        // Build entity maps
+        var entitiesByName: [String: Entity] = [:]
+        for entity in entities {
+            entitiesByName[entity.name] = entity
+        }
+
+        self.entities = entities
+        self.entitiesByName = entitiesByName
+
+        // Store indexes
+        self.indexes = indexes
+        var indexesByName: [String: Index] = [:]
+        for index in indexes {
+            indexesByName[index.name] = index
+        }
+        self.indexesByName = indexesByName
+
+        // Former indexes (empty for test schemas)
+        self.formerIndexes = [:]
+    }
+
     // MARK: - Entity Access
 
     /// Get entity for type

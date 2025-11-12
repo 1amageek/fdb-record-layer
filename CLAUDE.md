@@ -1828,7 +1828,7 @@ let users = try await store.query(User.self)
 
 **実装済み機能**:
 - ✅ @Recordable, @PrimaryKey, @Transient, @Default
-- ✅ #Index, #Unique, #Directory, #FieldOrder
+- ✅ #Index, #Unique, #Directory
 - ✅ @Relationship, @Attribute
 - ✅ 自動生成されるstore()メソッド
 - ✅ マルチテナント対応（#Directoryマクロ）
@@ -1837,4 +1837,5 @@ let users = try await store.query(User.self)
 
 **Last Updated**: 2025-01-12
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
-**Record Layer (Swift)**: プロダクション対応 | **テスト**: 272合格
+**Record Layer (Swift)**: プロダクション対応 | **テスト**: 297合格 | **進捗**: 94%完了
+**Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）

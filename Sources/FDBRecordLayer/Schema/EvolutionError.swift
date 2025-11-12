@@ -5,7 +5,7 @@ public enum EvolutionError: Error, Sendable, CustomStringConvertible {
     case fieldDeleted(recordType: String, fieldName: String)
     case fieldTypeChanged(recordType: String, fieldName: String, old: String, new: String)
     case requiredFieldAdded(recordType: String, fieldName: String)
-    case enumValueDeleted(typeName: String, deletedValues: [String])
+    case enumValueDeleted(recordType: String, fieldName: String, deletedValues: [String])
     case indexFormatChanged(indexName: String)
     case indexDeletedWithoutFormerIndex(indexName: String)
 
@@ -19,8 +19,8 @@ public enum EvolutionError: Error, Sendable, CustomStringConvertible {
             return "Field '\(fieldName)' in record type '\(recordType)' changed type from '\(old)' to '\(new)' (forbidden)"
         case .requiredFieldAdded(let recordType, let fieldName):
             return "Required field '\(fieldName)' added to '\(recordType)' (forbidden)"
-        case .enumValueDeleted(let typeName, let deletedValues):
-            return "Enum '\(typeName)' had values deleted: [\(deletedValues.joined(separator: ", "))]"
+        case .enumValueDeleted(let recordType, let fieldName, let deletedValues):
+            return "Enum field '\(fieldName)' in record type '\(recordType)' had values deleted: [\(deletedValues.joined(separator: ", "))] (forbidden)"
         case .indexFormatChanged(let indexName):
             return "Index '\(indexName)' format was changed (forbidden)"
         case .indexDeletedWithoutFormerIndex(let indexName):

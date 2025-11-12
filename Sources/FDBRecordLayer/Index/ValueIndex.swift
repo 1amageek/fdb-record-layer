@@ -50,7 +50,7 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         // Add new index entry
         if let newRecord = newRecord {
             let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
-            let value = buildIndexValue()
+            let value = try buildIndexValue(record: newRecord, recordAccess: recordAccess)
             transaction.setValue(value, for: newKey)
         }
     }
@@ -62,7 +62,7 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         transaction: any TransactionProtocol
     ) async throws {
         let indexKey = try buildIndexKey(record: record, recordAccess: recordAccess)
-        let value = buildIndexValue()
+        let value = try buildIndexValue(record: record, recordAccess: recordAccess)
         transaction.setValue(value, for: indexKey)
     }
 
@@ -95,9 +95,45 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         return subspace.pack(tuple)
     }
 
-    private func buildIndexValue() -> FDB.Bytes {
-        // For value indexes, we typically store empty value
-        // The key contains all necessary information
-        return FDB.Bytes()
+    /// Build index value with optional covering fields
+    ///
+    /// **Non-covering index** (backward compatible):
+    /// - Returns empty bytes
+    /// - All data stored in index key
+    ///
+    /// **Covering index**:
+    /// - Evaluates covering field expressions
+    /// - Packs covering field values as Tuple
+    /// - Stores in index value for record reconstruction
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Non-covering: value = []
+    /// // Covering: value = Tuple(name, email).pack()
+    /// ```
+    private func buildIndexValue(
+        record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> FDB.Bytes {
+        // Check if this is a covering index
+        guard let coveringFields = index.coveringFields, !coveringFields.isEmpty else {
+            // Non-covering index: empty value (backward compatible)
+            return FDB.Bytes()
+        }
+
+        // Covering index: evaluate and store covering fields
+        var coveringValues: [any TupleElement] = []
+
+        for coveringExpr in coveringFields {
+            let values = try recordAccess.evaluate(
+                record: record,
+                expression: coveringExpr
+            )
+            coveringValues.append(contentsOf: values)
+        }
+
+        // Pack covering values as Tuple
+        let tuple = TupleHelpers.toTuple(coveringValues)
+        return tuple.pack()
     }
 }

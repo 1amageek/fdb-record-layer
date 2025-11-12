@@ -49,6 +49,7 @@ public final class MetaDataEvolutionValidator: Sendable {
         result = try await validateRecordTypes(result)
         result = try await validateFields(result)
         result = try await validateIndexes(result)
+        result = try await validateEnums(result)
 
         return result
     }
@@ -184,5 +185,60 @@ public final class MetaDataEvolutionValidator: Sendable {
         // For now, consider them compatible if type and column count match
         // Future enhancement: deep comparison of expression structure
         return true
+    }
+
+    private func validateEnums(_ result: ValidationResult) async throws -> ValidationResult {
+        var updated = result
+
+        // Build entity maps for quick lookup
+        let oldEntitiesByName = Dictionary(uniqueKeysWithValues: oldMetaData.entities.map { ($0.name, $0) })
+        let newEntitiesByName = Dictionary(uniqueKeysWithValues: newMetaData.entities.map { ($0.name, $0) })
+
+        // Check each entity that exists in both schemas
+        for (entityName, oldEntity) in oldEntitiesByName {
+            guard let newEntity = newEntitiesByName[entityName] else {
+                // Entity deleted - already caught in validateRecordTypes
+                continue
+            }
+
+            // Validate each field with enum metadata
+            for (fieldName, oldAttribute) in oldEntity.attributesByName {
+                guard let newAttribute = newEntity.attributesByName[fieldName] else {
+                    // Field deleted - already caught in validateFields
+                    continue
+                }
+
+                // Check if both old and new have enum metadata
+                guard let oldEnumMetadata = oldAttribute.enumMetadata,
+                      let newEnumMetadata = newAttribute.enumMetadata else {
+                    // Either:
+                    // - Field was not an enum (both nil) - OK
+                    // - Field changed from enum to non-enum or vice versa - caught by field type validation
+                    continue
+                }
+
+                // Compare enum cases for this specific field
+                // Note: We compare by field path (entityName.fieldName), not by enum type name
+                // This allows enum types to be renamed during refactoring
+                let oldCases = Set(oldEnumMetadata.cases)
+                let newCases = Set(newEnumMetadata.cases)
+
+                // Check for deleted enum cases
+                let deletedCases = oldCases.subtracting(newCases)
+                if !deletedCases.isEmpty {
+                    // Deleting enum cases is unsafe - existing data may reference deleted cases
+                    updated = updated.addError(.enumValueDeleted(
+                        recordType: entityName,
+                        fieldName: fieldName,
+                        deletedValues: Array(deletedCases).sorted()
+                    ))
+                }
+
+                // Adding new enum cases is safe - existing data won't be affected
+                // No validation needed for added cases
+            }
+        }
+
+        return updated
     }
 }

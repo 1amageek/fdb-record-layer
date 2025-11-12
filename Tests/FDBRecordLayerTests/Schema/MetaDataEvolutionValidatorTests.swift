@@ -195,4 +195,246 @@ struct MetaDataEvolutionValidatorTests {
         #expect(!result.isValid, "Should detect multiple errors")
         #expect(result.errors.count >= 2, "At least record type deletion + index deletion")
     }
+
+    // MARK: - Tests: Enum Validation
+
+    @Test("Enum case deletion should be detected (manual schema)")
+    func enumCaseDeletionManualSchema() async throws {
+        // Create schemas manually with enum metadata
+        // Old schema: Product with status enum (3 cases)
+        let oldEntity = TestEntityBuilder.createEntity(
+            name: "Product",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "productID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "ProductStatus",
+                        cases: ["active", "inactive", "discontinued"]
+                    )
+                )
+            ]
+        )
+
+        let oldSchema = TestSchemaBuilder.createSchema(entities: [oldEntity])
+
+        // New schema: Same field, but discontinued case removed
+        let newEntity = TestEntityBuilder.createEntity(
+            name: "Product",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "productID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "ProductStatus",  // Same type name
+                        cases: ["active", "inactive"]  // "discontinued" removed
+                    )
+                )
+            ]
+        )
+
+        let newSchema = TestSchemaBuilder.createSchema(entities: [newEntity])
+
+        let validator = MetaDataEvolutionValidator(
+            old: oldSchema,
+            new: newSchema,
+            options: .strict
+        )
+
+        let result = try await validator.validate()
+
+        #expect(!result.isValid, "Should detect enum case deletion")
+
+        // Find enum deletion error
+        let enumErrors = result.errors.compactMap { error -> (String, String, [String])? in
+            if case .enumValueDeleted(let recordType, let fieldName, let deletedValues) = error {
+                return (recordType, fieldName, deletedValues)
+            }
+            return nil
+        }
+
+        #expect(enumErrors.count == 1, "Should have exactly one enum deletion error")
+
+        guard let (recordType, fieldName, deletedValues) = enumErrors.first else {
+            Issue.record("Expected enumValueDeleted error")
+            return
+        }
+
+        #expect(recordType == "Product")
+        #expect(fieldName == "status")
+        #expect(deletedValues.contains("discontinued"), "Should detect 'discontinued' was deleted")
+    }
+
+    @Test("Enum case deletion with type rename should be detected")
+    func enumCaseDeletionWithTypeRename() async throws {
+        // Old schema
+        let oldEntity = TestEntityBuilder.createEntity(
+            name: "Order",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "orderID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "OrderStatus",  // Old type name
+                        cases: ["pending", "shipped", "delivered", "cancelled"]
+                    )
+                )
+            ]
+        )
+
+        let oldSchema = TestSchemaBuilder.createSchema(entities: [oldEntity])
+
+        // New schema: Type renamed, case deleted
+        let newEntity = TestEntityBuilder.createEntity(
+            name: "Order",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "orderID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "OrderStatusV2",  // ← Type name changed (refactoring)
+                        cases: ["pending", "shipped", "delivered"]  // "cancelled" removed
+                    )
+                )
+            ]
+        )
+
+        let newSchema = TestSchemaBuilder.createSchema(entities: [newEntity])
+
+        let validator = MetaDataEvolutionValidator(
+            old: oldSchema,
+            new: newSchema,
+            options: .strict
+        )
+
+        let result = try await validator.validate()
+
+        // This is the key test: validation should work even if type name changed
+        #expect(!result.isValid, "Should detect enum case deletion even with type rename")
+
+        let enumErrors = result.errors.compactMap { error -> (String, String, [String])? in
+            if case .enumValueDeleted(let recordType, let fieldName, let deletedValues) = error {
+                return (recordType, fieldName, deletedValues)
+            }
+            return nil
+        }
+
+        #expect(enumErrors.count == 1)
+
+        guard let (recordType, fieldName, deletedValues) = enumErrors.first else {
+            Issue.record("Expected enumValueDeleted error")
+            return
+        }
+
+        #expect(recordType == "Order")
+        #expect(fieldName == "status")
+        #expect(deletedValues.contains("cancelled"), "Should detect 'cancelled' was deleted despite type rename")
+    }
+
+    @Test("Enum case addition should be allowed")
+    func enumCaseAddition() async throws {
+        // Old schema
+        let oldEntity = TestEntityBuilder.createEntity(
+            name: "Product",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "productID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "ProductStatus",
+                        cases: ["active", "inactive"]
+                    )
+                )
+            ]
+        )
+
+        let oldSchema = TestSchemaBuilder.createSchema(entities: [oldEntity])
+
+        // New schema: Case added
+        let newEntity = TestEntityBuilder.createEntity(
+            name: "Product",
+            attributes: [
+                TestEntityBuilder.createAttribute(
+                    name: "productID",
+                    isPrimaryKey: true
+                ),
+                TestEntityBuilder.createAttribute(
+                    name: "status",
+                    enumMetadata: Schema.EnumMetadata(
+                        typeName: "ProductStatus",
+                        cases: ["active", "inactive", "archived"]  // "archived" added
+                    )
+                )
+            ]
+        )
+
+        let newSchema = TestSchemaBuilder.createSchema(entities: [newEntity])
+
+        let validator = MetaDataEvolutionValidator(
+            old: oldSchema,
+            new: newSchema,
+            options: .strict
+        )
+
+        let result = try await validator.validate()
+
+        #expect(result.isValid, "Enum case addition should be allowed")
+        #expect(result.errors.isEmpty, "Should have no errors")
+    }
+}
+
+// MARK: - Test Helpers
+
+/// Helper for creating test entities with enum metadata
+enum TestEntityBuilder {
+    /// Create an Entity with custom attributes
+    ///
+    /// This helper uses the test initializer added to Schema.Entity to construct
+    /// entities with specific enum metadata for schema evolution validation tests.
+    static func createEntity(name: String, attributes: [Schema.Attribute]) -> Schema.Entity {
+        return Schema.Entity(name: name, attributes: attributes)
+    }
+
+    /// Create an Attribute with optional enum metadata
+    ///
+    /// This helper creates Schema.Attribute objects for use in test entities.
+    static func createAttribute(
+        name: String,
+        isOptional: Bool = false,
+        isPrimaryKey: Bool = false,
+        enumMetadata: Schema.EnumMetadata? = nil
+    ) -> Schema.Attribute {
+        return Schema.Attribute(
+            name: name,
+            isOptional: isOptional,
+            isPrimaryKey: isPrimaryKey,
+            enumMetadata: enumMetadata
+        )
+    }
+}
+
+/// Helper for creating test schemas with custom entities
+enum TestSchemaBuilder {
+    /// Create a Schema with custom entities
+    ///
+    /// This helper uses the test initializer added to Schema to construct
+    /// schemas with specific entities for schema evolution validation tests.
+    static func createSchema(entities: [Schema.Entity]) -> Schema {
+        return Schema(entities: entities)
+    }
 }

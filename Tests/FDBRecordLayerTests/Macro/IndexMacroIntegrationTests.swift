@@ -79,6 +79,25 @@ struct IndexMacroIndexedModel {
     var field3: String
 }
 
+/// Nested struct for testing nested field indexes
+@Recordable
+struct NestedAddress {
+    @PrimaryKey var addressID: Int64 = 0
+    var city: String
+    var zipCode: String
+}
+
+/// Model with nested field indexes (P0 fix verification)
+@Recordable
+struct IndexMacroNestedModel {
+    #Index<IndexMacroNestedModel>([\.address.city])
+    #Index<IndexMacroNestedModel>([\.address.city, \.address.zipCode], name: "city_zip_index")
+
+    @PrimaryKey var personID: Int64
+    var name: String
+    var address: NestedAddress
+}
+
 // MARK: - Tests
 
 /// Integration tests for #Index and #Unique macros with @Recordable
@@ -237,5 +256,55 @@ struct IndexMacroIntegrationTests {
         let indexes = IndexMacroIndexedModel.indexDefinitions
         #expect(indexes.count == 3)
         #expect(indexes.allSatisfy { $0.unique == false })
+    }
+
+    // MARK: - Nested Field Index Tests (P0 Fix Verification)
+
+    @Test("Nested field index preserves full dot-notation path")
+    func testNestedFieldIndexDotNotation() {
+        let indexes = IndexMacroNestedModel.indexDefinitions
+
+        // Find the city index
+        let cityIndex = indexes.first { $0.name == "IndexMacroNestedModel_address.city_index" }
+        #expect(cityIndex != nil, "City index should exist")
+        #expect(cityIndex?.fields == ["address.city"],
+                "Nested field path should be 'address.city', not just 'city'")
+    }
+
+    @Test("Multiple nested fields preserve all paths")
+    func testMultipleNestedFieldsPreservePaths() {
+        let indexes = IndexMacroNestedModel.indexDefinitions
+
+        let cityZipIndex = indexes.first { $0.name == "city_zip_index" }
+        #expect(cityZipIndex != nil, "City-Zip index should exist")
+        #expect(cityZipIndex?.fields == ["address.city", "address.zipCode"],
+                "Both nested paths should be preserved")
+    }
+
+    @Test("Nested field indexes have correct record type")
+    func testNestedFieldIndexRecordType() {
+        let indexes = IndexMacroNestedModel.indexDefinitions
+
+        for index in indexes {
+            #expect(index.recordType == "IndexMacroNestedModel",
+                    "All indexes should have correct record type")
+        }
+    }
+
+    @Test("No Swift type names in nested field paths")
+    func testNoTypeNamesInNestedPaths() {
+        let indexes = IndexMacroNestedModel.indexDefinitions
+
+        for index in indexes {
+            for field in index.fields {
+                // Should not contain type names
+                #expect(!field.contains("Swift."),
+                        "Field path should not contain 'Swift.': \(field)")
+                #expect(!field.contains("String"),
+                        "Field path should not be a type name: \(field)")
+                #expect(!field.contains("NestedAddress"),
+                        "Field path should not contain struct name: \(field)")
+            }
+        }
     }
 }

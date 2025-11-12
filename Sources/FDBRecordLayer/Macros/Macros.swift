@@ -170,26 +170,6 @@ public macro Index<T>(_ indices: [PartialKeyPath<T>], name: String) = #externalM
 @freestanding(declaration)
 public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(module: "FDBRecordLayerMacros", type: "UniqueMacro")
 
-/// Explicitly specifies the order of fields for Protobuf compatibility
-///
-/// By default, fields are numbered in declaration order. Use this macro
-/// only when you need to maintain compatibility with existing Protobuf schemas.
-///
-/// **Usage**:
-/// ```swift
-/// @Recordable
-/// struct User {
-///     #FieldOrder<User>([\.userID, \.email, \.name, \.age])
-///
-///     @PrimaryKey var userID: Int64  // field_number = 1
-///     var email: String               // field_number = 2
-///     var name: String                // field_number = 3
-///     var age: Int                    // field_number = 4
-/// }
-/// ```
-@freestanding(declaration)
-public macro FieldOrder<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "FieldOrderMacro")
-
 /// Protocol for directory path elements
 ///
 /// Directory paths can contain string literals and KeyPath references.

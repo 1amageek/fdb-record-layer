@@ -27,7 +27,7 @@ import Logging
 /// let query = TypedRecordQuery<User>(filter: \.email == "test@example.com", limit: 10)
 /// let plan = try await planner.plan(query: query)
 /// ```
-public struct TypedRecordQueryPlanner<Record: Sendable> {
+public struct TypedRecordQueryPlanner<Record: Recordable> {
     // MARK: - Properties
 
     private let schema: Schema
@@ -676,16 +676,10 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 return nil
             }
 
-            let primaryKeyLength = getPrimaryKeyLength()
-
-            let plan = TypedIndexScanPlan<Record>(
-                indexName: index.name,
-                indexSubspaceTupleKey: index.subspaceTupleKey,
+            let plan = createIndexScanPlan(
+                index: index,
                 beginValues: beginValues,
-                endValues: endValues,
-                filter: nil,  // Filter handled by index
-                primaryKeyLength: primaryKeyLength,
-                recordName: recordName
+                endValues: endValues
             )
 
             // No remaining filter - fully matched by index
@@ -704,16 +698,10 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
                 return nil
             }
 
-            let primaryKeyLength = getPrimaryKeyLength()
-
-            let plan = TypedIndexScanPlan<Record>(
-                indexName: index.name,
-                indexSubspaceTupleKey: index.subspaceTupleKey,
+            let plan = createIndexScanPlan(
+                index: index,
                 beginValues: beginValues,
-                endValues: endValues,
-                filter: nil,  // Filter handled by index
-                primaryKeyLength: primaryKeyLength,
-                recordName: recordName
+                endValues: endValues
             )
 
             // No remaining filter - fully matched by index
@@ -830,16 +818,10 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
             }
         }()
 
-        let primaryKeyLength = getPrimaryKeyLength()
-
-        let plan = TypedIndexScanPlan<Record>(
-            indexName: index.name,
-            indexSubspaceTupleKey: index.subspaceTupleKey,
+        let plan = createIndexScanPlan(
+            index: index,
             beginValues: beginValues,
-            endValues: endValues,
-            filter: nil,  // Filter handled by remainingFilter
-            primaryKeyLength: primaryKeyLength,
-                recordName: recordName
+            endValues: endValues
         )
 
         return IndexMatchResult(plan: plan, remainingFilter: remainingFilter)
@@ -1277,5 +1259,82 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
         // Return number of primary key fields
         return entity.primaryKeyFields.count
+    }
+
+    /// Create an index scan plan (covering or regular)
+    ///
+    /// Determines whether to use a covering index scan based on:
+    /// 1. Index has covering fields (index.isCovering || index.coveringFields != nil)
+    /// 2. Record type supports reconstruction (Record.supportsReconstruction)
+    ///
+    /// - Parameters:
+    ///   - index: The index to scan
+    ///   - beginValues: Begin key values
+    ///   - endValues: End key values
+    /// - Returns: TypedCoveringIndexScanPlan if covering index applicable, TypedIndexScanPlan otherwise
+    private func createIndexScanPlan(
+        index: Index,
+        beginValues: [any TupleElement],
+        endValues: [any TupleElement]
+    ) -> any TypedQueryPlan<Record> {
+        let primaryKeyLength = getPrimaryKeyLength()
+
+        // Check covering index conditions:
+        // 1. Index has covering fields
+        // 2. Record type implements reconstruct() (via @Recordable macro)
+        let isCoveringIndex = (index.coveringFields != nil)
+        let supportsReconstruction = Record.supportsReconstruction
+
+        if isCoveringIndex && supportsReconstruction {
+            // Use covering index scan (no getValue() calls)
+            logger.debug("Using covering index scan", metadata: [
+                "indexName": "\(index.name)",
+                "recordType": "\(recordName)"
+            ])
+
+            guard let entity = schema.entity(named: recordName) else {
+                logger.warning("Entity not found for covering index, falling back to regular scan", metadata: [
+                    "recordType": "\(recordName)"
+                ])
+                // Fallback to regular index scan
+                return TypedIndexScanPlan<Record>(
+                    indexName: index.name,
+                    indexSubspaceTupleKey: index.subspaceTupleKey,
+                    beginValues: beginValues,
+                    endValues: endValues,
+                    filter: nil,
+                    primaryKeyLength: primaryKeyLength,
+                    recordName: recordName
+                )
+            }
+
+            return TypedCoveringIndexScanPlan<Record>(
+                index: index,
+                indexSubspaceTupleKey: index.subspaceTupleKey,
+                beginValues: beginValues,
+                endValues: endValues,
+                filter: nil,
+                primaryKeyExpression: entity.primaryKeyExpression
+            )
+        } else {
+            // Use regular index scan (requires getValue() for non-indexed fields)
+            if isCoveringIndex && !supportsReconstruction {
+                logger.debug("Covering index available but reconstruction not supported, using regular scan", metadata: [
+                    "indexName": "\(index.name)",
+                    "recordType": "\(recordName)",
+                    "recommendation": "Add @Recordable macro to enable covering index optimization"
+                ])
+            }
+
+            return TypedIndexScanPlan<Record>(
+                indexName: index.name,
+                indexSubspaceTupleKey: index.subspaceTupleKey,
+                beginValues: beginValues,
+                endValues: endValues,
+                filter: nil,
+                primaryKeyLength: primaryKeyLength,
+                recordName: recordName
+            )
+        }
     }
 }

@@ -390,9 +390,9 @@ struct AggregationAccumulator {
             }
         } else if let uuid = value as? UUID {
             return .uuid(uuid)
-        } else if let date = value as? Date {
-            return .timestamp(date)
         } else {
+            // Note: Date is not a TupleElement, so this cast would always fail
+            // If Date support is needed, convert to timestamp (Int64) before aggregation
             throw RecordLayerError.invalidArgument(
                 "Cannot aggregate value of type \(type(of: value)). " +
                 "Supported types: Int64, Double, Decimal, String (MIN/MAX only), UUID, Date"

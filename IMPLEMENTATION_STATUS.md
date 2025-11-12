@@ -109,15 +109,6 @@ All macro implementations have been completed with **full support for all type p
 - Enforces uniqueness at the index level
 - Generates IndexDefinition with unique flag
 
-### #FieldOrder Macro
-**File**: `Sources/FDBRecordLayerMacros/FieldOrderMacro.swift`
-
-**Purpose**: Explicit Protobuf field numbering
-**Features**:
-- Overrides default field ordering
-- Maintains Protobuf schema compatibility
-- Generates field order metadata mapping
-
 ## Phase 3: Supporting Types (100% Complete)
 
 ### DeleteRule Enum
@@ -332,7 +323,7 @@ While the implementation is complete, potential enhancements could include:
 
 ## Files Modified/Created
 
-### Created Files (17 files):
+### Created Files (16 files):
 1. `Sources/FDBRecordLayerMacros/Plugin.swift`
 2. `Sources/FDBRecordLayerMacros/RecordableMacro.swift`
 3. `Sources/FDBRecordLayerMacros/PrimaryKeyMacro.swift`
@@ -340,15 +331,14 @@ While the implementation is complete, potential enhancements could include:
 5. `Sources/FDBRecordLayerMacros/DefaultMacro.swift`
 6. `Sources/FDBRecordLayerMacros/IndexMacro.swift`
 7. `Sources/FDBRecordLayerMacros/UniqueMacro.swift`
-8. `Sources/FDBRecordLayerMacros/FieldOrderMacro.swift`
-9. `Sources/FDBRecordLayerMacros/RelationshipMacro.swift`
-10. `Sources/FDBRecordLayerMacros/AttributeMacro.swift`
-11. `Sources/FDBRecordLayer/Macros/Macros.swift`
-12. `Sources/FDBRecordLayer/Macros/DeleteRule.swift`
-13. `Sources/FDBRecordLayer/Macros/IndexDefinition.swift`
-14. `Sources/FDBRecordLayer/Utilities/SendableBox.swift`
-15. `Tests/FDBRecordLayerTests/Macros/MacroTests.swift`
-16. `IMPLEMENTATION_STATUS.md` (this file)
+8. `Sources/FDBRecordLayerMacros/RelationshipMacro.swift`
+9. `Sources/FDBRecordLayerMacros/AttributeMacro.swift`
+10. `Sources/FDBRecordLayer/Macros/Macros.swift`
+11. `Sources/FDBRecordLayer/Macros/DeleteRule.swift`
+12. `Sources/FDBRecordLayer/Macros/IndexDefinition.swift`
+13. `Sources/FDBRecordLayer/Utilities/SendableBox.swift`
+14. `Tests/FDBRecordLayerTests/Macros/MacroTests.swift`
+15. `IMPLEMENTATION_STATUS.md` (this file)
 
 ### Modified Files (3 files):
 1. `Package.swift` - Added swift-syntax dependency and macro target

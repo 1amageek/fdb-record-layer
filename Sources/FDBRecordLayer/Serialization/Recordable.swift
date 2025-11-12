@@ -125,8 +125,7 @@ public protocol Recordable: Sendable {
     /// Mapping from field name to Protobuf field number
     ///
     /// Returns the field number used during Protobuf serialization.
-    /// If explicitly specified with the `#FieldOrder` macro, that order is used,
-    /// otherwise automatically numbered in declaration order.
+    /// Field numbers are automatically assigned based on declaration order (starting from 1).
     ///
     /// - Parameter fieldName: Field name
     /// - Returns: Field number (starting from 1), or nil if not found
@@ -179,6 +178,92 @@ public protocol Recordable: Sendable {
     ///
     /// - Returns: Primary key Tuple
     func extractPrimaryKey() -> Tuple
+
+    /// Reconstruct a record from covering index key and value
+    ///
+    /// This method is used by covering indexes to rebuild records without
+    /// fetching from storage. The @Recordable macro automatically generates
+    /// this implementation.
+    ///
+    /// **Index key structure**: `<indexSubspace><rootExpression fields><primaryKey fields>`
+    /// **Index value structure**: Tuple-packed covering field values
+    ///
+    /// **Field Assembly Strategy**:
+    /// 1. Extract indexed fields from index key (via index.rootExpression)
+    /// 2. Extract primary key from index key (last N elements)
+    /// 3. Extract covering fields from index value (via index.coveringFields)
+    /// 4. Reconstruct record with all available fields
+    ///
+    /// **Auto-Generated Example** (by @Recordable macro):
+    /// ```swift
+    /// // User: { userID (PK), city (indexed), name (covering), email (covering) }
+    /// static func reconstruct(
+    ///     indexKey: Tuple,
+    ///     indexValue: FDB.Bytes,
+    ///     index: Index,
+    ///     primaryKeyExpression: KeyExpression
+    /// ) throws -> User {
+    ///     let rootCount = index.rootExpression.columnCount  // 1 (city)
+    ///     let pkCount = primaryKeyExpression.columnCount    // 1 (userID)
+    ///
+    ///     // Extract indexed field: city
+    ///     guard let city = indexKey[0] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid city field"
+    ///         )
+    ///     }
+    ///
+    ///     // Extract primary key: userID (last N elements)
+    ///     guard let userID = indexKey[rootCount] as? Int64 else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid userID field"
+    ///         )
+    ///     }
+    ///
+    ///     // Extract covering fields: name, email
+    ///     let coveringTuple = try Tuple.unpack(from: indexValue)
+    ///     guard let name = coveringTuple[0] as? String,
+    ///           let email = coveringTuple[1] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid covering fields"
+    ///         )
+    ///     }
+    ///
+    ///     return User(userID: userID, city: city, name: name, email: email)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - indexKey: Index key (unpacked tuple)
+    ///   - indexValue: Index value (packed covering fields)
+    ///   - index: Index definition
+    ///   - primaryKeyExpression: Primary key expression for field extraction
+    /// - Returns: Reconstructed record
+    /// - Throws: RecordLayerError.reconstructionFailed if reconstruction fails
+    static func reconstruct(
+        indexKey: Tuple,
+        indexValue: FDB.Bytes,
+        index: Index,
+        primaryKeyExpression: KeyExpression
+    ) throws -> Self
+
+    /// Indicates whether this type supports covering index reconstruction
+    ///
+    /// Returns `true` if the type implements `reconstruct()` method properly.
+    /// This allows the query planner to safely use covering index optimization.
+    ///
+    /// **Default**: `false` (safe, conservative)
+    ///
+    /// **Auto-Generated**: `@Recordable` macro sets this to `true`
+    ///
+    /// **Manual Implementation**: Override to return `true` if you manually
+    /// implement `reconstruct()` method.
+    ///
+    /// - Returns: `true` if reconstruction is supported, `false` otherwise
+    static var supportsReconstruction: Bool { get }
 }
 
 // MARK: - Helper Extensions
@@ -250,6 +335,19 @@ extension Recordable {
         return nil
     }
 
+    /// Default implementation: Covering index reconstruction not supported
+    ///
+    /// Returns `false` by default to ensure safe behavior for types without
+    /// proper `reconstruct()` implementation.
+    ///
+    /// **Override**: `@Recordable` macro sets this to `true` automatically.
+    ///
+    /// **Manual Implementation**: Return `true` if you manually implement
+    /// `reconstruct()` method.
+    public static var supportsReconstruction: Bool {
+        return false
+    }
+
     /// Default implementation: Returns nil to indicate old API is in use
     ///
     /// When nil, primary key extraction will use `extractPrimaryKey()` instead.
@@ -261,6 +359,70 @@ extension Recordable {
     /// Both APIs will coexist during migration period.
     public var primaryKeyValue: PrimaryKeyValue? {
         return nil
+    }
+
+    /// Get enum metadata for a field
+    ///
+    /// Returns enum type information if the field is a CaseIterable enum.
+    /// This method is typically overridden by @Recordable macro for types with enum fields.
+    ///
+    /// **Default Implementation**:
+    /// Returns nil for all fields (no enum metadata available).
+    /// @Recordable macro will generate a switch statement that returns metadata
+    /// for each enum field.
+    ///
+    /// **Example (macro-generated)**:
+    /// ```swift
+    /// static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
+    ///     switch fieldName {
+    ///     case "status":
+    ///         return Schema.EnumMetadata(
+    ///             typeName: "ProductStatus",
+    ///             cases: ["active", "inactive", "discontinued"]
+    ///         )
+    ///     default:
+    ///         return nil
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameter fieldName: Field name to query
+    /// - Returns: EnumMetadata if field is a CaseIterable enum, nil otherwise
+    public static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
+        return nil
+    }
+
+    /// Default implementation: Throw not implemented error
+    ///
+    /// This default implementation allows backward compatibility with existing code
+    /// that doesn't use covering indexes. The @Recordable macro will override this
+    /// with a proper implementation.
+    ///
+    /// **Migration Path**:
+    /// 1. Old code without covering indexes → Uses default (throws error if used)
+    /// 2. New code with @Recordable macro → Auto-generated reconstruct() implementation
+    ///
+    /// - Parameters:
+    ///   - indexKey: Index key (unpacked tuple)
+    ///   - indexValue: Index value (packed covering fields)
+    ///   - index: Index definition
+    ///   - primaryKeyExpression: Primary key expression
+    /// - Returns: Reconstructed record
+    /// - Throws: RecordLayerError.reconstructionNotImplemented by default
+    public static func reconstruct(
+        indexKey: Tuple,
+        indexValue: FDB.Bytes,
+        index: Index,
+        primaryKeyExpression: KeyExpression
+    ) throws -> Self {
+        throw RecordLayerError.reconstructionNotImplemented(
+            recordType: String(describing: Self.self),
+            suggestion: """
+            To use covering indexes with this record type, the @Recordable macro
+            must generate a reconstruct() implementation. Make sure you are using
+            the latest version of the @Recordable macro.
+            """
+        )
     }
 }
 

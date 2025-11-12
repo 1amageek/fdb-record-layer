@@ -363,12 +363,24 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             let typeString = type.description.trimmingCharacters(in: .whitespaces)
             let typeInfo = analyzeType(typeString)
 
+            // Detect potential enum types (custom types that are not arrays)
+            // At macro expansion time, we can't definitively know if a type is an enum,
+            // so we mark all custom types as potential enums for runtime checking
+            let enumTypeName: String?
+            if case .custom = typeInfo.category, !typeInfo.isArray {
+                // Extract base type name (without Optional<> wrapper)
+                enumTypeName = typeInfo.baseType
+            } else {
+                enumTypeName = nil
+            }
+
             fields.append(FieldInfo(
                 name: fieldName,
                 type: typeString,
                 typeInfo: typeInfo,
                 isPrimaryKey: isPrimaryKey,
-                isTransient: isTransient
+                isTransient: isTransient,
+                enumTypeName: enumTypeName
             ))
         }
 
@@ -408,7 +420,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         let staticProperties = indexInfo.map { info in
             let varName = info.variableName()
             let indexName = info.indexName()
-            let keyPathsLiteral = info.fields.map { "\\\(typeName).\($0)" }.joined(separator: ", ")
+            // Use string-based initializer to preserve nested field paths (e.g., "address.city")
+            // IndexInfo.fields already contains the correct dot-notation for nested fields
+            let fieldsLiteral = info.fields.map { "\"\($0)\"" }.joined(separator: ", ")
             let unique = info.isUnique ? "true" : "false"
 
             return """
@@ -416,7 +430,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 public static var \(varName): IndexDefinition {
                     IndexDefinition(
                         name: "\(indexName)",
-                        keyPaths: [\(keyPathsLiteral)] as [PartialKeyPath<\(typeName)>],
+                        recordType: "\(typeName)",
+                        fields: [\(fieldsLiteral)],
                         unique: \(unique)
                     )
                 }
@@ -572,19 +587,22 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         let fieldNames = fields.map { "\"\($0.name)\"" }.joined(separator: ", ")
         let primaryKeyNames = primaryKeyFields.map { "\"\($0.name)\"" }.joined(separator: ", ")
 
-        // Generate field numbers (1-indexed)
+        // Generate field numbers (1-indexed, based on declaration order)
         let fieldNumberCases = fields.enumerated().map { index, field in
-            "case \"\(field.name)\": return \(index + 1)"
+            let fieldNumber = index + 1
+            return "case \"\(field.name)\": return \(fieldNumber)"
         }.joined(separator: "\n            ")
 
         // Generate toProtobuf
         let serializeFields = fields.enumerated().map { index, field in
-            generateSerializeField(field: field, fieldNumber: index + 1)
+            let fieldNumber = index + 1
+            return generateSerializeField(field: field, fieldNumber: fieldNumber)
         }.joined(separator: "\n        ")
 
         // Generate fromProtobuf
         let deserializeFields = fields.enumerated().map { index, field in
-            generateDeserializeField(field: field, fieldNumber: index + 1)
+            let fieldNumber = index + 1
+            return generateDeserializeField(field: field, fieldNumber: fieldNumber)
         }.joined(separator: "\n            ")
 
         // Generate required field validation
@@ -626,6 +644,12 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             indexInfo: indexInfo
         )
 
+        // Generate enumMetadata(for:) method for enum fields
+        let enumMetadataMethod = generateEnumMetadataMethod(typeName: typeName, fields: fields)
+
+        // Determine if reconstruction is supported (no non-optional custom type fields)
+        let supportsReconstructionValue = hasNonReconstructibleFields(fields: fields, primaryKeyFields: Set(primaryKeyFields.map { $0.name })) ? "false" : "true"
+
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
             public static var recordName: String { "\(raw: recordName)" }
@@ -633,7 +657,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             public static var primaryKeyFields: [String] { [\(raw: primaryKeyNames)] }
 
             public static var allFields: [String] { [\(raw: fieldNames)] }
-            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)
+
+            public static var supportsReconstruction: Bool { \(raw: supportsReconstructionValue) }
+            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)\(raw: enumMetadataMethod)
 
             public static func fieldNumber(for fieldName: String) -> Int? {
                 switch fieldName {
@@ -757,12 +783,24 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     case 0: // Varint
                         _ = try decodeVarint(data, offset: &offset)
                     case 1: // 64-bit
-                        offset += 8
+                        let endOffset = offset + 8
+                        guard endOffset <= data.count else {
+                            throw RecordLayerError.serializationFailed("Invalid 64-bit field: offset=\\(offset), dataSize=\\(data.count)")
+                        }
+                        offset = endOffset
                     case 2: // Length-delimited
                         let length = try decodeVarint(data, offset: &offset)
-                        offset += Int(length)
+                        let endOffset = offset + Int(length)
+                        guard endOffset <= data.count else {
+                            throw RecordLayerError.serializationFailed("Invalid length-delimited field: length=\\(length), remaining=\\(data.count - offset)")
+                        }
+                        offset = endOffset
                     case 5: // 32-bit
-                        offset += 4
+                        let endOffset = offset + 4
+                        guard endOffset <= data.count else {
+                            throw RecordLayerError.serializationFailed("Invalid 32-bit field: offset=\\(offset), dataSize=\\(data.count)")
+                        }
+                        offset = endOffset
                     default:
                         throw RecordLayerError.serializationFailed("Unknown wire type: \\(wireType)")
                     }
@@ -802,6 +840,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 return Tuple([\(raw: primaryKeyExtraction)])
             }
 
+            \(raw: generateReconstructMethodIfSupported(typeName: typeName, fields: fields, primaryKeyFields: primaryKeyFields))
             \(raw: directoryMethods)
         }
         """
@@ -830,6 +869,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             data.append(contentsOf: encodeVarint(UInt64(truncatingIfNeeded: UInt32(bitPattern: self.\(field.name)))))
             """
 
+        case "Int":
+            return """
+            // Field \(fieldNumber): \(field.name) (Int)
+            data.append(contentsOf: encodeVarint(\(tag)))
+            data.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(self.\(field.name)))))
+            """
+
         case "Int64":
             return """
             // Field \(fieldNumber): \(field.name) (Int64)
@@ -840,6 +886,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         case "UInt32":
             return """
             // Field \(fieldNumber): \(field.name) (UInt32)
+            data.append(contentsOf: encodeVarint(\(tag)))
+            data.append(contentsOf: encodeVarint(UInt64(self.\(field.name))))
+            """
+
+        case "UInt":
+            return """
+            // Field \(fieldNumber): \(field.name) (UInt)
             data.append(contentsOf: encodeVarint(\(tag)))
             data.append(contentsOf: encodeVarint(UInt64(self.\(field.name))))
             """
@@ -1357,13 +1410,25 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             """
         case .int64:
             let tag = (fieldNumber << 3) | 0  // Varint
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Int64>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(bitPattern: value)))
+            // Handle both Int64 and Int (which is stored as Int64 in Protobuf)
+            let needsConversion = (typeInfo.baseType == "Int")
+            if needsConversion {
+                return """
+                // Field \(fieldNumber): \(field.name) (Optional<Int>)
+                if let value = self.\(field.name) {
+                    data.append(contentsOf: encodeVarint(\(tag)))
+                    data.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(value))))
+                }
+                """
+            } else {
+                return """
+                // Field \(fieldNumber): \(field.name) (Optional<Int64>)
+                if let value = self.\(field.name) {
+                    data.append(contentsOf: encodeVarint(\(tag)))
+                    data.append(contentsOf: encodeVarint(UInt64(bitPattern: value)))
+                }
+                """
             }
-            """
         case .uint32:
             let tag = (fieldNumber << 3) | 0  // Varint
             return """
@@ -1375,13 +1440,25 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             """
         case .uint64:
             let tag = (fieldNumber << 3) | 0  // Varint
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<UInt64>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(value))
+            // Handle both UInt64 and UInt (which is stored as UInt64 in Protobuf)
+            let needsConversion = (typeInfo.baseType == "UInt")
+            if needsConversion {
+                return """
+                // Field \(fieldNumber): \(field.name) (Optional<UInt>)
+                if let value = self.\(field.name) {
+                    data.append(contentsOf: encodeVarint(\(tag)))
+                    data.append(contentsOf: encodeVarint(UInt64(value)))
+                }
+                """
+            } else {
+                return """
+                // Field \(fieldNumber): \(field.name) (Optional<UInt64>)
+                if let value = self.\(field.name) {
+                    data.append(contentsOf: encodeVarint(\(tag)))
+                    data.append(contentsOf: encodeVarint(value))
+                }
+                """
             }
-            """
         case .bool:
             let tag = (fieldNumber << 3) | 0  // Varint
             return """
@@ -1595,11 +1672,14 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
     /// Classify a type as primitive or custom
     private static func classifyType(_ type: String) -> TypeCategory {
-        switch type {
+        // Normalize type by removing module prefixes (e.g., "Swift.Int64" -> "Int64", "Foundation.Data" -> "Data")
+        let normalizedType = type.split(separator: ".").last.map(String.init) ?? type
+
+        switch normalizedType {
         case "Int32": return .primitive(.int32)
-        case "Int64": return .primitive(.int64)
+        case "Int64", "Int": return .primitive(.int64)  // Int is treated as Int64
         case "UInt32": return .primitive(.uint32)
-        case "UInt64": return .primitive(.uint64)
+        case "UInt64", "UInt": return .primitive(.uint64)  // UInt is treated as UInt64
         case "Bool": return .primitive(.bool)
         case "String": return .primitive(.string)
         case "Data": return .primitive(.data)
@@ -1662,16 +1742,32 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 """
             }
         case .int64:
+            // Handle both Int64 and Int (which is stored as Int64 in Protobuf)
+            let needsConversion = (typeInfo.baseType == "Int")
             if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (Int64?)
-                    \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
-                """
+                if needsConversion {
+                    return """
+                    case \(fieldNumber): // \(field.name) (Int?)
+                        \(field.name) = Int(Int64(bitPattern: try decodeVarint(data, offset: &offset)))
+                    """
+                } else {
+                    return """
+                    case \(fieldNumber): // \(field.name) (Int64?)
+                        \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
+                    """
+                }
             } else {
-                return """
-                case \(fieldNumber): // \(field.name) (Int64)
-                    \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
-                """
+                if needsConversion {
+                    return """
+                    case \(fieldNumber): // \(field.name) (Int)
+                        \(field.name) = Int(Int64(bitPattern: try decodeVarint(data, offset: &offset)))
+                    """
+                } else {
+                    return """
+                    case \(fieldNumber): // \(field.name) (Int64)
+                        \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
+                    """
+                }
             }
         case .uint32:
             if isOptional {
@@ -1686,16 +1782,32 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 """
             }
         case .uint64:
+            // Handle both UInt64 and UInt (which is stored as UInt64 in Protobuf)
+            let needsConversion = (typeInfo.baseType == "UInt")
             if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (UInt64?)
-                    \(field.name) = try decodeVarint(data, offset: &offset)
-                """
+                if needsConversion {
+                    return """
+                    case \(fieldNumber): // \(field.name) (UInt?)
+                        \(field.name) = UInt(try decodeVarint(data, offset: &offset))
+                    """
+                } else {
+                    return """
+                    case \(fieldNumber): // \(field.name) (UInt64?)
+                        \(field.name) = try decodeVarint(data, offset: &offset)
+                    """
+                }
             } else {
-                return """
-                case \(fieldNumber): // \(field.name) (UInt64)
-                    \(field.name) = try decodeVarint(data, offset: &offset)
-                """
+                if needsConversion {
+                    return """
+                    case \(fieldNumber): // \(field.name) (UInt)
+                        \(field.name) = UInt(try decodeVarint(data, offset: &offset))
+                    """
+                } else {
+                    return """
+                    case \(fieldNumber): // \(field.name) (UInt64)
+                        \(field.name) = try decodeVarint(data, offset: &offset)
+                    """
+                }
             }
         case .bool:
             if isOptional {
@@ -2297,6 +2409,499 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             }
         }
     }
+
+    /// Generate enumMetadata(for:) method
+    ///
+    /// This method generates runtime enum detection code using CaseIterable protocol.
+    /// For each field with potential enum type, it attempts to cast to CaseIterable
+    /// and extract case names.
+    ///
+    /// **Generated Code Example**:
+    /// ```swift
+    /// public static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
+    ///     switch fieldName {
+    ///     case "status":
+    ///         if let enumType = ProductStatus.self as? any CaseIterable.Type {
+    ///             let cases = enumType.allCases.map { "\($0)" }
+    ///             return Schema.EnumMetadata(
+    ///                 typeName: "ProductStatus",
+    ///                 cases: cases
+    ///             )
+    ///         }
+    ///         return nil
+    ///     default:
+    ///         return nil
+    ///     }
+    /// }
+    /// ```
+    private static func generateEnumMetadataMethod(typeName: String, fields: [FieldInfo]) -> String {
+        // Filter fields with potential enum types
+        let enumCandidateFields = fields.filter { $0.enumTypeName != nil }
+
+        guard !enumCandidateFields.isEmpty else {
+            // No enum fields, return empty default implementation (already provided by protocol extension)
+            return ""
+        }
+
+        let cases = enumCandidateFields.map { field in
+            let enumTypeName = field.enumTypeName!
+            return """
+            case "\(field.name)":
+                    // Attempt to cast \(enumTypeName) to CaseIterable at runtime
+                    if let enumType = \(enumTypeName).self as? any CaseIterable.Type {
+                        let cases = enumType.allCases.map { "\\($0)" }
+                        return Schema.EnumMetadata(
+                            typeName: "\(enumTypeName)",
+                            cases: cases
+                        )
+                    }
+                    return nil
+            """
+        }.joined(separator: "\n            ")
+
+        return """
+
+            public static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
+                switch fieldName {
+                \(cases)
+                default:
+                    return nil
+                }
+            }
+        """
+    }
+
+    /// Generate reconstruct() method for covering index support
+    ///
+    /// This method generates code to reconstruct a record from covering index key and value.
+    /// The reconstruction extracts:
+    /// 1. Indexed fields from index key (via index.rootExpression.columnCount)
+    /// 2. Primary key from index key (last N elements)
+    /// 3. Covering fields from index value (via index.coveringFields)
+    ///
+    /// **Generated Code Example**:
+    /// ```swift
+    /// public static func reconstruct(
+    ///     indexKey: Tuple,
+    ///     indexValue: FDB.Bytes,
+    ///     index: Index,
+    ///     primaryKeyExpression: KeyExpression
+    /// ) throws -> User {
+    ///     let rootCount = index.rootExpression.columnCount
+    ///     let pkCount = primaryKeyExpression.columnCount
+    ///
+    ///     // Extract indexed field: city
+    ///     guard let city = indexKey[0] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(...)
+    ///     }
+    ///
+    ///     // Extract primary key: userID
+    ///     guard let userID = indexKey[rootCount] as? Int64 else {
+    ///         throw RecordLayerError.reconstructionFailed(...)
+    ///     }
+    ///
+    ///     // Extract covering fields
+    ///     let coveringTuple = try Tuple.unpack(from: indexValue)
+    ///     guard let name = coveringTuple[0] as? String,
+    ///           let email = coveringTuple[1] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(...)
+    ///     }
+    ///
+    ///     return User(userID: userID, city: city, name: name, email: email)
+    /// }
+    /// ```
+    private static func generateReconstructMethod(
+        typeName: String,
+        fields: [FieldInfo],
+        primaryKeyFields: [FieldInfo]
+    ) -> String {
+        // Generate field extraction and initialization code
+        var fieldExtractions: [String] = []
+        var initializationParams: [String] = []
+
+        // Track which fields need to be extracted from index key/value
+        // var indexedFieldsMap: [String: String] = [:]  // fieldName -> extraction code (unused)
+        var primaryKeyFieldsMap: [String: String] = [:]  // fieldName -> extraction code
+        var coveringFieldsMap: [String: String] = [:]  // fieldName -> extraction code
+
+        // Build field extraction code
+        for field in fields {
+            let fieldName = field.name
+            let typeInfo = field.typeInfo
+
+            // Skip transient fields
+            if field.isTransient {
+                continue
+            }
+
+            // Determine extraction strategy based on field role
+            if field.isPrimaryKey {
+                // Primary key field - extract from index key suffix
+                let extractionCode = generateFieldExtraction(
+                    field: field,
+                    source: "indexKey",
+                    indexVar: "pkIndex",
+                    isFromCoveringTuple: false
+                )
+                primaryKeyFieldsMap[fieldName] = extractionCode
+                fieldExtractions.append(extractionCode)
+            } else if typeInfo.isArray {
+                // Array fields - provide default empty arrays (can't be indexed/covered)
+                if typeInfo.isOptional {
+                    fieldExtractions.append("let \(fieldName): \(field.type) = nil")
+                } else {
+                    fieldExtractions.append("let \(fieldName): \(field.type) = []")
+                }
+            } else if case .custom = typeInfo.category {
+                // Custom types - cannot be directly in indexes/covering fields
+                // Custom types must be nested Recordable types, which cannot be reconstructed
+                // without deserialization. Always use nil (will fail at init if required).
+                fieldExtractions.append("let \(fieldName): \(typeInfo.baseType)? = nil  // Custom type - cannot reconstruct from index")
+            } else {
+                // Non-PK non-array field - will be extracted from either index key or covering value
+                let extractionCode = generateFieldExtraction(
+                    field: field,
+                    source: "field value",
+                    indexVar: "fieldIndex",
+                    isFromCoveringTuple: true
+                )
+                coveringFieldsMap[fieldName] = extractionCode
+            }
+
+            initializationParams.append("\(fieldName): \(fieldName)")
+        }
+
+        let initParams = initializationParams.joined(separator: ", ")
+
+        return """
+
+            public static func reconstruct(
+                indexKey: Tuple,
+                indexValue: [UInt8],
+                index: Index,
+                primaryKeyExpression: KeyExpression
+            ) throws -> Self {
+                let rootCount = index.rootExpression.columnCount
+                let pkCount = primaryKeyExpression.columnCount
+
+                // Validate index key has enough elements
+                guard indexKey.count >= rootCount + pkCount else {
+                    throw RecordLayerError.reconstructionFailed(
+                        recordType: "\(typeName)",
+                        reason: "Index key has \\(indexKey.count) elements, expected at least \\(rootCount + pkCount) (\\(rootCount) indexed + \\(pkCount) primary key)"
+                    )
+                }
+
+                // Extract primary key fields
+                var pkIndex = rootCount
+                \(generatePrimaryKeyExtractions(primaryKeyFields: primaryKeyFields))
+
+                // Extract indexed and covering fields
+                let coveringElements: [any TupleElement]
+                if !indexValue.isEmpty {
+                    let coveringTuple = Tuple(try Tuple.unpack(from: indexValue))
+                    coveringElements = (0..<coveringTuple.count).compactMap { coveringTuple[$0] }
+                } else {
+                    coveringElements = []  // Empty for non-covering indexes
+                }
+
+                // Map index.rootExpression field names to values
+                var indexedFieldValues: [String: any TupleElement] = [:]
+                let rootFieldNames = index.rootExpression.fieldNames()
+                for (i, fieldName) in rootFieldNames.enumerated() {
+                    if i < rootCount, let value = indexKey[i] {
+                        indexedFieldValues[fieldName] = value
+                    }
+                }
+
+                // Map index.coveringFields to values
+                var coveringFieldValues: [String: any TupleElement] = [:]
+                if let coveringExprs = index.coveringFields {
+                    // Extract field names from covering KeyExpressions
+                    let coveringFieldNames = coveringExprs.compactMap { expr -> String? in
+                        if let fieldExpr = expr as? FieldKeyExpression {
+                            return fieldExpr.fieldName
+                        }
+                        return nil
+                    }
+                    for (i, fieldName) in coveringFieldNames.enumerated() {
+                        if i < coveringElements.count {
+                            coveringFieldValues[fieldName] = coveringElements[i]
+                        }
+                    }
+                }
+
+                // Extract array and custom type fields (defaults)
+                \(generateArrayAndCustomTypeDefaults(fields: fields, primaryKeyFields: Set(primaryKeyFields.map { $0.name })))
+
+                // Extract all other non-PK fields from index/covering values
+                \(generateNonPKFieldExtractions(fields: fields, primaryKeyFields: Set(primaryKeyFields.map { $0.name })))
+
+                return .init(\(initParams))
+            }
+        """
+    }
+
+    /// Generate extraction code for primary key fields
+    private static func generatePrimaryKeyExtractions(primaryKeyFields: [FieldInfo]) -> String {
+        return primaryKeyFields.map { field in
+            let typeInfo = field.typeInfo
+            let fieldName = field.name
+
+            // Determine the expected type for casting
+            let castType: String
+            if case .primitive(let primitiveType) = typeInfo.category {
+                switch primitiveType {
+                case .int32, .uint32:
+                    castType = "Int64"  // Tuple stores as Int64
+                case .int64:
+                    castType = "Int64"
+                case .uint64:
+                    castType = "UInt64"
+                case .bool:
+                    castType = "Bool"
+                case .string:
+                    castType = "String"
+                case .double:
+                    castType = "Double"
+                case .float:
+                    castType = "Float"
+                case .data:
+                    castType = "FDB.Bytes"
+                }
+            } else {
+                // Custom types not supported in primary keys (should not happen)
+                castType = "Any"
+            }
+
+            // Generate extraction with type conversion
+            let conversionCode: String
+            if typeInfo.baseType == "Int32" || typeInfo.baseType == "UInt32" || typeInfo.baseType == "Int" || typeInfo.baseType == "UInt" {
+                conversionCode = "\(typeInfo.baseType)(value)"
+            } else {
+                conversionCode = "value"
+            }
+
+            return """
+                guard let pk_\(fieldName)_value = indexKey[pkIndex] as? \(castType) else {
+                        throw RecordLayerError.reconstructionFailed(
+                            recordType: "\(typeInfo.baseType)",
+                            reason: "Invalid primary key field '\(fieldName)': expected \(castType) at index \\(pkIndex)"
+                        )
+                    }
+                    let \(fieldName) = \(conversionCode.replacingOccurrences(of: "value", with: "pk_\(fieldName)_value"))
+                    pkIndex += 1
+            """
+        }.joined(separator: "\n                ")
+    }
+
+    /// Generate extraction code for non-primary key fields
+    private static func generateNonPKFieldExtractions(fields: [FieldInfo], primaryKeyFields: Set<String>) -> String {
+        // Filter out transient, PK, array, and custom type fields
+        // (arrays and custom types can't be directly indexed or covered)
+        let nonPKFields = fields.filter { field in
+            if field.isTransient || primaryKeyFields.contains(field.name) || field.typeInfo.isArray {
+                return false
+            }
+            // Also filter out custom types
+            switch field.typeInfo.category {
+            case .custom:
+                return false
+            default:
+                return true
+            }
+        }
+
+        return nonPKFields.map { field in
+            let typeInfo = field.typeInfo
+            let fieldName = field.name
+
+            // Determine the expected type for casting
+            let castType: String
+            if case .primitive(let primitiveType) = typeInfo.category {
+                switch primitiveType {
+                case .int32, .uint32:
+                    castType = "Int64"
+                case .int64:
+                    castType = "Int64"
+                case .uint64:
+                    castType = "UInt64"
+                case .bool:
+                    castType = "Bool"
+                case .string:
+                    castType = "String"
+                case .double:
+                    castType = "Double"
+                case .float:
+                    castType = "Float"
+                case .data:
+                    castType = "[UInt8]"  // FDB.Bytes is [UInt8]
+                }
+            } else {
+                // Custom types - nested Recordable
+                castType = typeInfo.baseType
+            }
+
+            // Generate extraction with fallback
+            let conversionCode: String
+            if typeInfo.baseType == "Int32" || typeInfo.baseType == "UInt32" || typeInfo.baseType == "Int" || typeInfo.baseType == "UInt" {
+                conversionCode = "\(typeInfo.baseType)(value)"
+            } else if typeInfo.baseType == "Data" {
+                // Convert FDB.Bytes ([UInt8]) to Data
+                conversionCode = "Data(value)"
+            } else {
+                conversionCode = "value"
+            }
+
+            // Handle optional vs required fields
+            let extractionCode: String
+            if typeInfo.isOptional {
+                let indexedConversion = conversionCode.replacingOccurrences(of: "value", with: "idx_\(fieldName)_val")
+                let coveringConversion = conversionCode.replacingOccurrences(of: "value", with: "cov_\(fieldName)_val")
+                extractionCode = """
+                    let \(fieldName): \(typeInfo.baseType)? = {
+                            if let idx_\(fieldName)_val = indexedFieldValues["\(fieldName)"] as? \(castType) {
+                                return \(indexedConversion)
+                            } else if let cov_\(fieldName)_val = coveringFieldValues["\(fieldName)"] as? \(castType) {
+                                return \(coveringConversion)
+                            }
+                            return nil
+                        }()
+                """
+            } else {
+                let indexedConversion = conversionCode.replacingOccurrences(of: "value", with: "idx_\(fieldName)_val")
+                let coveringConversion = conversionCode.replacingOccurrences(of: "value", with: "cov_\(fieldName)_val")
+                extractionCode = """
+                    let \(fieldName): \(typeInfo.baseType) = {
+                            if let idx_\(fieldName)_val = indexedFieldValues["\(fieldName)"] as? \(castType) {
+                                return \(indexedConversion)
+                            } else if let cov_\(fieldName)_val = coveringFieldValues["\(fieldName)"] as? \(castType) {
+                                return \(coveringConversion)
+                            }
+                            // This should not happen if index is properly configured
+                            fatalError("Field '\(fieldName)' not found in indexed or covering fields")
+                        }()
+                """
+            }
+
+            return extractionCode
+        }.joined(separator: "\n                ")
+    }
+
+    /// Generate reconstruct method if supported, otherwise generate stub that throws
+    private static func generateReconstructMethodIfSupported(
+        typeName: String,
+        fields: [FieldInfo],
+        primaryKeyFields: [FieldInfo]
+    ) -> String {
+        let primaryKeyFieldSet = Set(primaryKeyFields.map { $0.name })
+
+        // Check if record has non-reconstructible fields
+        if hasNonReconstructibleFields(fields: fields, primaryKeyFields: primaryKeyFieldSet) {
+            // Generate stub that throws immediately
+            return """
+
+                public static func reconstruct(
+                    indexKey: Tuple,
+                    indexValue: [UInt8],
+                    index: Index,
+                    primaryKeyExpression: KeyExpression
+                ) throws -> Self {
+                    throw RecordLayerError.reconstructionFailed(
+                        recordType: "\(typeName)",
+                        reason: "This record type contains required custom type fields and does not support covering index reconstruction. Use regular index scan instead."
+                    )
+                }
+            """
+        } else {
+            // Generate full reconstruct method
+            return generateReconstructMethod(typeName: typeName, fields: fields, primaryKeyFields: primaryKeyFields)
+        }
+    }
+
+    /// Generate field extraction code (helper for complex cases)
+    private static func generateFieldExtraction(
+        field: FieldInfo,
+        source: String,
+        indexVar: String,
+        isFromCoveringTuple: Bool
+    ) -> String {
+        // This is a placeholder for more complex extraction logic if needed
+        // Currently, extraction is handled inline in generateReconstructMethod
+        return "// Extract \(field.name) from \(source)"
+    }
+
+    /// Check if record has non-reconstructible fields
+    ///
+    /// A field is non-reconstructible if:
+    /// - It's a non-optional custom type (nested Recordable)
+    /// - (Non-optional arrays are OK because they default to [])
+    ///
+    /// - Parameters:
+    ///   - fields: All fields in the record
+    ///   - primaryKeyFields: Set of primary key field names
+    /// - Returns: `true` if record has non-reconstructible fields, `false` otherwise
+    private static func hasNonReconstructibleFields(fields: [FieldInfo], primaryKeyFields: Set<String>) -> Bool {
+        for field in fields {
+            // Skip transient and primary key fields
+            if field.isTransient || primaryKeyFields.contains(field.name) {
+                continue
+            }
+
+            // Check for non-optional custom type
+            if case .custom = field.typeInfo.category {
+                if !field.typeInfo.isOptional {
+                    // Non-optional custom type cannot be reconstructed from index
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Generate default values for array and custom type fields
+    private static func generateArrayAndCustomTypeDefaults(fields: [FieldInfo], primaryKeyFields: Set<String>) -> String {
+        let arrayAndCustomFields = fields.filter { field in
+            if field.isTransient || primaryKeyFields.contains(field.name) {
+                return false
+            }
+            // Check for array or custom type
+            if field.typeInfo.isArray {
+                return true
+            }
+            switch field.typeInfo.category {
+            case .custom:
+                return true
+            default:
+                return false
+            }
+        }
+
+        return arrayAndCustomFields.map { field in
+            if field.typeInfo.isArray {
+                if field.typeInfo.isOptional {
+                    return "let \(field.name): \(field.type) = nil"
+                } else {
+                    return "let \(field.name): \(field.type) = []"
+                }
+            } else {  // custom type
+                if field.typeInfo.isOptional {
+                    return "let \(field.name): \(field.type) = nil  // Custom type - cannot reconstruct from index"
+                } else {
+                    // Required custom type - throw error instead of crashing
+                    // Note: This should not be reached if supportsReconstruction = false is respected
+                    let baseTypeName = field.typeInfo.baseType
+                    return """
+                    // Required custom type - cannot reconstruct from index
+                    throw RecordLayerError.reconstructionFailed(
+                        recordType: "\\(Self.recordName)",
+                        reason: "Field '\(field.name)' is a required custom type (\(baseTypeName)) and cannot be reconstructed from index. This record does not support covering index reconstruction."
+                    )
+                    """
+                }
+            }
+        }.joined(separator: "\n                ")
+    }
 }
 
 // MARK: - Supporting Types
@@ -2307,6 +2912,7 @@ struct FieldInfo {
     let typeInfo: TypeInfo     // Parsed type information
     let isPrimaryKey: Bool
     let isTransient: Bool
+    let enumTypeName: String?  // Enum type name if field is an enum (e.g., "ProductStatus")
 }
 
 /// Box class for indirect storage of recursive types
@@ -2329,6 +2935,7 @@ struct TypeInfo {
 enum TypeCategory {
     case primitive(PrimitiveType)
     case custom                // Recordable-conforming custom type
+    case enumType(String)      // Enum type (type name stored for metadata)
 }
 
 enum PrimitiveType {

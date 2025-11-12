@@ -29,7 +29,7 @@ FDB Record Layer の Swift 実装に、SwiftData にインスパイアされた�
 |----------|----------|------|------|
 | **Phase 0: 基盤API** | ✅ 完了 | 100% | すべての基盤API実装済み |
 | **Phase 1: コアマクロ** | ✅ 完了 | 100% | @Recordable, @PrimaryKey, @Transient, @Default, @Attribute 実装済み |
-| **Phase 2: インデックスマクロ** | ✅ 完了 | 100% | #Index, #Unique, #FieldOrder 実装済み |
+| **Phase 2: インデックスマクロ** | ✅ 完了 | 100% | #Index, #Unique 実装済み |
 | **Phase 3: リレーションシップ** | ✅ 完了 | 100% | @Relationship 実装済み |
 | **Phase 4: ディレクトリレイヤー** | ✅ 完了 | 100% | #Directory 実装済み |
 | **全体進捗** | ✅ 完了 | **100%** | 本番環境で使用可能 |
@@ -214,23 +214,6 @@ struct User {
     var email: String  // 新規追加
 }
 ```
-
-### Protobufフィールド番号の明示的制御（必要な場合のみ）
-
-```swift
-@Recordable
-struct User {
-    // 他言語との互換性が必要な場合のみ使用
-    #FieldOrder<User>([\.userID, \.email, \.name, \.age])
-
-    @PrimaryKey var userID: Int64  // field_number = 1
-    var email: String               // field_number = 2
-    var name: String                // field_number = 3
-    var age: Int                    // field_number = 4
-}
-```
-
-**デフォルト動作**: `#FieldOrder` が指定されていない場合、宣言順で自動採番されます。
 
 ---
 
@@ -839,40 +822,6 @@ extension User {
 - `RecordMetaData.addRelationship()` メソッド
 - `IndexManager` がリレーションシップを考慮してインデックスを更新
 
-### 3.4 #FieldOrder マクロの展開例
-
-**ユーザーが書くコード**:
-
-```swift
-@Recordable
-struct User {
-    #FieldOrder<User>([\.userID, \.email, \.name])
-
-    @PrimaryKey var userID: Int64
-    var email: String
-    var name: String
-}
-```
-
-**マクロが展開するコード**:
-
-```swift
-extension User: Recordable {
-    static func fieldNumber(for fieldName: String) -> Int? {
-        switch fieldName {
-        case "userID": return 1  // #FieldOrder で指定した順序
-        case "email": return 2
-        case "name": return 3
-        default: return nil
-        }
-    }
-
-    // その他のRecordableメソッドは@Recordableマクロが生成
-}
-```
-
-**依存関係**: `Recordable.fieldNumber(for:)` メソッド（Section 2.1）
-
 ---
 
 ## Section 4: 実装フェーズ
@@ -1067,14 +1016,6 @@ let package = Package(
 
 **実装**: ✅ 完了
 
-#### 2.3 #FieldOrder マクロ実装 ✅
-
-**新規ファイル**: `FDBRecordLayerMacros/FieldOrderMacro.swift`
-
-**生成コード**: Section 3.4 のフィールド番号マッピング
-
-**実装**: ✅ 完了
-
 **Phase 2 完了日**: 2025-01-06
 **実際の所要時間**: 設計文書の見積もりより早く完了
 
@@ -1203,7 +1144,7 @@ public enum Cardinality {
 
 1. ✅ **基盤API**: すべての基盤API実装済み（Recordable、RecordAccess、RecordStore、IndexManager、QueryBuilder）
 2. ✅ **コアマクロ**: @Recordable, @PrimaryKey, @Transient, @Default, @Attribute 完全実装
-3. ✅ **インデックスマクロ**: #Index, #Unique, #FieldOrder 完全実装
+3. ✅ **インデックスマクロ**: #Index, #Unique 完全実装
 4. ✅ **リレーションシップ**: @Relationship 完全実装
 5. ✅ **テストスイート**: 16テスト全合格、すべてのプリミティブ型対応
 6. ✅ **Protobuf統合**: 手動.proto定義で多言語互換性を維持

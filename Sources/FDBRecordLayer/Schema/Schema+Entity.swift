@@ -178,10 +178,15 @@ extension Schema {
 
             for fieldName in allFields {
                 let isPrimaryKey = primaryKeyFields.contains(fieldName)
+
+                // Extract enum metadata if available
+                let enumMetadata = type.enumMetadata(for: fieldName)
+
                 let attribute = Attribute(
                     name: fieldName,
                     isOptional: false,  // Future: detect from type reflection
-                    isPrimaryKey: isPrimaryKey
+                    isPrimaryKey: isPrimaryKey,
+                    enumMetadata: enumMetadata
                 )
                 attributes.insert(attribute)
                 attributesByName[fieldName] = attribute
@@ -216,10 +221,96 @@ extension Schema {
             self.subentities = []
         }
 
+        /// Test-only initializer for manual Entity construction
+        ///
+        /// Allows creating Entity objects with custom attributes for testing purposes.
+        /// This is primarily used for schema evolution validation tests where we need
+        /// to construct entities with specific enum metadata.
+        ///
+        /// - Parameters:
+        ///   - name: Entity name
+        ///   - attributes: Array of attributes
+        public init(name: String, attributes: [Attribute]) {
+            self.name = name
+            self.attributes = Set(attributes)
+
+            // Build attributes by name map
+            var attributesByName: [String: Attribute] = [:]
+            for attribute in attributes {
+                attributesByName[attribute.name] = attribute
+            }
+            self.attributesByName = attributesByName
+
+            // Extract primary key fields
+            self.primaryKeyFields = attributes.filter { $0.isPrimaryKey }.map { $0.name }
+
+            // For test entities, create a simple primary key expression
+            let primaryKeyExpression: KeyExpression
+            if primaryKeyFields.count == 1 {
+                primaryKeyExpression = FieldKeyExpression(fieldName: primaryKeyFields[0])
+            } else if primaryKeyFields.count > 1 {
+                primaryKeyExpression = ConcatenateKeyExpression(
+                    children: primaryKeyFields.map { FieldKeyExpression(fieldName: $0) }
+                )
+            } else {
+                // No primary key specified - should not happen in real use
+                primaryKeyExpression = FieldKeyExpression(fieldName: "id")
+            }
+            self.primaryKeyExpression = primaryKeyExpression
+
+            // Empty relationships for test entities
+            self.relationships = Set()
+            self.relationshipsByName = [:]
+
+            // No indices for test entities
+            self.indices = []
+            self.uniquenessConstraints = []
+
+            // No inheritance
+            self.superentity = nil
+            self.superentityName = nil
+            self.subentities = []
+        }
+
         // MARK: - CustomDebugStringConvertible
 
         public var debugDescription: String {
             return "Entity(name: \(name), primaryKey: \(primaryKeyFields), indices: \(indices.count))"
+        }
+    }
+
+    // MARK: - EnumMetadata
+
+    /// Metadata for enum fields
+    ///
+    /// Captures enum type information for schema evolution validation.
+    /// Only populated for fields with CaseIterable enum types.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// enum Status: String, CaseIterable {
+    ///     case active, inactive, archived
+    /// }
+    ///
+    /// // EnumMetadata captured:
+    /// EnumMetadata(
+    ///     typeName: "Status",
+    ///     cases: ["active", "inactive", "archived"]
+    /// )
+    /// ```
+    public struct EnumMetadata: Sendable, Hashable {
+        /// Enum type name (e.g., "ProductStatus")
+        public let typeName: String
+
+        /// Enum case names in declaration order
+        /// For String raw values: ["active", "inactive"]
+        /// For Int raw values: ["0", "1", "2"]
+        /// For no raw value: ["case1", "case2"]
+        public let cases: [String]
+
+        public init(typeName: String, cases: [String]) {
+            self.typeName = typeName
+            self.cases = cases
         }
     }
 
@@ -238,17 +329,27 @@ extension Schema {
         /// Whether primary key
         public let isPrimaryKey: Bool
 
+        /// Enum metadata (nil for non-enum fields)
+        ///
+        /// Only populated if:
+        /// 1. Field type is an enum
+        /// 2. Enum conforms to CaseIterable
+        /// 3. Recordable.enumMetadata(for:) returns metadata
+        public let enumMetadata: EnumMetadata?
+
         // SchemaProperty conformance
         public var propertyName: String { name }
 
-        internal init(
+        public init(
             name: String,
-            isOptional: Bool,
-            isPrimaryKey: Bool
+            isOptional: Bool = false,
+            isPrimaryKey: Bool = false,
+            enumMetadata: EnumMetadata? = nil
         ) {
             self.name = name
             self.isOptional = isOptional
             self.isPrimaryKey = isPrimaryKey
+            self.enumMetadata = enumMetadata
         }
     }
 
@@ -321,7 +422,7 @@ extension Schema.Entity: Hashable {
 extension KeyExpression {
     /// Extract field names from KeyExpression
     /// This is a utility method for Schema.Entity to extract index field names
-    func fieldNames() -> [String] {
+    public func fieldNames() -> [String] {
         if let field = self as? FieldKeyExpression {
             return [field.fieldName]
         } else if let concat = self as? ConcatenateKeyExpression {

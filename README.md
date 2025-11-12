@@ -462,7 +462,7 @@ See [STATUS.md](docs/STATUS.md) for detailed implementation status.
 ### ✅ Phase 2: SwiftData-Style Macros (Complete)
 
 - @Recordable, @PrimaryKey, @Transient, @Default macros
-- #Index, #Unique, #Directory, #FieldOrder macros
+- #Index, #Unique, #Directory macros
 - @Relationship, @Attribute macros
 - Auto-generated store() methods
 - Comprehensive documentation and examples

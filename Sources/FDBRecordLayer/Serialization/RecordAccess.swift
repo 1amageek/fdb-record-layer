@@ -79,6 +79,37 @@ public protocol RecordAccess<Record>: Sendable {
     /// - Returns: Deserialized record
     /// - Throws: RecordLayerError.deserializationFailed if deserialization fails
     func deserialize(_ bytes: FDB.Bytes) throws -> Record
+
+    // MARK: - Covering Index Support
+
+    /// Check if this RecordAccess supports reconstruction from covering indexes
+    ///
+    /// This allows the query planner to skip covering index plans
+    /// for types that don't implement reconstruction.
+    ///
+    /// **Default**: false (safe, conservative)
+    ///
+    /// **Override**: Return true if reconstruct() is implemented
+    var supportsReconstruction: Bool { get }
+
+    /// Reconstruct a record from covering index key and value
+    ///
+    /// This method enables covering index optimization by reconstructing
+    /// records directly from index data without fetching from storage.
+    ///
+    /// - Parameters:
+    ///   - indexKey: The index key (unpacked tuple)
+    ///   - indexValue: The index value (packed covering fields)
+    ///   - index: The index definition
+    ///   - primaryKeyExpression: Primary key expression for field extraction
+    /// - Returns: Reconstructed record
+    /// - Throws: RecordLayerError.reconstructionNotImplemented or .reconstructionFailed
+    func reconstruct(
+        indexKey: Tuple,
+        indexValue: FDB.Bytes,
+        index: Index,
+        primaryKeyExpression: KeyExpression
+    ) throws -> Record
 }
 
 // MARK: - Default Implementation
@@ -115,6 +146,131 @@ extension RecordAccess {
     ) throws -> Tuple {
         let elements = try evaluate(record: record, expression: primaryKeyExpression)
         return TupleHelpers.toTuple(elements)
+    }
+
+    /// Reconstruct a record from index key and value
+    ///
+    /// This method is used by covering indexes to reconstruct records without
+    /// fetching from storage.
+    ///
+    /// **Field Assembly Strategy**:
+    /// 1. Extract indexed fields from index key (via rootExpression)
+    /// 2. Extract covering fields from index value (via coveringFields)
+    /// 3. Extract primary key from index key (last N elements)
+    /// 4. Reconstruct record with all available fields
+    ///
+    /// **Index Key Structure**: `<indexSubspace><rootExpression fields><primaryKey fields>`
+    ///
+    /// **Implementation Requirements**:
+    /// - For @Recordable types: Auto-generated via macro (recommended)
+    /// - For hand-written types: Must implement manually
+    /// - For legacy code: Fallback to record fetch (safe default)
+    ///
+    /// **Compatibility**:
+    /// This method has a default implementation that throws .reconstructionNotImplemented.
+    /// This ensures:
+    /// - Compile-time: No errors for existing RecordAccess implementations
+    /// - Runtime: Clear error message if covering index is used without implementation
+    /// - Migration: Gradual adoption possible
+    ///
+    /// **Manual Implementation Example**:
+    /// ```swift
+    /// struct User {
+    ///     let userID: Int64
+    ///     let name: String
+    ///     let email: String
+    ///     let city: String
+    /// }
+    ///
+    /// // Index: on city, covering [name, email]
+    /// // Key structure: <city><userID>
+    /// // Value structure: Tuple(name, email)
+    ///
+    /// func reconstruct(
+    ///     indexKey: Tuple,
+    ///     indexValue: FDB.Bytes,
+    ///     index: Index,
+    ///     primaryKeyExpression: KeyExpression
+    /// ) throws -> User {
+    ///     // 1. Determine field counts
+    ///     let rootCount = index.rootExpression.columnCount  // 1 (city)
+    ///     let pkCount = primaryKeyExpression.columnCount    // 1 (userID)
+    ///
+    ///     // 2. Extract indexed fields from index key
+    ///     guard let city = indexKey[0] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid city field in index key"
+    ///         )
+    ///     }
+    ///
+    ///     // 3. Extract primary key from index key (last N elements)
+    ///     guard let userID = indexKey[rootCount] as? Int64 else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid userID field in index key"
+    ///         )
+    ///     }
+    ///
+    ///     // 4. Extract covering fields from index value
+    ///     let coveringTuple = try Tuple.unpack(from: indexValue)
+    ///     guard let name = coveringTuple[0] as? String,
+    ///           let email = coveringTuple[1] as? String else {
+    ///         throw RecordLayerError.reconstructionFailed(
+    ///             recordType: "User",
+    ///             reason: "Invalid covering fields in index value"
+    ///         )
+    ///     }
+    ///
+    ///     // 5. Reconstruct record
+    ///     return User(userID: userID, name: name, email: email, city: city)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - indexKey: The index key (unpacked tuple)
+    ///   - indexValue: The index value (packed covering fields)
+    ///   - index: The index definition
+    ///   - primaryKeyExpression: Primary key expression for field extraction
+    /// - Returns: Reconstructed record
+    /// - Throws: RecordLayerError.reconstructionNotImplemented or .reconstructionFailed
+    public func reconstruct(
+        indexKey: Tuple,
+        indexValue: FDB.Bytes,
+        index: Index,
+        primaryKeyExpression: KeyExpression
+    ) throws -> Record {
+        // DEFAULT IMPLEMENTATION: Throw not implemented error
+        //
+        // This is intentionally not a fatalError() to allow gradual migration:
+        // 1. Old code without reconstruct() → Runtime error with clear message
+        // 2. New code with @Recordable → Auto-generated implementation
+        // 3. Hand-written code → Manual implementation
+        //
+        // The error includes actionable guidance for users
+        throw RecordLayerError.reconstructionNotImplemented(
+            recordType: String(describing: Record.self),
+            suggestion: """
+            To use covering indexes with this record type, either:
+            1. Use @Recordable macro (auto-generates reconstruct method)
+            2. Manually implement RecordAccess.reconstruct()
+            3. Avoid covering indexes for this type (use regular indexes)
+            """
+        )
+    }
+
+    /// Check if this RecordAccess supports reconstruction
+    ///
+    /// This allows the query planner to skip covering index plans
+    /// for types that don't implement reconstruction.
+    ///
+    /// **Default**: false (safe, conservative)
+    ///
+    /// **Override**: Return true if reconstruct() is implemented
+    ///
+    /// - Returns: true if reconstruct() is supported
+    public var supportsReconstruction: Bool {
+        return false
     }
 }
 

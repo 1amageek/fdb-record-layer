@@ -34,6 +34,10 @@ public enum RecordLayerError: Error, Sendable {
 
     // Resource limits
     case resourceExhausted(String)
+
+    // Covering Index errors
+    case reconstructionNotImplemented(recordType: String, suggestion: String)
+    case reconstructionFailed(recordType: String, reason: String)
 }
 
 extension RecordLayerError: LocalizedError {
@@ -89,6 +93,16 @@ extension RecordLayerError: LocalizedError {
         // Resource limits
         case .resourceExhausted(let message):
             return "Resource exhausted: \(message)"
+
+        // Covering Index errors
+        case .reconstructionNotImplemented(let recordType, let suggestion):
+            return """
+                Record reconstruction not implemented for type: \(recordType)
+
+                \(suggestion)
+                """
+        case .reconstructionFailed(let recordType, let reason):
+            return "Record reconstruction failed for type \(recordType): \(reason)"
         }
     }
 }
