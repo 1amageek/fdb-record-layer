@@ -184,9 +184,11 @@ public final class MigrationManager: Sendable {
         }
 
         // Create migration context
+        let metadataSubspace = migrationSubspace.subspace("metadata")
         let context = MigrationContext(
             database: database,
             schema: schema,
+            metadataSubspace: metadataSubspace,
             storeFactory: { recordType in
                 // Factory to create record stores
                 // This would need proper implementation

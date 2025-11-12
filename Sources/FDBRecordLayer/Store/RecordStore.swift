@@ -443,6 +443,44 @@ public final class RecordStore<Record: Recordable>: Sendable {
         )
     }
 
+    // MARK: - Scan
+
+    /// Scan all records of this type
+    ///
+    /// Returns an async sequence that iterates over all records in the store.
+    /// This is useful for:
+    /// - GROUP BY operations
+    /// - Data migration and transformation
+    /// - Full table scans
+    ///
+    /// **Performance Considerations**:
+    /// - Uses snapshot reads (no conflicts)
+    /// - Streams results to avoid loading all records into memory
+    /// - Respects FoundationDB transaction limits (5s timeout, 10MB size)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Scan all users
+    /// for try await user in store.scan() {
+    ///     print(user.name)
+    /// }
+    ///
+    /// // Count all records
+    /// var count = 0
+    /// for try await _ in store.scan() {
+    ///     count += 1
+    /// }
+    /// ```
+    ///
+    /// - Returns: Async sequence of records
+    public func scan() -> RecordScanSequence<Record> {
+        return RecordScanSequence(
+            database: database,
+            recordSubspace: recordSubspace,
+            recordName: Record.recordName
+        )
+    }
+
     // MARK: - Delete
 
     /// Delete a record
@@ -807,5 +845,184 @@ extension RecordStore {
         }
 
         return results
+    }
+}
+
+// MARK: - Record Scan Sequence
+
+/// Async sequence for scanning all records of a type
+///
+/// This sequence provides streaming access to all records in a RecordStore,
+/// allowing efficient iteration without loading all records into memory.
+///
+/// **Features:**
+/// - Lazy transaction creation on first `next()` call
+/// - Snapshot reads to avoid transaction conflicts
+/// - Resumable scans with lastKey tracking
+/// - Automatic key deduplication with successor() function
+///
+/// **Implementation Details**:
+/// - Uses snapshot reads to avoid transaction conflicts
+/// - Streams results as they are read from FoundationDB
+/// - Automatically handles record deserialization
+/// - Respects FoundationDB's transaction limits
+/// - Supports batched processing with resumption
+///
+/// **Usage**:
+/// ```swift
+/// // Simple scan
+/// let store = RecordStore<User>(...)
+/// for try await user in store.scan() {
+///     print(user.name)
+/// }
+///
+/// // Batch scan with resumption
+/// var lastKey: FDB.Bytes? = nil
+/// var iterator = store.scan(resumeFrom: lastKey).makeAsyncIterator()
+/// while let record = try await iterator.next() {
+///     process(record)
+///     lastKey = iterator.getLastKey()
+/// }
+/// ```
+public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
+    public typealias Element = Record
+
+    private let database: any DatabaseProtocol
+    private let recordSubspace: Subspace
+    private let recordName: String
+    private let resumeFrom: FDB.Bytes?
+
+    init(
+        database: any DatabaseProtocol,
+        recordSubspace: Subspace,
+        recordName: String,
+        resumeFrom: FDB.Bytes? = nil
+    ) {
+        self.database = database
+        self.recordSubspace = recordSubspace
+        self.recordName = recordName
+        self.resumeFrom = resumeFrom
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        return AsyncIterator(
+            database: database,
+            recordSubspace: recordSubspace,
+            recordName: recordName,
+            resumeFrom: resumeFrom
+        )
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        public typealias Element = Record
+
+        private let database: any DatabaseProtocol
+        private let recordSubspace: Subspace
+        private let recordName: String
+        private let maxRecordsPerBatch: Int
+        private var kvIterator: FDB.AsyncKVSequence.AsyncIterator?
+        private var transaction: (any TransactionProtocol)?
+        private let recordAccess: GenericRecordAccess<Record>
+        private var lastKey: FDB.Bytes?
+        private var recordsInCurrentBatch: Int
+
+        init(
+            database: any DatabaseProtocol,
+            recordSubspace: Subspace,
+            recordName: String,
+            resumeFrom: FDB.Bytes? = nil,
+            maxRecordsPerBatch: Int = 100
+        ) {
+            self.database = database
+            self.recordSubspace = recordSubspace
+            self.recordName = recordName
+            self.maxRecordsPerBatch = maxRecordsPerBatch
+            self.recordAccess = GenericRecordAccess<Record>()
+            self.lastKey = resumeFrom
+            self.recordsInCurrentBatch = 0
+        }
+
+        /// Get the next key after the given key
+        ///
+        /// This is critical for resuming range scans without duplicates.
+        /// FDB range reads are inclusive on both ends, so using the same key
+        /// as begin would re-read the last record.
+        ///
+        /// **Example:**
+        /// ```
+        /// "foo" -> "foo\x00" (next possible key)
+        /// "bar\x01\x02" -> "bar\x01\x02\x00"
+        /// ```
+        ///
+        /// - Parameter key: The current key
+        /// - Returns: The lexicographically next key
+        private func successor(of key: FDB.Bytes) -> FDB.Bytes {
+            var nextKey = key
+            // Append 0x00 byte to get the next possible key
+            nextKey.append(0x00)
+            return nextKey
+        }
+
+        public mutating func next() async throws -> Record? {
+            // Create/recreate transaction if needed (for batching to respect 5s/10MB limits)
+            if kvIterator == nil {
+                // Reset batch counter
+                recordsInCurrentBatch = 0
+
+                // Create new transaction
+                let tx = try database.createTransaction()
+                self.transaction = tx
+
+                // Build subspace for this record type
+                let effectiveSubspace = recordSubspace.subspace(recordName)
+
+                // Resume from successor of lastKey to avoid duplication
+                let beginKey: FDB.Bytes
+                if let last = lastKey {
+                    beginKey = successor(of: last)
+                } else {
+                    beginKey = effectiveSubspace.range().begin
+                }
+
+                let endKey = effectiveSubspace.range().end
+
+                // Create range scan with snapshot read
+                let sequence = tx.getRange(
+                    begin: beginKey,
+                    end: endKey,
+                    snapshot: true  // Snapshot read: no conflicts
+                )
+
+                self.kvIterator = sequence.makeAsyncIterator()
+            }
+
+            // Get next key-value pair
+            guard let (key, value) = try await kvIterator?.next() else {
+                return nil
+            }
+
+            // Track last key for resumption
+            self.lastKey = key
+
+            // Increment batch counter
+            recordsInCurrentBatch += 1
+
+            // Check if we've reached batch limit - force transaction recreation on next call
+            if recordsInCurrentBatch >= maxRecordsPerBatch {
+                self.kvIterator = nil  // Force new transaction on next iteration
+            }
+
+            // Deserialize record
+            return try recordAccess.deserialize(value)
+        }
+
+        /// Get the last key read by this iterator
+        ///
+        /// Useful for resuming scans from the last processed record.
+        ///
+        /// - Returns: The last key, or nil if no records have been read
+        public func getLastKey() -> FDB.Bytes? {
+            return lastKey
+        }
     }
 }

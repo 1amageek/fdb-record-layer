@@ -5,9 +5,38 @@
 ## 目次
 
 ### Part 1: FoundationDB基礎
+- FoundationDBとは
+- コアアーキテクチャ
+- 標準レイヤー（Tuple、Subspace、Directory）
+- トランザクション制限
+- fdbcli コマンドライン
+- Subspace.pack() vs Subspace.subspace() の設計ガイドライン
+- データモデリングパターン
+- トランザクション分離レベルと競合制御
+- アトミック操作（MutationType）
+- Versionstamp
+- Watch操作
+- パフォーマンスチューニング
+- エラーハンドリング
+- Subspaceの正しい使い方
+
 ### Part 2: fdb-swift-bindings API
+- DatabaseProtocol と TransactionProtocol
+- Tuple
+- Subspace
+- DirectoryLayer
+
 ### Part 3: Swift並行性パターン
+- final class + Mutex パターン
+
 ### Part 4: Record Layer設計
+- インデックス状態管理
+- インデックスタイプ（VALUE、COUNT、SUM、MIN/MAX）
+- RangeSet（進行状況追跡）
+- オンラインインデックス構築
+- クエリプランナー
+- Record Layerアーキテクチャ
+- マクロAPI
 
 ---
 
@@ -129,6 +158,159 @@ try transaction.setOption(to: withUnsafeBytes(of: Int64(50_000_000).littleEndian
 // タイムアウト設定
 try transaction.setOption(to: withUnsafeBytes(of: Int64(3000).littleEndian) { Array($0) },
                           forOption: .timeout)  // 3秒
+```
+
+### fdbcli コマンドライン
+
+**fdbcli**はFoundationDBクラスタの管理・操作を行うコマンドラインツールです。
+
+#### 起動とオプション
+
+```bash
+# 基本起動（デフォルトクラスタファイルを使用）
+fdbcli
+
+# クラスタファイルを指定
+fdbcli -C /path/to/fdb.cluster
+
+# コマンドを実行して終了
+fdbcli --exec "status"
+
+# 複数コマンドを実行
+fdbcli --exec "status; get mykey"
+
+# ステータスチェックをスキップ
+fdbcli --no-status
+```
+
+#### トランザクションモード
+
+| モード | 説明 | 使用方法 |
+|--------|------|---------|
+| **Autocommit** (デフォルト) | 各コマンドが自動的にコミット | `set key value` |
+| **Transaction** | 複数操作を1つのトランザクションで実行 | `begin` → 操作 → `commit` |
+
+#### 主要コマンド
+
+**クラスタ管理**:
+
+```bash
+# ステータス確認
+status                    # 基本情報
+status details           # 詳細統計
+status json              # JSON形式（スクリプト用）
+
+# データベース設定変更
+configure triple ssd     # triple redundancy + SSD storage
+configure single memory  # 単一サーバー + メモリストレージ
+
+# サーバー除外/復帰
+exclude 10.0.0.1:4500   # サーバーを除外
+include 10.0.0.1:4500   # サーバーを復帰
+
+# コーディネーター変更
+coordinators auto        # 自動選択
+
+# データベースロック
+lock                     # ロック
+unlock <PASSPHRASE>     # アンロック
+```
+
+**データ操作**:
+
+```bash
+# 書き込みモードを有効化（デフォルトは無効）
+writemode on
+
+# キー・値の操作
+set "key" "value"              # 設定
+get "key"                      # 取得
+clear "key"                    # 削除
+clearrange "begin" "end"       # 範囲削除
+getrange "begin" "end" 100     # 範囲取得（最大100件）
+
+# トランザクション
+begin                          # 開始
+set "key1" "value1"
+set "key2" "value2"
+commit                         # コミット
+rollback                       # ロールバック
+reset                          # リセット
+```
+
+**キー・値のエスケープ**:
+
+```bash
+# スペースを含むキー
+set "key with spaces" "value"
+set key\ with\ spaces "value"
+set key\x20with\x20spaces "value"
+
+# バイナリデータ（16進数）
+set "\x01\x02\x03" "\xFF\xFE"
+
+# クォーテーション
+set "key\"with\"quotes" "value"
+```
+
+**設定とノブ**:
+
+```bash
+# ノブ（内部パラメータ）の設定
+setknob <KNOBNAME> <VALUE>
+getknob <KNOBNAME>
+clearknob <KNOBNAME>
+```
+
+**その他**:
+
+```bash
+# バージョン取得
+getversion
+
+# テナント使用
+usetenant myTenant
+defaulttenant
+
+# ヘルプ
+help                # コマンド一覧
+help escaping       # エスケープ方法
+help options        # トランザクションオプション
+
+# 終了
+exit / quit
+```
+
+#### 実用例
+
+**クラスタ初期化**:
+
+```bash
+fdbcli --exec "configure new single memory"
+```
+
+**データの確認**:
+
+```bash
+fdbcli --exec "writemode on; set test_key test_value; get test_key"
+```
+
+**ステータス監視**:
+
+```bash
+watch -n 5 'fdbcli --exec "status json" | jq ".cluster.qos"'
+```
+
+**バッチ操作**:
+
+```bash
+fdbcli <<EOF
+writemode on
+begin
+set user:1 {"name":"Alice"}
+set user:2 {"name":"Bob"}
+commit
+EOF
 ```
 
 ### ⚠️ CRITICAL: Subspace.pack() vs Subspace.subspace() の設計ガイドライン
@@ -500,6 +682,325 @@ transaction.setValue(Tuple(name, otherData).pack(),
 for try await (key, value) in transaction.getRange(...) {
     let data = try Tuple.unpack(from: value)
     let name = data[0] as? String
+}
+```
+
+### トランザクション分離レベルと競合制御
+
+FoundationDBはOCC（Optimistic Concurrency Control）を使用したStrict Serializabilityを提供します。
+
+**分離レベル**:
+
+| レベル | 動作 | 競合検知 | 用途 |
+|--------|------|---------|------|
+| **Strictly Serializable** (デフォルト) | 読み取りが競合範囲に追加される | あり | 通常のトランザクション |
+| **Snapshot Read** | 読み取りが競合範囲に追加されない | なし | 読み取り専用、分析クエリ |
+
+**Read-Your-Writes（RYW）動作**:
+
+デフォルトで、トランザクション内の読み取りは同じトランザクション内の書き込みを見ることができます：
+
+```swift
+try await database.withTransaction { transaction in
+    // 書き込み
+    transaction.setValue([0x01], for: key)
+
+    // 同じトランザクション内で読み取り → 書き込んだ値が見える
+    let value = try await transaction.getValue(for: key, snapshot: false)
+    // value == [0x01]
+}
+```
+
+**競合検出の仕組み**:
+
+1. **Read Version**: トランザクションの最初の読み取り時に読み取りバージョンを取得
+2. **Conflict Range**: 読み取り・書き込みしたキー範囲を記録
+3. **Commit Version**: コミット時に新しいバージョンを取得
+4. **Conflict Check**: Resolverが、読み取りバージョンとコミットバージョンの間に他のトランザクションが書き込んだかをチェック
+5. **競合時**: `not_committed`エラーで自動リトライ
+
+**競合回避のテクニック**:
+
+```swift
+// 方法1: Snapshot Readを使用（競合なし）
+let value = try await transaction.getValue(for: key, snapshot: true)
+
+// 方法2: Atomic Operationを使用（読み取り競合なし）
+transaction.atomicOp(
+    key: counterKey,
+    param: withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) },
+    mutationType: .add
+)
+
+// 方法3: Read-Your-Writesを無効化（小さなパフォーマンス向上）
+// transaction.setOption(.readYourWritesDisable)
+```
+
+### アトミック操作（MutationType）
+
+FoundationDBは読み取り-変更-書き込みサイクルを1つの操作にまとめた**アトミック操作**を提供します。これにより、頻繁に更新されるキー（カウンターなど）の競合を最小化できます。
+
+**主要なアトミック操作**:
+
+| 操作 | 説明 | 用途 |
+|------|------|------|
+| **ADD** | Little-endian整数の加算 | カウンター、残高の増減 |
+| **BIT_AND** | ビット単位のAND | フラグのクリア |
+| **BIT_OR** | ビット単位のOR | フラグのセット |
+| **BIT_XOR** | ビット単位のXOR | フラグのトグル |
+| **MAX** | 既存値とparamの大きい方を保存 | 最大値の追跡 |
+| **MIN** | 既存値とparamの小さい方を保存 | 最小値の追跡 |
+| **BYTE_MAX** | 辞書順で大きい方を保存 | 文字列の最大値 |
+| **BYTE_MIN** | 辞書順で小さい方を保存 | 文字列の最小値 |
+| **APPEND_IF_FITS** | 既存値にparamを追加（100KB以下の場合） | ログの追記 |
+| **COMPARE_AND_CLEAR** | 既存値がparamと等しい場合にクリア | 条件付きクリア |
+| **SET_VERSIONSTAMPED_KEY** | キーにversionstampを埋め込む | 一意で順序付けられたキー |
+| **SET_VERSIONSTAMPED_VALUE** | 値にversionstampを埋め込む | タイムスタンプ付きデータ |
+
+**使用例**:
+
+```swift
+// ADDでカウンターをインクリメント
+let incrementBytes = withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) }
+transaction.atomicOp(key: counterKey, param: incrementBytes, mutationType: .add)
+
+// MAXで最大値を更新
+let newMax = withUnsafeBytes(of: Int64(1000).littleEndian) { Array($0) }
+transaction.atomicOp(key: maxValueKey, param: newMax, mutationType: .max)
+
+// APPEND_IF_FITSでログエントリを追加
+let logEntry = "Event: User login at \(Date())".data(using: .utf8)!
+transaction.atomicOp(key: logKey, param: Array(logEntry), mutationType: .appendIfFits)
+```
+
+**重要な特性**:
+- **競合回避**: アトミック操作は読み取り競合範囲を追加しない → 高い並行性
+- **非冪等性**: 一部の操作（ADD、APPEND_IF_FITSなど）は冪等ではないため、`commit_unknown_result`エラー時の対応に注意
+- **パラメータエンコーディング**: paramは適切にエンコードされたバイト列である必要がある
+
+### Versionstamp
+
+**Versionstamp**は、FoundationDBがコミット時に割り当てる12バイトの一意で単調増加する値です。AUTO_INCREMENT PRIMARY KEYに相当する機能を提供します。
+
+**構造**:
+
+```
+[8バイト: トランザクションバージョン][2バイト: バッチバージョン][2バイト: ユーザーバージョン]
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^       ^^^^^^^^^^^^^^^^^^       ^^^^^^^^^^^^^^^^^^
+ Big-endian                           Big-endian               ユーザー定義順序
+ データベースのコミットバージョン      同一バッチ内の順序       トランザクション内の順序
+```
+
+**使用例**:
+
+```swift
+// 1. Incomplete Versionstampを含むキーを作成
+var keyBytes = Tuple("log", Versionstamp.incomplete()).pack()
+
+// 2. SET_VERSIONSTAMPED_KEYでコミット時にversionstampを埋め込む
+transaction.atomicOp(
+    key: keyBytes,
+    param: logDataBytes,
+    mutationType: .setVersionstampedKey
+)
+
+// 3. コミット後、実際のversionstampを取得
+try await transaction.commit()
+let versionstamp = try await transaction.getVersionstamp()
+```
+
+**主な用途**:
+
+1. **ログスキャン**: 時系列順にデータを効率的に取得
+2. **追記専用データ構造**: 読み取り競合なしでデータを追加
+3. **グローバル順序**: すべてのトランザクションにわたる順序を保証
+4. **トランザクション内の順序**: ユーザーバージョンで同一トランザクション内の順序を定義
+
+**注意**:
+- Versionstampは単一FoundationDBクラスタのライフタイム全体で一意性と単調性を保証
+- 異なるクラスタ間でデータを移動する場合、単調性が崩れる可能性がある
+
+### Watch操作
+
+**Watch**は特定のキーの変更を監視する仕組みで、ポーリング不要のリアクティブプログラミングを可能にします。
+
+**仕組み**:
+
+```swift
+try await database.withTransaction { transaction in
+    // 現在の値を取得
+    let currentValue = try await transaction.getValue(for: key, snapshot: false)
+
+    // Watchを作成（トランザクションコミット後に変更を監視）
+    let watch = transaction.watch(key: key)
+
+    try await transaction.commit()
+
+    // 値が変更されるまで待機
+    try await watch.wait()
+    print("Key '\(key)' changed!")
+}
+```
+
+**制限事項**:
+
+1. **トランザクション依存**: Watchを作成したトランザクションがコミットされるまで、他のトランザクションの変更を報告しない
+2. **Read-Your-Writes無効時**: `readYourWritesDisable`が設定されている場合、Watchを作成できない
+3. **エラー処理**: トランザクションがコミット失敗した場合、Watchもエラーになる
+4. **Watch制限**: デフォルトで1接続あたり10,000個まで（`too_many_watches`エラー）
+5. **値の保証なし**: Watchは変更があったことだけを保証し、その後の読み取り値を保証しない
+
+**リアクティブな読み取りループの例**:
+
+```swift
+func watchingReadLoop(database: any DatabaseProtocol, keys: [FDB.Bytes]) async throws {
+    var cache: [FDB.Bytes: FDB.Bytes?] = [:]
+
+    while true {
+        // 値を読み取り、Watchを作成
+        var watches: [Task<Void, Error>] = []
+        try await database.withTransaction { transaction in
+            for key in keys {
+                let value = try await transaction.getValue(for: key, snapshot: false)
+
+                if cache[key] != value {
+                    print("Key changed: \(key) -> \(value)")
+                    cache[key] = value
+                }
+
+                let watch = transaction.watch(key: key)
+                watches.append(Task {
+                    try await watch.wait()
+                })
+            }
+        }
+
+        // いずれかのWatchが発火するまで待機
+        _ = try await Task.race(watches)
+    }
+}
+```
+
+### パフォーマンスチューニング
+
+#### キー設計パターン
+
+**ベストプラクティス**:
+
+1. **小さいキーサイズ**: 1KB以下、理想は32バイト以下
+2. **適度な値サイズ**: 10KB以下推奨、100KB上限
+3. **Range読み取り用の構造化**: 頻繁にアクセスするデータを効率的に取得できるキー設計
+4. **順序保持エンコーディング**: Tuple Layerを使用して型安全かつ順序保持
+
+**複合キーの例**:
+
+```swift
+// ユーザーの購入履歴: (purchases, userID, timestamp) = orderData
+let key = purchasesSubspace.pack(Tuple(userID, timestamp))
+transaction.setValue(orderData, for: key)
+
+// 特定ユーザーの履歴を時系列で取得
+let (begin, end) = purchasesSubspace.range(from: Tuple(userID), to: Tuple(userID, "\xFF"))
+for try await (key, value) in transaction.getRange(
+    beginSelector: .firstGreaterOrEqual(begin),
+    endSelector: .firstGreaterOrEqual(end),
+    snapshot: true
+) {
+    // 処理
+}
+```
+
+#### ホットスポット回避
+
+**問題**: 単一キーへの頻繁な更新（毎秒10-100回以上）は競合を引き起こす
+
+**解決策**:
+
+1. **キーの分割**: カウンターをN個に分割してランダムに更新
+
+```swift
+// カウンターを10個に分割
+let shardID = Int.random(in: 0..<10)
+let shardKey = counterSubspace.pack(Tuple("counter", shardID))
+transaction.atomicOp(key: shardKey, param: incrementBytes, mutationType: .add)
+
+// 合計を取得
+var total: Int64 = 0
+for shardID in 0..<10 {
+    let key = counterSubspace.pack(Tuple("counter", shardID))
+    if let bytes = try await transaction.getValue(for: key, snapshot: true) {
+        total += bytes.withUnsafeBytes { $0.load(as: Int64.self) }
+    }
+}
+```
+
+2. **アトミック操作の使用**: ADDやMAXなどは読み取り競合を発生させない
+
+3. **Snapshot Readの使用**: 読み取りのみの操作で競合を削減
+
+#### トランザクションバッチング
+
+FoundationDBは高い並行性で最大スループットを達成します：
+
+1. **暗黙のバッチング**: Commit ProxyとGRV Proxyが自動的にリクエストをバッチ処理
+2. **クライアント側の並行性**: 多数の並行スレッド/プロセスで十分なリクエストを発行
+3. **並列読み取り**: 単一トランザクション内で複数の読み取りを並列実行
+
+```swift
+// ❌ 悪い例: 順次読み取り
+let value1 = try await transaction.getValue(for: key1, snapshot: false)
+let value2 = try await transaction.getValue(for: key2, snapshot: false)
+let value3 = try await transaction.getValue(for: key3, snapshot: false)
+
+// ✅ 良い例: 並列読み取り
+async let value1 = transaction.getValue(for: key1, snapshot: false)
+async let value2 = transaction.getValue(for: key2, snapshot: false)
+async let value3 = transaction.getValue(for: key3, snapshot: false)
+let results = try await (value1, value2, value3)
+```
+
+#### モニタリング戦略
+
+**fdbcli status**:
+
+```bash
+$ fdbcli
+fdb> status
+
+# 主要メトリクス:
+# - Read rate: 読み取りスループット
+# - Write rate: 書き込みスループット
+# - Transactions started/committed: トランザクション数
+# - Conflict rate: 競合率（高い場合は最適化が必要）
+```
+
+**status json**（詳細メトリクス）:
+
+```bash
+fdb> status json
+
+# チェック項目:
+# - cluster.workload.operations.reads: 読み取り操作数
+# - cluster.workload.operations.writes: 書き込み操作数
+# - cluster.qos.worst_queue_bytes_storage_server: ストレージサーバーのキュー
+# - cluster.processes[].memory.available_bytes: 利用可能メモリ（4GB以上推奨）
+```
+
+**Swift APIでのメトリクス取得**:
+
+```swift
+// \xff/metrics/ のSpecial Key Spaceを使用
+let metricsSubspace = Subspace(prefix: [0xFF, 0xFF] + "/metrics/".data(using: .utf8)!)
+let (begin, end) = metricsSubspace.range()
+
+try await database.withTransaction { transaction in
+    for try await (key, value) in transaction.getRange(
+        beginSelector: .firstGreaterOrEqual(begin),
+        endSelector: .firstGreaterOrEqual(end),
+        snapshot: true
+    ) {
+        print("Metric: \(String(data: Data(key), encoding: .utf8)!) = \(value)")
+    }
 }
 ```
 
@@ -1334,14 +1835,6 @@ let users = try await store.query(User.self)
 
 ---
 
-**Last Updated**: 2025-01-11
-**FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+ | **Record Layer (Swift)**: プロダクション対応（Phase 1 & 2 完了）
-
-**実装済み機能**:
-- ✅ **インデックスタイプ**: VALUE, COUNT, SUM, MIN/MAX
-- ✅ **マクロAPI**: @Recordable, #Index, #Directory（完全実装）
-- ✅ **クエリ最適化**: コストベースプランナー、統計情報管理
-- ✅ **オンライン操作**: インデックス構築、スクラビング
-- ✅ **Swift 6対応**: Strict concurrency mode準拠
-
-**テスト**: 272テスト合格（10K+レコードのロードテスト含む）
+**Last Updated**: 2025-01-12
+**FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
+**Record Layer (Swift)**: プロダクション対応 | **テスト**: 272合格

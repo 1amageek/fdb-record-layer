@@ -303,24 +303,25 @@ public struct AnyTypedRecordCursor<Record: Sendable>: TypedRecordCursor, Sendabl
             self.cursor = cursor
         }
 
-        func makeAsyncIterator() -> C.AsyncIterator {
-            return cursor.makeAsyncIterator()
+        /// Type-erased iterator creation
+        ///
+        /// Returns AnyAsyncIterator directly to avoid exposing C.AsyncIterator type
+        /// to @Sendable closures. This method performs type erasure at the CursorBox level.
+        func makeTypeErasedIterator() -> AnyAsyncIterator {
+            let iterator = cursor.makeAsyncIterator()
+            return AnyAsyncIterator(iterator)
         }
     }
 
-    /// Type-erased box holder
-    private struct BoxHolder: @unchecked Sendable {
-        let value: Any
-    }
-
-    private let box: BoxHolder  // Type-erased CursorBox
     private let _makeAsyncIterator: @Sendable () -> AnyAsyncIterator
 
     public init<C: TypedRecordCursor>(_ cursor: C) where C.Record == Record {
         let cursorBox = CursorBox(cursor)
-        self.box = BoxHolder(value: cursorBox)
+        // Store type-erased function
+        // The closure only calls a method that returns AnyAsyncIterator,
+        // never exposing C.AsyncIterator.Type to the @Sendable closure scope
         self._makeAsyncIterator = {
-            AnyAsyncIterator(cursorBox.makeAsyncIterator())
+            cursorBox.makeTypeErasedIterator()
         }
     }
 

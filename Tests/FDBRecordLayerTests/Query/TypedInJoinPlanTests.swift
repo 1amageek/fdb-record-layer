@@ -16,6 +16,36 @@ struct TypedInJoinPlanTests {
         }
     }
 
+    // MARK: - Helper Methods
+
+    /// Get database with health check
+    ///
+    /// Returns nil if FDB is not available or not responding
+    private func getDatabase() async -> (any DatabaseProtocol)? {
+        guard ProcessInfo.processInfo.environment["SKIP_INTEGRATION_TESTS"] != "1" else {
+            return nil
+        }
+
+        do {
+            let db = try FDBClient.openDatabase()
+
+            // Health check: verify FDB is actually responding
+            do {
+                try await db.withTransaction { transaction in
+                    let healthCheckKey = Tuple("test", "health_check").pack()
+                    transaction.setValue([0x01], for: healthCheckKey)
+                }
+                return db
+            } catch {
+                print("⚠️  FoundationDB connection failed: \(error)")
+                return nil
+            }
+        } catch {
+            print("⚠️  FoundationDB not available: \(error)")
+            return nil
+        }
+    }
+
     // MARK: - Test Data
 
     struct TestRecord: Sendable, Codable {
@@ -388,7 +418,9 @@ struct TypedInJoinPlanTests {
 
     @Test("IN join plan execute returns matching records")
     func inJoinPlanExecuteReturnsMatchingRecords() async throws {
-        let database = try FDBClient.openDatabase()
+        guard let database = await getDatabase() else {
+            throw SkipInfo("FoundationDB not available")
+        }
         let subspace = Subspace(prefix: Array("test_in_join_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
@@ -455,7 +487,9 @@ struct TypedInJoinPlanTests {
 
     @Test("IN join plan execute with deduplication")
     func inJoinPlanExecuteWithDeduplication() async throws {
-        let database = try FDBClient.openDatabase()
+        guard let database = await getDatabase() else {
+            throw SkipInfo("FoundationDB not available")
+        }
         let subspace = Subspace(prefix: Array("test_in_join_dedup_\(UUID().uuidString)".utf8))
         let recordAccess = TestRecordAccess()
 
@@ -508,7 +542,9 @@ struct TypedInJoinPlanTests {
 
     @Test("IN join plan execute with multi-valued field")
     func inJoinPlanExecuteWithMultiValuedField() async throws {
-        let database = try FDBClient.openDatabase()
+        guard let database = await getDatabase() else {
+            throw SkipInfo("FoundationDB not available")
+        }
         let subspace = Subspace(prefix: Array("test_in_join_multi_\(UUID().uuidString)".utf8))
 
         struct TaggedRecord: Sendable, Codable {

@@ -11,6 +11,13 @@ import Foundation
 ///     var totalSales: Int64
 ///     var averagePrice: Double
 ///     var count: Int
+///
+///     init(groupKey: String, aggregations: [String: AggregationValue]) {
+///         self.region = groupKey
+///         self.totalSales = aggregations["totalSales"]?.intValue ?? 0
+///         self.averagePrice = aggregations["averagePrice"]?.doubleValue ?? 0.0
+///         self.count = Int(aggregations["count"]?.intValue ?? 0)
+///     }
 /// }
 /// ```
 public protocol GroupedResult: Sendable {
@@ -18,7 +25,8 @@ public protocol GroupedResult: Sendable {
     associatedtype GroupKey: Hashable & Sendable
 
     /// Initialize from group key and aggregated values
-    init(groupKey: GroupKey, aggregations: [String: Int64])
+    /// **Updated to use AggregationValue** for full type preservation
+    init(groupKey: GroupKey, aggregations: [String: AggregationValue])
 }
 
 /// GROUP BY Query
@@ -33,7 +41,10 @@ public protocol GroupedResult: Sendable {
 ///         .sum("amount", as: "totalSales"),
 ///         .average("price", as: "averagePrice"),
 ///         .count(as: "count")
-///     ]
+///     ],
+///     having: { groupKey, aggregations in
+///         (aggregations["totalSales"]?.intValue ?? 0) > 10000
+///     }
 /// )
 /// ```
 public struct GroupByQuery<Record: Sendable, GroupKey: Hashable & Sendable> {
@@ -46,14 +57,15 @@ public struct GroupByQuery<Record: Sendable, GroupKey: Hashable & Sendable> {
     public let aggregations: [Aggregation]
 
     /// Optional HAVING clause
-    public let having: ((GroupKey, [String: Int64]) -> Bool)?
+    /// **Updated to use AggregationValue** for full type preservation
+    public let having: ((GroupKey, [String: AggregationValue]) -> Bool)?
 
     // MARK: - Initialization
 
     public init(
         groupBy: String,
         aggregations: [Aggregation],
-        having: ((GroupKey, [String: Int64]) -> Bool)? = nil
+        having: ((GroupKey, [String: AggregationValue]) -> Bool)? = nil
     ) {
         self.groupByField = groupBy
         self.aggregations = aggregations
@@ -148,14 +160,16 @@ public struct Aggregation: Sendable {
 /// Execution Result
 ///
 /// Represents the result of a GROUP BY query execution.
+/// **Updated to use AggregationValue** for full type preservation.
 public struct GroupExecutionResult<GroupKey: Hashable & Sendable>: Sendable {
     /// Group key
     public let groupKey: GroupKey
 
     /// Aggregated values
-    public let aggregations: [String: Int64]
+    /// **Type-safe**: Uses AggregationValue instead of Int64
+    public let aggregations: [String: AggregationValue]
 
-    public init(groupKey: GroupKey, aggregations: [String: Int64]) {
+    public init(groupKey: GroupKey, aggregations: [String: AggregationValue]) {
         self.groupKey = groupKey
         self.aggregations = aggregations
     }

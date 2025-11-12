@@ -31,6 +31,9 @@ public enum RecordLayerError: Error, Sendable {
     // Rank Index errors
     case invalidRank(String)
     case rankOutOfBounds(rank: Int, total: Int)
+
+    // Resource limits
+    case resourceExhausted(String)
 }
 
 extension RecordLayerError: LocalizedError {
@@ -82,6 +85,10 @@ extension RecordLayerError: LocalizedError {
             return "Invalid rank: \(message)"
         case .rankOutOfBounds(let rank, let total):
             return "Rank \(rank) is out of bounds (total: \(total))"
+
+        // Resource limits
+        case .resourceExhausted(let message):
+            return "Resource exhausted: \(message)"
         }
     }
 }

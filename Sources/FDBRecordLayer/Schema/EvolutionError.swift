@@ -16,7 +16,7 @@ public enum EvolutionError: Error, Sendable, CustomStringConvertible {
         case .fieldDeleted(let recordType, let fieldName):
             return "Field '\(fieldName)' in record type '\(recordType)' was deleted (forbidden)"
         case .fieldTypeChanged(let recordType, let fieldName, let old, let new):
-            return "Field '\(fieldName)' type changed from '\(old)' to '\(new)' (forbidden)"
+            return "Field '\(fieldName)' in record type '\(recordType)' changed type from '\(old)' to '\(new)' (forbidden)"
         case .requiredFieldAdded(let recordType, let fieldName):
             return "Required field '\(fieldName)' added to '\(recordType)' (forbidden)"
         case .enumValueDeleted(let typeName, let deletedValues):
