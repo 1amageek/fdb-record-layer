@@ -32,7 +32,6 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             ])
         }
 
-        let typeName = structDecl.name.text
         let members = structDecl.memberBlock.members
 
         // Extract field information
@@ -52,6 +51,11 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
         // Generate the extension members
         var results: [DeclSyntax] = []
+
+        // Note: MemberMacro doesn't have access to the 'type' parameter like ExtensionMacro does,
+        // so we use the simple name from structDecl. This is acceptable because the fieldName
+        // method is added as a member inside the struct itself, where the simple name is sufficient.
+        let typeName = structDecl.name.text
 
         // Generate static fieldName method for KeyPath resolution
         results.append(generateFieldNameMethod(typeName: typeName, fields: persistentFields))
@@ -73,7 +77,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             return []
         }
 
-        let structName = structDecl.name.text
+        let structName = structDecl.name.text  // Simple name for recordType identifier
+        let fullTypeName = type.trimmedDescription  // Fully qualified name for extension declaration
         let members = structDecl.memberBlock.members
 
         // Extract recordName from macro arguments (if provided)
@@ -95,12 +100,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
-            typeName: structName,
+            typeName: fullTypeName,  // Use fully qualified name for extension and KeyPaths
             recordName: recordName,
             fields: persistentFields,
             primaryKeyFields: primaryKeyFields,
             directoryMetadata: directoryMetadata,
-            indexInfo: indexInfo
+            indexInfo: indexInfo,
+            simpleTypeName: structName  // Pass simple name for recordType
         )
 
         return [recordableExtension]
@@ -576,12 +582,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
     }
 
     private static func generateRecordableExtension(
-        typeName: String,
+        typeName: String,  // Fully qualified name for extension declaration and KeyPaths
         recordName: String,
         fields: [FieldInfo],
         primaryKeyFields: [FieldInfo],
         directoryMetadata: DirectoryMetadata?,
-        indexInfo: [IndexInfo]
+        indexInfo: [IndexInfo],
+        simpleTypeName: String  // Simple name for recordType identifier
     ) throws -> ExtensionDeclSyntax {
 
         let fieldNames = fields.map { "\"\($0.name)\"" }.joined(separator: ", ")
@@ -636,16 +643,19 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         }.joined(separator: ", ")
 
         // Generate openDirectory() and store() methods based on #Directory metadata
+        // Use fully qualified typeName for RecordStore<T> return type
         let directoryMethods = generateDirectoryMethods(typeName: typeName, fields: fields, directoryMetadata: directoryMetadata)
 
         // Generate IndexDefinition static properties and indexDefinitions array
+        // Use simple typeName for recordType identifier (must match recordName)
         let (indexStaticProperties, indexDefinitionsProperty) = generateIndexDefinitions(
-            typeName: typeName,
+            typeName: simpleTypeName,
             indexInfo: indexInfo
         )
 
         // Generate enumMetadata(for:) method for enum fields
-        let enumMetadataMethod = generateEnumMetadataMethod(typeName: typeName, fields: fields)
+        // Use simple typeName for consistency (though currently unused in the function)
+        let enumMetadataMethod = generateEnumMetadataMethod(typeName: simpleTypeName, fields: fields)
 
         // Determine if reconstruction is supported (no non-optional custom type fields)
         let supportsReconstructionValue = hasNonReconstructibleFields(fields: fields, primaryKeyFields: Set(primaryKeyFields.map { $0.name })) ? "false" : "true"

@@ -323,7 +323,7 @@ public final class IndexManager: Sendable {
 
 ## Documentation
 
-📚 **[Complete Documentation Index](docs/README.md)** - Start here for all documentation
+📚 **[Complete Documentation Index](docs/index.md)** - Start here for all documentation
 
 ### Quick Start
 - [getting-started.md](docs/guides/getting-started.md) - 10-minute quick start guide
@@ -336,12 +336,17 @@ public final class IndexManager: Sendable {
 - [REMAINING_WORK.md](docs/REMAINING_WORK.md) - Roadmap and future plans
 - [IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md) - Detailed implementation plan
 
-### Architecture
+### Architecture & Design
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - **Complete system architecture**
   - Core components
   - Concurrency model (Mutex vs Actor)
   - Multi-tenant architecture
   - Index and query systems
+- **[architecture-overview.md](docs/architecture-overview.md)** - 3-layer architecture overview
+- **[design-principles.md](docs/design-principles.md)** - 8 design principles and best practices
+- **[client-server-model-sharing.md](docs/client-server-model-sharing.md)** - Client-server model sharing design
+- **[package-structure-example.md](docs/package-structure-example.md)** - Package structure examples
+- **[migration-plan.md](docs/migration-plan.md)** - v2.0 migration plan
 
 ### Design Documents
 - [swift-macro-design.md](docs/design/swift-macro-design.md) - SwiftData-style macro API (100% complete ✅)
@@ -349,6 +354,9 @@ public final class IndexManager: Sendable {
 - [query-planner-optimization.md](docs/design/query-planner-optimization.md) - Cost-based query optimizer
 - [metrics-and-logging.md](docs/design/metrics-and-logging.md) - Observability infrastructure
 - [online-index-scrubber.md](docs/design/online-index-scrubber.md) - Index consistency verification
+
+### API Reference
+- **[api-reference.md](docs/api-reference.md)** - Complete API reference
 
 ### User Guides
 - [macro-usage-guide.md](docs/guides/macro-usage-guide.md) - Comprehensive macro API reference

@@ -205,7 +205,21 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return uniquePlan
         }
 
-        // Rule 2: Any index match → likely better than full scan
+        // Rule 2: IN predicate → use InJoinPlan
+        if let filter = query.filter {
+            let inJoinPlans = try await generateInJoinPlansWithExtractor(
+                filter: filter,
+                tableStats: nil
+            )
+            if let firstInJoinPlan = inJoinPlans.first {
+                logger.debug("Selected IN join plan (heuristic)", metadata: [
+                    "planType": "TypedInJoinPlan"
+                ])
+                return firstInJoinPlan
+            }
+        }
+
+        // Rule 3: Any index match → likely better than full scan
         if let indexPlan = try findFirstIndexPlan(query.filter) {
             logger.debug("Selected first matching index plan (heuristic)", metadata: [
                 "planType": "TypedIndexScanPlan"
@@ -213,7 +227,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return indexPlan
         }
 
-        // Rule 3: Fall back to full scan
+        // Rule 4: Fall back to full scan
         logger.debug("Selected full scan plan (heuristic fallback)", metadata: [
             "planType": "TypedFullScanPlan"
         ])
@@ -258,7 +272,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
 
         // Generate single-index plans
-        var indexPlans = try await generateSingleIndexPlans(query)
+        var indexPlans = try await generateSingleIndexPlans(query, tableStats: tableStats)
 
         // CRITICAL FIX: Use tableStats to prioritize most selective indexes
         // Sort index plans by estimated selectivity (lower = more selective = better)
@@ -356,11 +370,14 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
     /// Generate single-index scan plans for all applicable indexes
     ///
-    /// - Parameter query: The query to plan
+    /// - Parameters:
+    ///   - query: The query to plan
+    ///   - tableStats: Optional table statistics for cost-based optimization
     /// - Returns: Array of index scan plans
     /// - Throws: RecordLayerError if generation fails
     private func generateSingleIndexPlans(
-        _ query: TypedRecordQuery<Record>
+        _ query: TypedRecordQuery<Record>,
+        tableStats: TableStatistics? = nil
     ) async throws -> [any TypedQueryPlan<Record>] {
         guard let filter = query.filter else {
             return []
@@ -368,10 +385,12 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
         var indexPlans: [any TypedQueryPlan<Record>] = []
 
-        // Try to generate IN join plan if filter is an IN predicate
-        if let inPlan = try generateInJoinPlan(filter: filter) {
-            indexPlans.append(inPlan)
-        }
+        // Generate IN join plans using InExtractor (handles both top-level and nested)
+        let extractedInPlans = try await generateInJoinPlansWithExtractor(
+            filter: filter,
+            tableStats: tableStats
+        )
+        indexPlans.append(contentsOf: extractedInPlans)
 
         let applicableIndexes = schema.indexes(for: recordName)
 
@@ -1050,6 +1069,245 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
 
         return nil
+    }
+
+    /// Generate IN join plans using InExtractor (handles nested IN predicates)
+    ///
+    /// This method uses InExtractor to find IN predicates nested within AND/OR/NOT components.
+    /// It supports cost-based judgment to decide whether IN join optimization is beneficial.
+    ///
+    /// - Parameters:
+    ///   - filter: The query filter to analyze
+    ///   - tableStats: Optional table statistics for cost-based judgment
+    /// - Returns: Array of IN join plans (may be empty)
+    /// - Throws: RecordLayerError if extraction fails
+    private func generateInJoinPlansWithExtractor(
+        filter: any TypedQueryComponent<Record>,
+        tableStats: TableStatistics?
+    ) async throws -> [any TypedQueryPlan<Record>] {
+        // Extract all IN predicates using InExtractor
+        var extractor = InExtractor()
+        try extractor.visit(filter)
+
+        let inPredicates = extractor.extractedInPredicates()
+
+        guard !inPredicates.isEmpty else {
+            return []
+        }
+
+        logger.debug("Found IN predicates", metadata: [
+            "count": "\(inPredicates.count)"
+        ])
+
+        var plans: [any TypedQueryPlan<Record>] = []
+
+        // Generate IN join plan for each IN predicate
+        for inPredicate in inPredicates {
+            // Validate IN predicate
+            guard inPredicate.valueCount >= 2 else {
+                continue
+            }
+
+            guard inPredicate.valueCount <= config.maxInValues else {
+                logger.debug("IN predicate has too many values, skipping", metadata: [
+                    "field": "\(inPredicate.fieldName)",
+                    "valueCount": "\(inPredicate.valueCount)",
+                    "maxInValues": "\(config.maxInValues)"
+                ])
+                continue
+            }
+
+            // Find index for this field
+            guard let index = try findIndexForField(inPredicate.fieldName) else {
+                logger.debug("No index found for IN field, skipping", metadata: [
+                    "field": "\(inPredicate.fieldName)"
+                ])
+                continue
+            }
+
+            // Cost-based judgment (if statistics available)
+            if let tableStats = tableStats {
+                let shouldUse = try await shouldUseInJoinPlan(
+                    inPredicate: inPredicate,
+                    index: index,
+                    tableStats: tableStats
+                )
+
+                if !shouldUse {
+                    logger.debug("IN join not beneficial, skipping", metadata: [
+                        "field": "\(inPredicate.fieldName)",
+                        "valueCount": "\(inPredicate.valueCount)"
+                    ])
+                    continue
+                }
+            }
+
+            // Create IN join plan
+            let inJoinPlan = TypedInJoinPlan<Record>(
+                fieldName: inPredicate.fieldName,
+                values: inPredicate.values,
+                indexName: index.name,
+                indexSubspaceTupleKey: index.subspaceTupleKey,
+                primaryKeyLength: getPrimaryKeyLength(),
+                recordName: recordName
+            )
+
+            // Build remaining filter (remove IN predicate from original filter)
+            let remainingFilter = try buildRemainingFilter(
+                original: filter,
+                removing: inPredicate
+            )
+
+            // Wrap with TypedFilterPlan if there are remaining predicates
+            if let remainingFilter = remainingFilter {
+                let filterPlan = TypedFilterPlan<Record>(
+                    child: inJoinPlan,
+                    filter: remainingFilter
+                )
+                plans.append(filterPlan)
+            } else {
+                plans.append(inJoinPlan)
+            }
+
+            logger.debug("Generated IN join plan", metadata: [
+                "field": "\(inPredicate.fieldName)",
+                "valueCount": "\(inPredicate.valueCount)",
+                "indexName": "\(index.name)",
+                "hasRemainingFilter": "\(remainingFilter != nil)"
+            ])
+        }
+
+        return plans
+    }
+
+    /// Find index for a specific field
+    ///
+    /// - Parameter fieldName: Field name to find index for
+    /// - Returns: First matching index if found, nil otherwise
+    /// - Throws: Never
+    private func findIndexForField(_ fieldName: String) throws -> Index? {
+        let applicableIndexes = schema.indexes(for: recordName)
+
+        for index in applicableIndexes {
+            if let fieldExpr = index.rootExpression as? FieldKeyExpression {
+                // Simple field index
+                if fieldExpr.fieldName == fieldName {
+                    return index
+                }
+            } else if let concatExpr = index.rootExpression as? ConcatenateKeyExpression {
+                // Compound index: check if first field matches
+                if let firstField = concatExpr.children.first as? FieldKeyExpression {
+                    if firstField.fieldName == fieldName {
+                        return index
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// Cost-based judgment for IN join optimization
+    ///
+    /// Decides whether using IN join plan is beneficial compared to full scan.
+    ///
+    /// - Parameters:
+    ///   - inPredicate: The IN predicate to evaluate
+    ///   - index: The index to use
+    ///   - tableStats: Table statistics
+    /// - Returns: true if IN join is beneficial, false otherwise
+    /// - Throws: Never
+    private func shouldUseInJoinPlan(
+        inPredicate: InPredicate,
+        index: Index,
+        tableStats: TableStatistics
+    ) async throws -> Bool {
+        // Heuristic: IN join is beneficial if:
+        // 1. Number of values < table size / 10
+        // 2. Index exists (already checked)
+        // 3. Not too many values (already checked by maxInValues)
+
+        let valueCount = inPredicate.valueCount
+        let tableSize = tableStats.rowCount
+
+        // If table is small, IN join may not be worth it
+        if tableSize < 1000 {
+            return valueCount < 10
+        }
+
+        // For larger tables, use selectivity estimate
+        let estimatedSelectivity = Double(valueCount) / Double(tableSize)
+
+        // If IN predicate is very selective (< 10%), use IN join
+        if estimatedSelectivity < 0.1 {
+            return true
+        }
+
+        // If moderately selective (< 50%) and not too many values, use IN join
+        if estimatedSelectivity < 0.5 && valueCount < 50 {
+            return true
+        }
+
+        // Otherwise, full scan may be better
+        return false
+    }
+
+    /// Build remaining filter after removing IN predicate
+    ///
+    /// Creates a new filter that excludes the matched IN predicate.
+    /// **CRITICAL**: Compares both field name AND value set to avoid removing wrong IN predicates.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Original: age IN [1,2] AND age IN [3,4] AND city == "Tokyo"
+    /// // Removing: age IN [1,2]
+    /// // Result: age IN [3,4] AND city == "Tokyo"  ✅ Correct!
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - original: Original filter component
+    ///   - inPredicate: IN predicate to remove (must match field name AND values)
+    /// - Returns: Remaining filter if any, nil if all predicates consumed
+    /// - Throws: Never
+    private func buildRemainingFilter(
+        original: any TypedQueryComponent<Record>,
+        removing inPredicate: InPredicate
+    ) throws -> (any TypedQueryComponent<Record>)? {
+        // If original is the IN predicate itself, check if it matches exactly
+        if let inComponent = original as? TypedInQueryComponent<Record> {
+            // CRITICAL: Compare both field name AND values
+            if inPredicate.matches(inComponent) {
+                return nil  // This is the IN predicate we're removing
+            } else {
+                return original  // Different IN predicate, keep it
+            }
+        }
+
+        // If original is AND, remove matching IN predicate and rebuild
+        if let andComponent = original as? TypedAndQueryComponent<Record> {
+            var remaining: [any TypedQueryComponent<Record>] = []
+
+            for child in andComponent.children {
+                // Skip ONLY if this child matches the exact IN predicate (field name AND values)
+                if let inComponent = child as? TypedInQueryComponent<Record>,
+                   inPredicate.matches(inComponent) {
+                    continue  // This is the exact IN predicate we're removing
+                }
+                remaining.append(child)
+            }
+
+            // Return remaining predicates
+            if remaining.isEmpty {
+                return nil
+            } else if remaining.count == 1 {
+                return remaining[0]
+            } else {
+                return TypedAndQueryComponent<Record>(children: remaining)
+            }
+        }
+
+        // For OR/NOT, keep original (post-filtering will handle it)
+        return original
     }
 
     /// Find first matching index plan
