@@ -374,3 +374,84 @@ func testRank() async throws {
 **Last Updated**: 2025-01-12
 **Status**: 設計完了、統合作業が必要
 **Reviewer**: Claude Code
+
+---
+
+## 🆕 新API: 主キーとgroupingを直接指定
+
+**追加日**: 2025-01-13
+
+### rank(score:primaryKey:grouping:indexName:)
+
+レコードインスタンス全体を保持せずに、主キーとスコアだけでランクを取得できるAPI。
+
+**シグネチャ**:
+```swift
+public func rank(
+    score: Int64,
+    primaryKey: any TupleElement,
+    grouping: [any TupleElement] = [],
+    indexName: String
+) async throws -> Int?
+```
+
+**用途**:
+- ランキング画面（主キーとスコアだけ持っている）
+- レコード全体を読み込まずにランク取得
+- グループ化されたRANKインデックスにも対応
+
+**使用例**:
+
+```swift
+// Simple RANK index
+let rank = try await store.rank(
+    score: 9500,
+    primaryKey: 12345,  // playerID
+    grouping: [],
+    indexName: "player_score_rank"
+)
+print("Player #12345 is ranked: \(rank ?? 0)")
+
+// Grouped RANK index
+let rank = try await store.rank(
+    score: 9500,
+    primaryKey: 12345,
+    grouping: ["game_123"],  // gameID
+    indexName: "game_player_rank"
+)
+print("Player #12345 in game_123 is ranked: \(rank ?? 0)")
+```
+
+**利点**:
+- レコードインスタンス不要（メモリ効率）
+- 主キーだけでランク取得可能（ランキング画面に最適）
+- グルーピング値を明示的に指定可能
+
+**既存API**:
+```swift
+// こちらも引き続き利用可能
+public func rank<Value: BinaryInteger & TupleElement>(
+    of value: Value,
+    in keyPath: KeyPath<Record, Value>,
+    for record: Record,
+    indexName: String? = nil
+) async throws -> Int?
+```
+
+**削除されたAPI**:
+```swift
+// ❌ 削除: BinaryFloatingPoint overload (正しく動作しないため)
+// public func rank<Value: BinaryFloatingPoint & TupleElement>(...)
+```
+
+浮動小数点スコアをサポートするには、インデックス作成時にスケーリングしてInt64に変換する必要があります：
+```swift
+// Example: 小数点2桁の精度
+let scaledScore = Int64(doubleScore * 100)
+let rank = try await store.rank(
+    score: scaledScore,
+    primaryKey: playerID,
+    grouping: [],
+    indexName: "player_score_rank"
+)
+```

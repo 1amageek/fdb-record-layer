@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import FoundationDB
+@testable import FoundationDB
 @testable import FDBRecordLayer
 
 // MARK: - Test Models with @Recordable + #Directory
@@ -63,7 +63,7 @@ struct ChannelMessage {
     #Directory<ChannelMessage>("tenants", Field(\ChannelMessage.tenantID), "channels", Field(\ChannelMessage.channelID), "messages", layer: .partition)
     #PrimaryKey<ChannelMessage>([\.messageID])
 
-    
+
 
     var messageID: Int64
     var tenantID: String
@@ -71,10 +71,36 @@ struct ChannelMessage {
     var content: String
 }
 
+/// Multi-tenant User model with Directory + Index + Unique + PrimaryKey (CLAUDE.md use case)
+@Recordable
+struct MultiTenantUser {
+    #Unique<MultiTenantUser>([\.email])
+    #Index<MultiTenantUser>([\.city, \.age])
+    #Directory<MultiTenantUser>("tenants", Field(\MultiTenantUser.tenantID), "users", layer: .partition)
+    #PrimaryKey<MultiTenantUser>([\.userID])
+
+
+
+    var userID: Int64
+    var tenantID: String
+    var email: String
+    var name: String
+    var city: String
+    var age: Int
+}
+
 // MARK: - Integration Tests
 
 @Suite("@Recordable + #Directory Integration Tests")
 struct RecordableDirectoryIntegrationTests {
+
+    init() {
+        do {
+            try FDBNetwork.shared.initialize(version: 710)
+        } catch {
+            // Network already initialized - this is fine
+        }
+    }
 
     @Test("UserWithDirectory generates openDirectory() method")
     func userWithDirectoryOpenDirectory() async throws {
@@ -190,5 +216,99 @@ struct RecordableDirectoryIntegrationTests {
         #expect(ChannelMessage.recordName == "ChannelMessage")
         #expect(ChannelMessage.primaryKeyFields == ["messageID"])
         #expect(ChannelMessage.allFields == ["messageID", "tenantID", "channelID", "content"])
+    }
+
+    // MARK: - MultiTenantUser Tests (Directory + Index + Unique + PrimaryKey)
+
+    @Test("MultiTenantUser generates openDirectory() method with partition key")
+    func multiTenantUserOpenDirectory() async throws {
+        // Verify method signature exists with tenantID parameter
+        let _: (String, any DatabaseProtocol) async throws -> DirectorySubspace =
+            MultiTenantUser.openDirectory(tenantID:database:)
+    }
+
+    @Test("MultiTenantUser generates store() method with partition key")
+    func multiTenantUserStore() async throws {
+        // Verify method signature exists with tenantID parameter
+        let _: (String, any DatabaseProtocol, Schema) async throws -> RecordStore<MultiTenantUser> =
+            MultiTenantUser.store(tenantID:database:schema:)
+    }
+
+    @Test("MultiTenantUser has Recordable conformance")
+    func multiTenantUserRecordableConformance() {
+        #expect(MultiTenantUser.recordName == "MultiTenantUser")
+        #expect(MultiTenantUser.primaryKeyFields == ["userID"])
+        #expect(MultiTenantUser.allFields == ["userID", "tenantID", "email", "name", "city", "age"])
+    }
+
+    @Test("MultiTenantUser has correct index definitions")
+    func multiTenantUserIndexDefinitions() {
+        let indexes = MultiTenantUser.indexDefinitions
+
+        // Should have 2 indexes: 1 unique + 1 regular
+        #expect(indexes.count == 2)
+
+        // Check unique index on email
+        let uniqueIndex = indexes.first { $0.name.contains("email") }
+        #expect(uniqueIndex != nil)
+        #expect(uniqueIndex?.unique == true)
+
+        // Check composite index on city + age
+        let cityAgeIndex = indexes.first { $0.name.contains("city") && $0.name.contains("age") }
+        #expect(cityAgeIndex != nil)
+        #expect(cityAgeIndex?.unique == false)
+    }
+
+    @Test("MultiTenantUser end-to-end: Directory + Index + Unique + PrimaryKey")
+    func multiTenantUserEndToEnd() async throws {
+        // This test verifies the complete use case from CLAUDE.md:
+        // - Multi-tenant directory (partition)
+        // - Unique constraint on email
+        // - Composite index on city + age
+        // - Primary key on userID
+
+        let database = try FDBClient.openDatabase()
+        let schema = Schema([MultiTenantUser.self], version: Schema.Version(1, 0, 0))
+
+        // Open store for tenant "acme-corp"
+        let store = try await MultiTenantUser.store(
+            tenantID: "acme-corp",
+            database: database,
+            schema: schema
+        )
+
+        // Create test users
+        let user1 = MultiTenantUser(
+            userID: 1,
+            tenantID: "acme-corp",
+            email: "alice@acme.com",
+            name: "Alice",
+            city: "Tokyo",
+            age: 25
+        )
+
+        let user2 = MultiTenantUser(
+            userID: 2,
+            tenantID: "acme-corp",
+            email: "bob@acme.com",
+            name: "Bob",
+            city: "Tokyo",
+            age: 30
+        )
+
+        // Save users
+        try await store.save(user1)
+        try await store.save(user2)
+
+        // Verify users were saved
+        let loaded1 = try await store.record(for: Tuple(1))
+        #expect(loaded1?.email == "alice@acme.com")
+
+        let loaded2 = try await store.record(for: Tuple(2))
+        #expect(loaded2?.email == "bob@acme.com")
+
+        // Clean up
+        try await store.delete(by: 1)
+        try await store.delete(by: 2)
     }
 }

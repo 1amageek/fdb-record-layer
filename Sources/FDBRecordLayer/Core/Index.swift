@@ -166,6 +166,10 @@ public struct IndexOptions: Sendable {
     /// Tie-breaker field (for rank indexes)
     public var tieBreaker: String?
 
+    /// Score type name (for rank indexes) - "Int64", "Double", "Float", "Int"
+    /// Defaults to "Int64" for backward compatibility
+    public var scoreTypeName: String?
+
     public init(
         unique: Bool = false,
         replaceOnDuplicate: Bool = false,
@@ -174,7 +178,8 @@ public struct IndexOptions: Sendable {
         permutationIndices: [Int]? = nil,
         rankOrderString: String? = nil,
         bucketSize: Int? = nil,
-        tieBreaker: String? = nil
+        tieBreaker: String? = nil,
+        scoreTypeName: String? = nil
     ) {
         self.unique = unique
         self.replaceOnDuplicate = replaceOnDuplicate
@@ -184,6 +189,7 @@ public struct IndexOptions: Sendable {
         self.rankOrderString = rankOrderString
         self.bucketSize = bucketSize
         self.tieBreaker = tieBreaker
+        self.scoreTypeName = scoreTypeName
     }
 }
 

@@ -383,12 +383,11 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
             return AnyGenericIndexMaintainer(maintainer)
 
         case .rank:
-            let maintainer = RankIndexMaintainer<Record>(
+            return try createRankIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
-            return AnyGenericIndexMaintainer(maintainer)
 
         case .permuted:
             do {

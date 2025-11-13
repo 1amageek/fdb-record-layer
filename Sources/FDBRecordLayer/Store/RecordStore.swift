@@ -112,6 +112,12 @@ public final class RecordStore<Record: Recordable>: Sendable {
     internal let recordSubspace: Subspace
     internal let indexSubspace: Subspace
 
+    /// Root subspace for global indexes
+    ///
+    /// When provided, global-scoped indexes will be stored at the root level for cross-partition access.
+    /// If nil, global indexes will fall back to partition-local storage (backward compatibility).
+    internal let rootSubspace: Subspace?
+
     // MARK: - Internal API for Index Operations
 
     /// Execute a closure with direct database transaction access
@@ -167,12 +173,15 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ///   - subspace: The subspace for this record store
     ///   - schema: Schema with registered types and indexes
     ///   - statisticsManager: Statistics manager for cost-based optimization
+    ///   - rootSubspace: Optional root subspace for global indexes (defaults to subspace for backward compatibility)
+    ///   - metricsRecorder: Metrics recorder for observability
     ///   - logger: Optional logger
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
         schema: Schema,
         statisticsManager: any StatisticsManagerProtocol,
+        rootSubspace: Subspace? = nil,
         metricsRecorder: any MetricsRecorder = NullMetricsRecorder(),
         logger: Logger? = nil
     ) {
@@ -183,6 +192,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         self.statisticsManager = statisticsManager
         self.metricsRecorder = metricsRecorder
         self.aggregateMetrics = AggregateMetrics()
+        self.rootSubspace = rootSubspace
 
         // Initialize subspaces
         self.recordSubspace = subspace.subspace("R")  // Records
@@ -269,7 +279,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         tr.setValue(bytes, for: key)
 
         // Update indexes
-        let indexManager = IndexManager(schema: schema, subspace: indexSubspace)
+        let indexManager = IndexManager(schema: schema, subspace: indexSubspace, rootSubspace: rootSubspace)
         try await indexManager.updateIndexes(
             for: record,
             primaryKey: primaryKey,
@@ -335,7 +345,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         tr.clear(key: key)
 
         // Delete index entries
-        let indexManager = IndexManager(schema: schema, subspace: indexSubspace)
+        let indexManager = IndexManager(schema: schema, subspace: indexSubspace, rootSubspace: rootSubspace)
         try await indexManager.deleteIndexes(
             oldRecord: record,
             primaryKey: keyTuple,
@@ -507,32 +517,150 @@ public final class RecordStore<Record: Recordable>: Sendable {
     /// ```swift
     /// // Get user's rank by score
     /// let userScore: Int64 = 9500
-    /// if let rank = try await store.rank(of: userScore, in: \.score) {
-    ///     print("User is ranked #\(rank + 1)")  // 0-based → 1-based
+    /// if let rank = try await store.rank(of: userScore, in: \.score, for: user) {
+    ///     print("User is ranked #\(rank)")  // Already 1-based (1 = best)
     /// }
     ///
     /// // With explicit index name
-    /// let rank = try await store.rank(
+    /// if let rank = try await store.rank(
     ///     of: userScore,
     ///     in: \.score,
+    ///     for: user,
     ///     indexName: "user_by_score_rank"
-    /// )
+    /// ) {
+    ///     print("Rank: \(rank)")  // 1-based rank
+    /// }
     /// ```
     ///
     /// - Parameters:
-    ///   - value: Value to find rank for
-    ///   - keyPath: KeyPath to the field to rank by
+    ///   - value: Value to find rank for (score)
+    ///   - keyPath: KeyPath to the ranked field
+    ///   - record: The record instance (needed for grouping values and primary key)
     ///   - indexName: Index name to use (optional, auto-detected if nil)
-    /// - Returns: 0-based rank (nil if value not found)
+    /// - Returns: **1-based rank** (1 = best, 2 = second, etc.), nil if record not found in index
     /// - Throws: RecordLayerError if index not found or not ready
-    public func rank<Value: Comparable & TupleElement>(
-        of value: Value,
-        in keyPath: KeyPath<Record, Value>,
+    ///
+    /// **Performance**: O(log n) using Range Tree count nodes
+    ///
+    /// **Supports**:
+    /// - Simple RANK indexes: `Index([\.score])`
+    /// - Grouped RANK indexes: `Index([\.gameID, \.score])` for per-game leaderboards
+    // ✅ BUG FIX #3: Restrict type signature to BinaryInteger (not Comparable)
+    // This provides compile-time safety - only Int/Int64/Int32/UInt types are allowed
+    /// Get the rank by score, primary key, and grouping values (no record instance needed)
+    ///
+    /// **Use Case**: Ranking screens where you only have the primary key and score,
+    /// without needing to load the full record from the database.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Leaderboard: Get rank for a specific player
+    /// let rank = try await store.rank(
+    ///     score: 9500,
+    ///     primaryKey: 12345,  // playerID
+    ///     grouping: ["game_123"],  // For grouped indexes
+    ///     indexName: "player_score_rank"
+    /// )
+    /// print("Player #12345 is ranked: \(rank ?? 0)")
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - score: The score value (must match the index's scoreTypeName)
+    ///   - primaryKey: Primary key value (single field or tuple)
+    ///   - grouping: Grouping values for grouped indexes (empty for simple indexes)
+    ///   - indexName: Name of the RANK index to use
+    /// - Returns: **1-based rank** (1 = best), or nil if not found
+    /// - Throws: RecordLayerError if index not found, not ready, or score type mismatch
+    public func rank(
+        score: any TupleElement,
+        primaryKey: any TupleElement,
+        grouping: [any TupleElement] = [],
+        indexName: String
+    ) async throws -> Int? {
+        // 1. Find RANK index by name
+        let applicableIndexes = schema.indexes(for: Record.recordName)
+
+        guard let targetIndex = applicableIndexes.first(where: { $0.name == indexName }) else {
+            throw RecordLayerError.indexNotFound("RANK index '\(indexName)' not found")
+        }
+
+        // Validate that it's a RANK index
+        guard targetIndex.type == .rank else {
+            throw RecordLayerError.invalidArgument(
+                "Index '\(indexName)' is type '\(targetIndex.type)', not a RANK index. " +
+                "Use rank() API for RANK indexes only."
+            )
+        }
+
+        // 2. Verify index is in readable state
+        let indexStateManager = IndexStateManager(database: database, subspace: subspace)
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
+
+        let state = try await indexStateManager.state(of: targetIndex.name, context: context)
+
+        guard state == .readable else {
+            throw RecordLayerError.indexNotReady("RANK index '\(targetIndex.name)' is in '\(state)' state")
+        }
+
+        // 3. Convert primaryKey to Tuple
+        let primaryKeyTuple: Tuple
+        if let tuple = primaryKey as? Tuple {
+            primaryKeyTuple = tuple
+        } else {
+            primaryKeyTuple = Tuple(primaryKey)
+        }
+
+        // 4. Delegate to dynamic rank helper for O(log n) rank calculation
+        let indexNameSubspace = indexSubspace.subspace(targetIndex.name)
+        return try await getRankDynamic(
+            recordType: Record.self,
+            index: targetIndex,
+            subspace: indexNameSubspace,
+            recordSubspace: recordSubspace,
+            groupingValues: grouping,
+            score: score,
+            primaryKey: primaryKeyTuple,
+            transaction: context.getTransaction()
+        )
+    }
+
+    /// Get rank of a record by score and KeyPath (convenience method)
+    ///
+    /// This is a convenience wrapper that extracts the primary key from the record.
+    ///
+    /// - Parameters:
+    ///   - score: Score value (must match index's scoreTypeName type)
+    ///   - keyPath: KeyPath to the ranked field (for validation and grouping extraction)
+    ///   - record: Record instance (to extract primary key)
+    ///   - indexName: Optional index name (auto-detects if nil)
+    /// - Returns: **1-based rank** (1 = best), or nil if not found
+    /// - Throws: RecordLayerError if index not found, not ready, or score type mismatch
+    public func rank(
+        of score: any TupleElement,
+        in keyPath: PartialKeyPath<Record>,
+        for record: Record,
         indexName: String? = nil
+    ) async throws -> Int? {
+        return try await rankInternal(
+            score: score,
+            keyPath: keyPath,
+            for: record,
+            indexName: indexName
+        )
+    }
+
+    /// Internal rank implementation (extracts grouping values and primary key from record)
+    private func rankInternal(
+        score: any TupleElement,
+        keyPath: PartialKeyPath<Record>,
+        for record: Record,
+        indexName: String?
     ) async throws -> Int? {
         let fieldName = Record.fieldName(for: keyPath)
 
-        // 1. Find RANK index for the field
+        // 1. Find RANK index for the field (check LAST field for grouped indexes)
         let applicableIndexes = schema.indexes(for: Record.recordName)
 
         let targetIndex: Index
@@ -540,19 +668,26 @@ public final class RecordStore<Record: Recordable>: Sendable {
             guard let index = applicableIndexes.first(where: { $0.name == specifiedIndexName }) else {
                 throw RecordLayerError.indexNotFound("RANK index '\(specifiedIndexName)' not found")
             }
+
+            // ✅ BUG FIX #2: Validate that the specified index is actually a RANK index
+            guard index.type == .rank else {
+                throw RecordLayerError.invalidArgument(
+                    "Index '\(specifiedIndexName)' is type '\(index.type)', not a RANK index. " +
+                    "Use rankQuery() API for RANK indexes only."
+                )
+            }
+
             targetIndex = index
         } else {
             let indexes = applicableIndexes.filter { index in
                 guard index.type == .rank else { return false }
 
-                if let fieldExpr = index.rootExpression as? FieldKeyExpression {
-                    return fieldExpr.fieldName == fieldName
-                } else if let concatExpr = index.rootExpression as? ConcatenateKeyExpression {
-                    if let firstField = concatExpr.children.first as? FieldKeyExpression {
-                        return firstField.fieldName == fieldName
-                    }
+                // Extract the ranked field (last field in expression)
+                guard let rankedField = Self.extractRankedField(from: index.rootExpression) else {
+                    return false
                 }
-                return false
+
+                return rankedField == fieldName
             }
 
             guard let index = indexes.first else {
@@ -573,48 +708,35 @@ public final class RecordStore<Record: Recordable>: Sendable {
             throw RecordLayerError.indexNotReady("RANK index '\(targetIndex.name)' is in '\(state)' state")
         }
 
-        // 3. Count entries with values greater than target (this gives the rank)
+        // 3. Extract grouping values from record (if grouped index)
+        // ✅ BUG FIX #4: Now throws if grouping fields contain unsupported expression types
+        let groupingFieldNames = try Self.extractGroupingFields(from: targetIndex.rootExpression)
+        let recordAccess = GenericRecordAccess<Record>()
+
+        var groupingValues: [any TupleElement] = []
+        for groupingFieldName in groupingFieldNames {
+            let values = try recordAccess.extractField(from: record, fieldName: groupingFieldName)
+            guard let firstValue = values.first else {
+                throw RecordLayerError.invalidArgument("Grouping field '\(groupingFieldName)' not found in record")
+            }
+            groupingValues.append(firstValue)
+        }
+
+        // 4. Extract primary key from record
+        let primaryKeyTuple = recordAccess.extractPrimaryKey(from: record)
+
+        // 5. Delegate to dynamic rank helper for O(log n) rank calculation
         let indexNameSubspace = indexSubspace.subspace(targetIndex.name)
-        let tr = context.getTransaction()
-
-        // RANK Index entry structure: <indexSubspace><value><primaryKey>
-        // Sorted in descending order (higher values first)
-        // rank = count of entries with values > targetValue
-        // Since descending: rangeBegin (highest) → targetKey = all entries > targetValue
-
-        // Count all entries with values greater than targetValue
-        let (rangeBegin, _) = indexNameSubspace.range()
-        let targetKey = indexNameSubspace.pack(Tuple(value))
-
-        let sequence = tr.getRange(
-            begin: rangeBegin,
-            end: targetKey,
-            snapshot: true
+        return try await getRankDynamic(
+            recordType: Record.self,
+            index: targetIndex,
+            subspace: indexNameSubspace,
+            recordSubspace: recordSubspace,
+            groupingValues: groupingValues,
+            score: score,
+            primaryKey: primaryKeyTuple,
+            transaction: context.getTransaction()
         )
-
-        var rank = 0
-        for try await _ in sequence {
-            rank += 1
-        }
-
-        // Check if the value itself exists
-        let exactMatchBegin = targetKey
-        var exactMatchEnd = targetKey
-        exactMatchEnd.append(0xFF)
-
-        let exactSequence = tr.getRange(
-            begin: exactMatchBegin,
-            end: exactMatchEnd,
-            snapshot: true
-        )
-
-        var found = false
-        for try await _ in exactSequence {
-            found = true
-            break
-        }
-
-        return found ? rank : nil
     }
 
     // MARK: - Scan
@@ -1007,10 +1129,22 @@ extension RecordStore {
             // Extract group key from the index key
             let unpacked = try indexSubspace.unpack(key)
 
-            // Build group key: serialize tuple to bytes for reliable hashing
-            // This properly handles multi-element tuples by using FDB's tuple encoding
-            let groupKeyBytes = unpacked.pack()
-            let groupKeyString = groupKeyBytes.map { String(format: "%02x", $0) }.joined()
+            // ✅ BUG FIX #6: Convert tuple to human-readable string instead of hex encoding
+            // For single element: use the element directly
+            // For multiple elements: join with comma separator
+            let groupKeyString: String
+            if unpacked.count == 1, let element = unpacked[0] {
+                groupKeyString = "\(element)"
+            } else {
+                // Multi-element tuple: join with commas
+                var elements: [String] = []
+                for i in 0..<unpacked.count {
+                    if let element = unpacked[i] {
+                        elements.append("\(element)")
+                    }
+                }
+                groupKeyString = elements.joined(separator: ",")
+            }
 
             // Decode aggregate value
             let aggregateValue = TupleHelpers.bytesToInt64(value)
@@ -1031,15 +1165,19 @@ extension RecordStore {
 ///
 /// **Features:**
 /// - Lazy transaction creation on first `next()` call
+/// - **Snapshot consistency**: All batches read from the same snapshot (readVersion)
 /// - Snapshot reads to avoid transaction conflicts
 /// - Resumable scans with lastKey tracking
 /// - Automatic key deduplication with successor() function
 ///
 /// **Implementation Details**:
 /// - Uses snapshot reads to avoid transaction conflicts
+/// - **Snapshot consistency across batches**: The first transaction's readVersion
+///   is captured and reused for all subsequent transactions, ensuring GROUP BY
+///   and other aggregations see a consistent snapshot even across 100+ record batches
 /// - Streams results as they are read from FoundationDB
 /// - Automatically handles record deserialization
-/// - Respects FoundationDB's transaction limits
+/// - Respects FoundationDB's transaction limits (5s timeout, 10MB size)
 /// - Supports batched processing with resumption
 ///
 /// **Usage**:
@@ -1100,6 +1238,9 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
         private var lastKey: FDB.Bytes?
         private var recordsInCurrentBatch: Int
 
+        // ✅ FIX: Store readVersion from first transaction for snapshot consistency
+        private var snapshotReadVersion: Int64?
+
         init(
             database: any DatabaseProtocol,
             recordSubspace: Subspace,
@@ -1114,6 +1255,7 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
             self.recordAccess = GenericRecordAccess<Record>()
             self.lastKey = resumeFrom
             self.recordsInCurrentBatch = 0
+            self.snapshotReadVersion = nil
         }
 
         /// Get the next key after the given key
@@ -1140,11 +1282,29 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
         public mutating func next() async throws -> Record? {
             // Create/recreate transaction if needed (for batching to respect 5s/10MB limits)
             if kvIterator == nil {
+                // ✅ BUG FIX #7: Cancel previous transaction before creating new one
+                if let oldTransaction = transaction {
+                    oldTransaction.cancel()
+                    self.transaction = nil
+                }
+
                 // Reset batch counter
                 recordsInCurrentBatch = 0
 
                 // Create new transaction
                 let tx = try database.createTransaction()
+
+                // ✅ FIX: Maintain snapshot consistency across batches
+                // First transaction: capture readVersion for future batches
+                // Subsequent transactions: reuse the same readVersion
+                if snapshotReadVersion == nil {
+                    // First batch: get and store readVersion
+                    snapshotReadVersion = try await tx.getReadVersion()
+                } else {
+                    // Subsequent batches: use stored readVersion
+                    tx.setReadVersion(snapshotReadVersion!)
+                }
+
                 self.transaction = tx
 
                 // Build subspace for this record type
@@ -1172,6 +1332,11 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
 
             // Get next key-value pair
             guard let (key, value) = try await kvIterator?.next() else {
+                // ✅ BUG FIX #7: Clean up transaction when scan completes
+                if let tx = transaction {
+                    tx.cancel()
+                    self.transaction = nil
+                }
                 return nil
             }
 
@@ -1198,5 +1363,62 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
         public func getLastKey() -> FDB.Bytes? {
             return lastKey
         }
+    }
+}
+
+// MARK: - Helper Methods for RANK Index Detection
+
+extension RecordStore {
+    /// Extract the last (ranked) field from a RANK index expression
+    ///
+    /// For RANK indexes, the structure is:
+    /// - **Simple**: `FieldKeyExpression("score")` → ranked field: "score"
+    /// - **Grouped**: `ConcatenateKeyExpression([Field("gameID"), Field("score")])` → ranked field: "score"
+    ///
+    /// The last field in the expression is always the ranked value; preceding fields are grouping fields.
+    ///
+    /// - Parameter expression: Index root expression
+    /// - Returns: Field name of the ranked value, or nil if not extractable
+    private static func extractRankedField(from expression: any KeyExpression) -> String? {
+        if let fieldExpr = expression as? FieldKeyExpression {
+            // Simple RANK index: single field
+            return fieldExpr.fieldName
+        } else if let concatExpr = expression as? ConcatenateKeyExpression {
+            // Grouped RANK index: last field is the ranked value
+            if let lastField = concatExpr.children.last as? FieldKeyExpression {
+                return lastField.fieldName
+            }
+        }
+        return nil
+    }
+
+    /// Extract grouping fields from a RANK index expression
+    ///
+    /// For grouped RANK indexes like `[gameID, score]`, this returns `["gameID"]`.
+    /// For simple RANK indexes, this returns an empty array.
+    ///
+    /// ✅ BUG FIX #4: Now throws error if any grouping field is not a FieldKeyExpression
+    ///
+    /// - Parameter expression: Index root expression
+    /// - Returns: Array of grouping field names (empty for ungrouped indexes)
+    /// - Throws: RecordLayerError.invalidArgument if grouping field is not a simple field expression
+    private static func extractGroupingFields(from expression: any KeyExpression) throws -> [String] {
+        if let concatExpr = expression as? ConcatenateKeyExpression {
+            // All fields except the last are grouping fields
+            let groupingChildren = concatExpr.children.dropLast()
+
+            // ✅ BUG FIX #4: Use map instead of compactMap to fail loudly on unsupported types
+            return try groupingChildren.map { child in
+                guard let fieldExpr = child as? FieldKeyExpression else {
+                    throw RecordLayerError.invalidArgument(
+                        "RANK index grouping fields must be simple FieldKeyExpression, " +
+                        "but found \(type(of: child)). " +
+                        "Complex expressions (LiteralKeyExpression, NestExpression, etc.) are not supported for grouping."
+                    )
+                }
+                return fieldExpr.fieldName
+            }
+        }
+        return []
     }
 }

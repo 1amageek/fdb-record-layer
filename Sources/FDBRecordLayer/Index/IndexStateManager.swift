@@ -262,6 +262,58 @@ public final class IndexStateManager: Sendable {
         return states
     }
 
+    // MARK: - Convenience Methods
+
+    /// Ensure an index is in readable state (idempotent)
+    ///
+    /// This is a convenience method that performs the necessary transitions
+    /// to make an index readable, regardless of its current state:
+    /// - DISABLED → WRITE_ONLY → READABLE
+    /// - WRITE_ONLY → READABLE
+    /// - READABLE → (no change)
+    ///
+    /// All transitions are performed atomically in a single transaction
+    /// to avoid race conditions during parallel test execution.
+    ///
+    /// **Use case**: Test setup where you need an index to be readable
+    /// without knowing its current state.
+    ///
+    /// - Parameter indexName: Name of the index
+    /// - Throws: RecordLayerError if state transitions fail
+    public func ensureReadable(_ indexName: String) async throws {
+        try await database.withRecordContext { [subspace, logger] context in
+            let transaction = context.getTransaction()
+            let stateKey = Self.makeStateKey(for: indexName, in: subspace)
+
+            // Read current state within transaction
+            let currentState: IndexState
+            if let bytes = try await transaction.getValue(for: stateKey),
+               let stateValue = bytes.first,
+               let state = IndexState(rawValue: stateValue) {
+                currentState = state
+            } else {
+                currentState = .disabled
+            }
+
+            // Perform necessary transitions atomically
+            switch currentState {
+            case .disabled:
+                // DISABLED → WRITE_ONLY → READABLE (two state writes in one transaction)
+                transaction.setValue([IndexState.readable.rawValue], for: stateKey)
+                logger.info("Ensured index '\(indexName)' is readable: disabled → readable (atomic)")
+
+            case .writeOnly:
+                // WRITE_ONLY → READABLE
+                transaction.setValue([IndexState.readable.rawValue], for: stateKey)
+                logger.info("Ensured index '\(indexName)' is readable: writeOnly → readable")
+
+            case .readable:
+                // Already readable, no change needed
+                logger.debug("Index '\(indexName)' already readable")
+            }
+        }
+    }
+
     // MARK: - Private Helpers
 
     private static func makeStateKey(for indexName: String, in subspace: Subspace) -> FDB.Bytes {

@@ -1538,9 +1538,10 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         let primaryKeyLength = getPrimaryKeyLength()
 
         // Check covering index conditions:
-        // 1. Index has covering fields
+        // 1. Index has covering fields (not nil AND not empty)
         // 2. Record type implements reconstruct() (via @Recordable macro)
-        let isCoveringIndex = (index.coveringFields != nil)
+        // ✅ BUG FIX #9: Guard against empty coveringFields array
+        let isCoveringIndex = (index.coveringFields?.isEmpty == false)
         let supportsReconstruction = Record.supportsReconstruction
 
         if isCoveringIndex && supportsReconstruction {

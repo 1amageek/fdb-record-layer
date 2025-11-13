@@ -48,16 +48,24 @@ public final class IndexManager: Sendable {
     public let schema: Schema
     public let subspace: Subspace
 
+    /// Root subspace for global indexes
+    ///
+    /// When provided, global-scoped indexes will be stored under `rootSubspace.subspace("G")`
+    /// instead of under the partition's index subspace. This enables cross-partition queries.
+    public let rootSubspace: Subspace?
+
     // MARK: - Initialization
 
     /// Initialize IndexManager
     ///
     /// - Parameters:
     ///   - schema: The schema containing entity definitions
-    ///   - subspace: The subspace for storing index data
-    public init(schema: Schema, subspace: Subspace) {
+    ///   - subspace: The subspace for storing partition-local index data
+    ///   - rootSubspace: Optional root subspace for global indexes (defaults to subspace for backward compatibility)
+    public init(schema: Schema, subspace: Subspace, rootSubspace: Subspace? = nil) {
         self.schema = schema
         self.subspace = subspace
+        self.rootSubspace = rootSubspace
     }
 
     // MARK: - Index Updates
@@ -205,11 +213,16 @@ public final class IndexManager: Sendable {
             return subspace.subspace(index.name)
 
         case .global:
-            // Global index: outside partition hierarchy
-            // Navigate up to root subspace and use "global-indexes" namespace
-            // For now, we use a simple approach: sibling to partition subspace
-            // TODO: This assumes subspace is [partition][I] - need root reference for correctness
-            return subspace.subspace("global-indexes").subspace(index.name)
+            // Global index: cross-partition shared indexes
+            // Use root subspace if provided, otherwise fall back to partition subspace (for backward compatibility)
+            if let root = rootSubspace {
+                // Correct: Store under [root][G][index_name] for cross-partition access
+                return root.subspace("G").subspace(index.name)
+            } else {
+                // Backward compatibility: Fall back to old behavior
+                // This will still store under partition, but at least won't break existing code
+                return subspace.subspace("global-indexes").subspace(index.name)
+            }
         }
     }
 
@@ -280,12 +293,11 @@ public final class IndexManager: Sendable {
             return AnyGenericIndexMaintainer(maintainer)
 
         case .rank:
-            let maintainer = RankIndexMaintainer<T>(
+            return try createRankIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
             )
-            return AnyGenericIndexMaintainer(maintainer)
 
         case .version:
             let maintainer = VersionIndexMaintainer<T>(

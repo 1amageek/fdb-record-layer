@@ -44,6 +44,149 @@ public struct IndexMacro: DeclarationMacro {
         // - It can see MacroExpansionDeclSyntax nodes for #Index/#Unique
         // - It extracts arguments and generates IndexDefinition properties in the extension
 
+        // Validate syntax before returning empty array
+        try validateIndexSyntax(node: node, context: context)
+
         return []
+    }
+
+    private static func validateIndexSyntax(
+        node: some FreestandingMacroExpansionSyntax,
+        context: some MacroExpansionContext
+    ) throws {
+        // 1. Validate generic type argument exists
+        guard let genericArguments = node.genericArgumentClause?.arguments,
+              !genericArguments.isEmpty else {
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: IndexMacroDiagnostic.missingGenericType
+                )
+            )
+            return
+        }
+
+        // 2. Validate first argument is present (KeyPath array)
+        guard let firstArg = node.arguments.first else {
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: IndexMacroDiagnostic.missingKeyPathArray
+                )
+            )
+            return
+        }
+
+        // 3. Validate first argument is an array literal
+        guard let arrayExpr = firstArg.expression.as(ArrayExprSyntax.self) else {
+            context.diagnose(
+                Diagnostic(
+                    node: firstArg,
+                    message: IndexMacroDiagnostic.invalidKeyPathArray
+                )
+            )
+            return
+        }
+
+        // 4. Validate array is not empty
+        if arrayExpr.elements.isEmpty {
+            context.diagnose(
+                Diagnostic(
+                    node: arrayExpr,
+                    message: IndexMacroDiagnostic.emptyKeyPathArray
+                )
+            )
+            return
+        }
+
+        // 5. Validate that all array elements are KeyPath expressions
+        for element in arrayExpr.elements {
+            // Check if the element is a KeyPath expression
+            guard element.expression.is(KeyPathExprSyntax.self) else {
+                context.diagnose(
+                    Diagnostic(
+                        node: element,
+                        message: IndexMacroDiagnostic.nonKeyPathElement
+                    )
+                )
+                return
+            }
+        }
+
+        // 6. Validate name: parameter if present
+        if let nameArg = node.arguments.first(where: { $0.label?.text == "name" }) {
+            // name: must be a string literal
+            guard nameArg.expression.is(StringLiteralExprSyntax.self) else {
+                context.diagnose(
+                    Diagnostic(
+                        node: nameArg,
+                        message: IndexMacroDiagnostic.invalidNameParameter
+                    )
+                )
+                return
+            }
+        }
+    }
+}
+
+// MARK: - Diagnostics
+
+enum IndexMacroDiagnostic {
+    case missingGenericType
+    case missingKeyPathArray
+    case invalidKeyPathArray
+    case emptyKeyPathArray
+    case nonKeyPathElement
+    case invalidNameParameter
+}
+
+extension IndexMacroDiagnostic: DiagnosticMessage {
+    var message: String {
+        switch self {
+        case .missingGenericType:
+            return """
+            #Index macro requires a generic type argument
+            Usage: #Index<YourType>([\\YourType.field1, \\YourType.field2])
+            """
+
+        case .missingKeyPathArray:
+            return """
+            #Index macro requires a KeyPath array as the first argument
+            Usage: #Index<YourType>([\\YourType.field1, \\YourType.field2])
+            """
+
+        case .invalidKeyPathArray:
+            return """
+            First argument must be an array literal of KeyPaths
+            Usage: #Index<YourType>([\\YourType.field1, \\YourType.field2])
+            """
+
+        case .emptyKeyPathArray:
+            return """
+            KeyPath array cannot be empty
+            Provide at least one field: #Index<YourType>([\\YourType.field1])
+            """
+
+        case .nonKeyPathElement:
+            return """
+            All array elements must be KeyPath expressions
+            Invalid: #Index<YourType>(["email"])
+            Correct: #Index<YourType>([\\YourType.email])
+            """
+
+        case .invalidNameParameter:
+            return """
+            'name:' parameter must be a string literal
+            Usage: #Index<YourType>([\\YourType.field], name: "my_index")
+            """
+        }
+    }
+
+    var diagnosticID: MessageID {
+        MessageID(domain: "FDBRecordLayerMacros", id: "IndexMacro")
+    }
+
+    var severity: DiagnosticSeverity {
+        .error
     }
 }

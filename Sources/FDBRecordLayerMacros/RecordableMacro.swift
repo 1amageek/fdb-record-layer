@@ -98,8 +98,25 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             fields.first { $0.name == pkName }
         }
 
+        // Validate that all primary key fields were found
+        if primaryKeyFields.count != primaryKeyFieldNames.count {
+            let foundNames = Set(primaryKeyFields.map { $0.name })
+            let missingFields = primaryKeyFieldNames.filter { !foundNames.contains($0) }
+
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: RecordableMacroDiagnostic.primaryKeyFieldNotFound(
+                        missingFields: missingFields,
+                        availableFields: fields.map { $0.name }
+                    )
+                )
+            )
+            return []
+        }
+
         // Detect #Directory metadata
-        let directoryMetadata = extractDirectoryMetadata(from: members)
+        let directoryMetadata = extractDirectoryMetadata(from: members, fields: fields, context: context)
 
         // Extract index information from #Index/#Unique macro calls
         // Note: We need to check ALL members, including those added by other macros
@@ -181,7 +198,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
     /// Extracts #Directory metadata from struct members by looking for #Directory macro calls
     private static func extractDirectoryMetadata(
-        from members: MemberBlockItemListSyntax
+        from members: MemberBlockItemListSyntax,
+        fields: [FieldInfo],
+        context: some MacroExpansionContext
     ) -> DirectoryMetadata? {
         for member in members {
             // Look for #Directory macro expansion
@@ -194,6 +213,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             var pathElements: [DirectoryMetadata.PathElement] = []
             var keyPathFields: [String] = []
             var layer = "recordStore"  // Default layer
+            var hasInvalidFields = false
 
             // Process all arguments (variadic path elements + optional layer)
             for arg in macroExpansion.arguments {
@@ -226,17 +246,51 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         isFieldCall = false
                     }
 
-                    if isFieldCall,
-                       let firstArg = functionCall.arguments.first,
-                       let keyPathExpr = firstArg.expression.as(KeyPathExprSyntax.self),
-                       let component = keyPathExpr.components.first,
-                       let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
-                        let fieldName = property.declName.baseName.text
-                        pathElements.append(.keyPath(fieldName))
-                        keyPathFields.append(fieldName)
-                        continue
+                    if isFieldCall {
+                        // Field() call detected - must have valid KeyPath
+                        if let firstArg = functionCall.arguments.first,
+                           let keyPathExpr = firstArg.expression.as(KeyPathExprSyntax.self),
+                           let component = keyPathExpr.components.first,
+                           let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
+                            let fieldName = property.declName.baseName.text
+
+                            // Validate that the field exists in the struct
+                            if fields.contains(where: { $0.name == fieldName }) {
+                                pathElements.append(.keyPath(fieldName))
+                                keyPathFields.append(fieldName)
+                            } else {
+                                // Field referenced in Field() doesn't exist
+                                context.diagnose(
+                                    Diagnostic(
+                                        node: functionCall,
+                                        message: RecordableMacroDiagnostic.directoryFieldNotFound(
+                                            fieldName: fieldName,
+                                            availableFields: fields.map { $0.name }
+                                        )
+                                    )
+                                )
+                                hasInvalidFields = true
+                            }
+                            continue
+                        } else {
+                            // Field() was called but KeyPath extraction failed
+                            // This likely means invalid syntax or typo in field name
+                            context.diagnose(
+                                Diagnostic(
+                                    node: functionCall,
+                                    message: RecordableMacroDiagnostic.invalidFieldSyntax
+                                )
+                            )
+                            hasInvalidFields = true
+                            continue
+                        }
                     }
                 }
+            }
+
+            // If there were invalid fields, return nil to prevent code generation
+            if hasInvalidFields {
+                return nil
             }
 
             return DirectoryMetadata(
@@ -446,33 +500,46 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return uniqueConstraints
     }
 
-    /// Deduplicate index definitions by field combination
+    /// Deduplicate index definitions by field combination, order, and uniqueness
     ///
-    /// Removes duplicate IndexInfo entries that have the same set of fields.
-    /// When duplicates are found, the first occurrence is kept.
+    /// Removes duplicate IndexInfo entries that have the exact same:
+    /// - Field list (including order)
+    /// - isUnique flag
+    /// - Custom name (if specified)
     ///
     /// **Deduplication strategy**:
-    /// - Same fields → Keep first occurrence (no error)
-    /// - Allows @Attribute(.unique) and #Unique<T>([\.field]) to coexist
+    /// - Same fields IN SAME ORDER + same isUnique + same customName → Keep first occurrence
+    /// - Different order or different uniqueness → Keep both
     ///
     /// **Example**:
     /// ```swift
-    /// @Attribute(.unique)
-    /// var email: String
-    ///
-    /// #Unique<User>([\.email])  // Deduplicated, no error
+    /// #Index<User>([\.city, \.age])     // Kept
+    /// #Index<User>([\.age, \.city])     // Kept (different order)
+    /// #Index<User>([\.email])           // Kept
+    /// #Unique<User>([\.email])          // Kept (different isUnique)
     /// ```
     ///
     /// - Parameter indexes: Array of IndexInfo to deduplicate
     /// - Returns: Deduplicated array (preserving original order)
     private static func deduplicateIndexes(_ indexes: [IndexInfo]) -> [IndexInfo] {
-        var seen: Set<Set<String>> = []
+        // Use a comparable key that includes field order, isUnique, and customName
+        struct IndexKey: Hashable {
+            let fields: [String]         // Preserve order
+            let isUnique: Bool
+            let customName: String?
+        }
+
+        var seen: Set<IndexKey> = []
         var result: [IndexInfo] = []
 
         for index in indexes {
-            let fieldSet = Set(index.fields)
-            if !seen.contains(fieldSet) {
-                seen.insert(fieldSet)
+            let key = IndexKey(
+                fields: index.fields,      // Array preserves order
+                isUnique: index.isUnique,
+                customName: index.customName
+            )
+            if !seen.contains(key) {
+                seen.insert(key)
                 result.append(index)
             }
         }
@@ -535,8 +602,17 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 attr.as(AttributeSyntax.self)?.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Transient"
             }
 
-            // Get type
-            guard let type = binding.typeAnnotation?.type else { continue }
+            // Get type - require explicit type annotation
+            guard let type = binding.typeAnnotation?.type else {
+                // Emit diagnostic for missing type annotation
+                context.diagnose(
+                    Diagnostic(
+                        node: binding,
+                        message: RecordableMacroDiagnostic.typeAnnotationRequired(fieldName: fieldName)
+                    )
+                )
+                continue
+            }
 
             let typeString = type.description.trimmingCharacters(in: .whitespaces)
             let typeInfo = analyzeType(typeString)
@@ -693,13 +769,21 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             """)
         } else {
             // Dynamic path with KeyPaths - generate parameters
-            let parameters = metadata.keyPathFields.map { fieldName -> String in
+            // Note: All fields have been validated in extractDirectoryMetadata,
+            // so this should never fail. If it does, it's an internal error.
+            let parameters = metadata.keyPathFields.compactMap { fieldName -> String? in
                 if let field = fields.first(where: { $0.name == fieldName }) {
                     return "\(fieldName): \(field.type)"
                 } else {
-                    return "\(fieldName): String"
+                    // Internal error: field should have been validated already
+                    return nil
                 }
             }.joined(separator: ", ")
+
+            // If any field is missing, return early (internal error)
+            guard parameters.components(separatedBy: ", ").count == metadata.keyPathFields.count else {
+                return ""
+            }
 
             let paramDocs = metadata.keyPathFields.map {
                 "    ///   - \($0): Partition key value"
@@ -3161,5 +3245,55 @@ struct IndexInfo {
     /// Generate the variable name (replace dots with double underscores)
     func variableName() -> String {
         return indexName().replacingOccurrences(of: ".", with: "__")
+    }
+}
+
+// MARK: - Diagnostic Messages
+
+enum RecordableMacroDiagnostic {
+    case primaryKeyFieldNotFound(missingFields: [String], availableFields: [String])
+    case typeAnnotationRequired(fieldName: String)
+    case directoryFieldNotFound(fieldName: String, availableFields: [String])
+    case invalidFieldSyntax
+}
+
+extension RecordableMacroDiagnostic: DiagnosticMessage {
+    var message: String {
+        switch self {
+        case .primaryKeyFieldNotFound(let missingFields, let availableFields):
+            return """
+            Primary key field(s) not found: \(missingFields.joined(separator: ", "))
+            Available fields: \(availableFields.joined(separator: ", "))
+            Make sure all fields in #PrimaryKey exist in the struct.
+            """
+
+        case .typeAnnotationRequired(let fieldName):
+            return """
+            Type annotation required for field '\(fieldName)'
+            Properties without explicit type annotations (e.g., 'var name = ""') cannot be serialized.
+            Add an explicit type: 'var \(fieldName): String'
+            """
+
+        case .directoryFieldNotFound(let fieldName, let availableFields):
+            return """
+            Directory field reference not found: \(fieldName)
+            Available fields: \(availableFields.joined(separator: ", "))
+            Check for typos in Field(\\Type.fieldName) within #Directory.
+            """
+
+        case .invalidFieldSyntax:
+            return """
+            Invalid Field() syntax in #Directory
+            Field() requires a KeyPath argument: Field(\\Type.fieldName)
+            """
+        }
+    }
+
+    var diagnosticID: MessageID {
+        MessageID(domain: "FDBRecordLayerMacros", id: "RecordableMacro")
+    }
+
+    var severity: DiagnosticSeverity {
+        .error
     }
 }

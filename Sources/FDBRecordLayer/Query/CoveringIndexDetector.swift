@@ -43,8 +43,16 @@ public struct CoveringIndexDetector {
         requiredFields: Set<String>,
         primaryKeyFields: [String]
     ) -> Bool {
-        // Extract fields from index expression
-        let indexFields = extractFieldsFromExpression(index.rootExpression)
+        // Extract fields from index expression (index key)
+        var indexFields = extractFieldsFromExpression(index.rootExpression)
+
+        // ✅ BUG FIX #8: Include covering fields (stored in index value)
+        if let coveringFields = index.coveringFields {
+            for coveringField in coveringFields {
+                let coveringFieldNames = extractFieldsFromExpression(coveringField)
+                indexFields.formUnion(coveringFieldNames)
+            }
+        }
 
         // Primary key fields are always available in the index
         let availableFields = indexFields.union(Set(primaryKeyFields))
@@ -86,8 +94,20 @@ public struct CoveringIndexDetector {
 
         // Select index with fewest extra fields
         return coveringIndexes.min { lhs, rhs in
-            let lhsFields = extractFieldsFromExpression(lhs.rootExpression)
-            let rhsFields = extractFieldsFromExpression(rhs.rootExpression)
+            // ✅ FIX: Include coveringFields in field extraction for accurate comparison
+            var lhsFields = extractFieldsFromExpression(lhs.rootExpression)
+            if let coveringFields = lhs.coveringFields {
+                for coveringField in coveringFields {
+                    lhsFields.formUnion(extractFieldsFromExpression(coveringField))
+                }
+            }
+
+            var rhsFields = extractFieldsFromExpression(rhs.rootExpression)
+            if let coveringFields = rhs.coveringFields {
+                for coveringField in coveringFields {
+                    rhsFields.formUnion(extractFieldsFromExpression(coveringField))
+                }
+            }
 
             // Calculate extra fields (fields in index but not required)
             let lhsExtra = lhsFields.subtracting(requiredFields).count
@@ -141,8 +161,9 @@ extension RecordStore where Record: Recordable {
         // Extract primary key field names from the Recordable type
         let primaryKeyFields = Record.primaryKeyFields
 
+        // ✅ FIX: Use indexes for specific record type, not all indexes
         return CoveringIndexDetector.findBestCoveringIndex(
-            availableIndexes: schema.indexes,
+            availableIndexes: schema.indexes(for: Record.recordName),
             requiredFields: requiredFields,
             primaryKeyFields: primaryKeyFields
         )

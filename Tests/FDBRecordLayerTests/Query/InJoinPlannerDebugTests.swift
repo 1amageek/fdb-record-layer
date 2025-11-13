@@ -68,7 +68,7 @@ struct InJoinPlannerDebugTests {
         )
 
         let statsManager = MockStatisticsManager()
-        let planner = TypedRecordQueryPlanner<DebugProduct>(
+        let _ = TypedRecordQueryPlanner<DebugProduct>(
             schema: schema,
             recordName: DebugProduct.recordName,
             statisticsManager: statsManager
@@ -154,8 +154,7 @@ struct InJoinPlannerDebugTests {
             print("  Child: \(type(of: filterPlan.child))")
         }
 
-        // For debugging, we'll accept any plan for now
-        #expect(plan is TypedQueryPlan<DebugProduct>)
+        // Plan was successfully created (implicit - no exception thrown)
     }
 }
 

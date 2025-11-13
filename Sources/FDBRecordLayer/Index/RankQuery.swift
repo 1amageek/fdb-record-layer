@@ -10,18 +10,19 @@ import FoundationDB
 ///
 /// **Implementation Status**: ✅ Fully Implemented
 ///
-/// All RANK operations are implemented using Range Tree algorithm with O(log n) complexity.
+/// RANK operations use Range Tree algorithm for efficient rank calculations.
 ///
 /// **Architecture**:
 /// - `RankQuery` (this file): User-facing query API, thin adapter layer
-/// - `RankIndexMaintainer`: Core business logic, O(log n) operations with Range Tree
+/// - `RankIndexMaintainer`: Core business logic with Range Tree count nodes
 /// - Count nodes: Hierarchical aggregation for efficient rank calculation
 ///
 /// **Performance**:
-/// - All operations are O(log n) using Range Tree algorithm
-/// - No full scan required
-/// - Efficient for leaderboards and rankings
-/// - Descending rank queries optimized with Deque (O(1) removeFirst)
+/// - `getRank`: O(log n) - uses Range Tree count nodes
+/// - `count`: O(log n) - uses Range Tree count nodes
+/// - `byRank`, `top`, `range`: O(n) - sequential scan to find specific rank
+/// - `scoreAtRank`: O(n) - sequential scan to extract score at rank
+/// - `byScoreRange`: O(n) - scans all entries in score range
 ///
 /// **Example Usage**:
 /// ```swift
@@ -86,28 +87,24 @@ public struct RankQuery<Record: Recordable>: Sendable {
     /// Returns the record at the specified rank position.
     /// Rank 1 = highest score (1st place)
     ///
-    /// - Parameter rank: Rank position (1-indexed)
+    /// - Parameters:
+    ///   - rank: Rank position (1-indexed)
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Record at the specified rank, or nil if rank is out of bounds
     /// - Throws: RecordLayerError if operation fails
-    public func byRank(_ rank: Int) async throws -> Record? {
+    public func byRank(_ rank: Int, grouping: [any TupleElement] = []) async throws -> Record? {
         guard rank > 0 else {
             throw RecordLayerError.invalidArgument("Rank must be positive")
         }
 
         return try await recordStore.withDatabaseTransaction { transaction in
-            // Create maintainer
-            let maintainer = RankIndexMaintainer<Record>(
+            // Get primary key by rank using dynamic score type
+            guard let primaryKeyTuple = try await getRecordByRankDynamic(
+                recordType: Record.self,
                 index: self.index,
                 subspace: self.indexSubspace,
-                recordSubspace: self.recordStore.recordSubspace
-            )
-
-            // Get grouping values (empty for ungrouped indexes)
-            let groupingValues: [any TupleElement] = []
-
-            // Get primary key by rank
-            guard let primaryKeyTuple = try await maintainer.getRecordByRank(
-                groupingValues: groupingValues,
+                recordSubspace: self.recordStore.recordSubspace,
+                groupingValues: grouping,
                 rank: rank,
                 transaction: transaction
             ) else {
@@ -129,27 +126,22 @@ public struct RankQuery<Record: Recordable>: Sendable {
     /// - Parameters:
     ///   - startRank: Starting rank (1-indexed, inclusive)
     ///   - endRank: Ending rank (1-indexed, inclusive)
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Array of records in the rank range
     /// - Throws: RecordLayerError if operation fails
-    public func range(startRank: Int, endRank: Int) async throws -> [Record] {
+    public func range(startRank: Int, endRank: Int, grouping: [any TupleElement] = []) async throws -> [Record] {
         guard startRank > 0 && endRank >= startRank else {
             throw RecordLayerError.invalidArgument("Invalid rank range")
         }
 
         return try await recordStore.withDatabaseTransaction { transaction in
-            // Create maintainer
-            let maintainer = RankIndexMaintainer<Record>(
+            // Get primary keys by rank range using dynamic score type
+            let primaryKeyTuples = try await getRecordsByRankRangeDynamic(
+                recordType: Record.self,
                 index: self.index,
                 subspace: self.indexSubspace,
-                recordSubspace: self.recordStore.recordSubspace
-            )
-
-            // Get grouping values (empty for ungrouped indexes)
-            let groupingValues: [any TupleElement] = []
-
-            // Get primary keys by rank range
-            let primaryKeyTuples = try await maintainer.getRecordsByRankRange(
-                groupingValues: groupingValues,
+                recordSubspace: self.recordStore.recordSubspace,
+                groupingValues: grouping,
                 startRank: startRank,
                 endRank: endRank,
                 transaction: transaction
@@ -174,11 +166,13 @@ public struct RankQuery<Record: Recordable>: Sendable {
     ///
     /// Convenience method to get the top N ranked records.
     ///
-    /// - Parameter count: Number of top records to return
+    /// - Parameters:
+    ///   - count: Number of top records to return
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Array of top N records
     /// - Throws: RecordLayerError if operation fails
-    public func top(_ count: Int) async throws -> [Record] {
-        return try await range(startRank: 1, endRank: count)
+    public func top(_ count: Int, grouping: [any TupleElement] = []) async throws -> [Record] {
+        return try await range(startRank: 1, endRank: count, grouping: grouping)
     }
 
     // MARK: - BY_VALUE API
@@ -187,31 +181,35 @@ public struct RankQuery<Record: Recordable>: Sendable {
     ///
     /// Returns the rank position of a record with the specified score and primary key.
     ///
+    /// **Score Type**: Must match the index's scoreTypeName (Int64, Double, Float, or Int)
+    ///
     /// - Parameters:
-    ///   - score: Score value
+    ///   - score: Score value (type must match index's scoreTypeName)
     ///   - primaryKey: Primary key of the record
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Rank position (1-indexed), or nil if not found
-    /// - Throws: RecordLayerError if operation fails
-    public func getRank(score: Int64, primaryKey: any TupleElement) async throws -> Int? {
+    /// - Throws: RecordLayerError if operation fails or score type doesn't match
+    public func getRank(score: any TupleElement, primaryKey: any TupleElement, grouping: [any TupleElement] = []) async throws -> Int? {
         return try await recordStore.withDatabaseTransaction { transaction in
-            // Create maintainer
-            let maintainer = RankIndexMaintainer<Record>(
+            // Convert primaryKey to Tuple
+            let primaryKeyTuple: Tuple
+            if let tuple = primaryKey as? Tuple {
+                primaryKeyTuple = tuple
+            } else {
+                primaryKeyTuple = Tuple([primaryKey])
+            }
+
+            // Get rank using dynamic score type
+            return try await getRankDynamic(
+                recordType: Record.self,
                 index: self.index,
                 subspace: self.indexSubspace,
-                recordSubspace: self.recordStore.recordSubspace
-            )
-
-            // Get grouping values (empty for ungrouped indexes)
-            let groupingValues: [any TupleElement] = []
-
-            // Get rank by score
-            let rank = try await maintainer.getRank(
-                groupingValues: groupingValues,
+                recordSubspace: self.recordStore.recordSubspace,
+                groupingValues: grouping,
                 score: score,
+                primaryKey: primaryKeyTuple,
                 transaction: transaction
             )
-
-            return rank
         }
     }
 
@@ -219,21 +217,83 @@ public struct RankQuery<Record: Recordable>: Sendable {
     ///
     /// Returns all records with scores in the specified range.
     ///
+    /// **Score Type**: Must match the index's scoreTypeName (Int64, Double, Float, or Int)
+    ///
     /// - Parameters:
-    ///   - minScore: Minimum score (inclusive)
-    ///   - maxScore: Maximum score (inclusive)
+    ///   - minScore: Minimum score (inclusive, type must match index's scoreTypeName)
+    ///   - maxScore: Maximum score (inclusive, type must match index's scoreTypeName)
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Array of records with scores in range
-    /// - Throws: RecordLayerError if operation fails
-    public func byScoreRange(minScore: Int64, maxScore: Int64) async throws -> [Record] {
-        guard minScore <= maxScore else {
-            throw RecordLayerError.invalidArgument("Invalid score range")
+    /// - Throws: RecordLayerError if operation fails or score type doesn't match
+    public func byScoreRange(minScore: any TupleElement, maxScore: any TupleElement, grouping: [any TupleElement] = []) async throws -> [Record] {
+        // Validate score range based on score type
+        let scoreTypeName = self.index.options.scoreTypeName ?? "Int64"
+
+        switch scoreTypeName {
+        case "Int64":
+            guard let minTyped = minScore as? Int64, let maxTyped = maxScore as? Int64 else {
+                throw RecordLayerError.invalidArgument("Score type mismatch: expected Int64")
+            }
+            if minTyped > maxTyped {
+                throw RecordLayerError.invalidArgument("Invalid score range: minScore (\(minTyped)) > maxScore (\(maxTyped))")
+            }
+        case "Double":
+            guard let minTyped = minScore as? Double, let maxTyped = maxScore as? Double else {
+                throw RecordLayerError.invalidArgument("Score type mismatch: expected Double")
+            }
+            if minTyped > maxTyped {
+                throw RecordLayerError.invalidArgument("Invalid score range: minScore (\(minTyped)) > maxScore (\(maxTyped))")
+            }
+        case "Float":
+            guard let minTyped = minScore as? Float, let maxTyped = maxScore as? Float else {
+                throw RecordLayerError.invalidArgument("Score type mismatch: expected Float")
+            }
+            if minTyped > maxTyped {
+                throw RecordLayerError.invalidArgument("Invalid score range: minScore (\(minTyped)) > maxScore (\(maxTyped))")
+            }
+        case "Int":
+            guard let minTyped = minScore as? Int, let maxTyped = maxScore as? Int else {
+                throw RecordLayerError.invalidArgument("Score type mismatch: expected Int")
+            }
+            if minTyped > maxTyped {
+                throw RecordLayerError.invalidArgument("Invalid score range: minScore (\(minTyped)) > maxScore (\(maxTyped))")
+            }
+        default:
+            throw RecordLayerError.invalidArgument("Unsupported score type: \(scoreTypeName)")
         }
 
         return try await recordStore.withDatabaseTransaction { transaction in
             // Build range keys
-            let groupingValues: [any TupleElement] = []
+            let groupingValues = grouping
             let beginTuple = Tuple(groupingValues + [minScore])
-            let endTuple = Tuple(groupingValues + [maxScore + 1])
+
+            // Calculate exclusive end key based on score type
+            let endTuple: Tuple
+
+            switch scoreTypeName {
+            case "Int64":
+                guard let maxScoreTyped = maxScore as? Int64 else {
+                    throw RecordLayerError.invalidArgument("Score type mismatch: expected Int64")
+                }
+                endTuple = Tuple(groupingValues + [maxScoreTyped + 1])
+            case "Double":
+                guard let maxScoreTyped = maxScore as? Double else {
+                    throw RecordLayerError.invalidArgument("Score type mismatch: expected Double")
+                }
+                endTuple = Tuple(groupingValues + [maxScoreTyped.nextUp])
+            case "Float":
+                guard let maxScoreTyped = maxScore as? Float else {
+                    throw RecordLayerError.invalidArgument("Score type mismatch: expected Float")
+                }
+                endTuple = Tuple(groupingValues + [maxScoreTyped.nextUp])
+            case "Int":
+                guard let maxScoreTyped = maxScore as? Int else {
+                    throw RecordLayerError.invalidArgument("Score type mismatch: expected Int")
+                }
+                endTuple = Tuple(groupingValues + [maxScoreTyped + 1])
+            default:
+                throw RecordLayerError.invalidArgument("Unsupported score type: \(scoreTypeName)")
+            }
 
             let beginKey = self.indexSubspace.pack(beginTuple)
             let endKey = self.indexSubspace.pack(endTuple)
@@ -278,18 +338,18 @@ public struct RankQuery<Record: Recordable>: Sendable {
 
     /// Get total count of ranked entries
     ///
+    /// - Parameters:
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Total number of entries in the rank index
     /// - Throws: RecordLayerError if operation fails
-    public func count() async throws -> Int {
+    public func count(grouping: [any TupleElement] = []) async throws -> Int {
         return try await recordStore.withDatabaseTransaction { transaction in
-            let maintainer = RankIndexMaintainer<Record>(
+            return try await getTotalCountDynamic(
+                recordType: Record.self,
                 index: self.index,
                 subspace: self.indexSubspace,
-                recordSubspace: self.recordStore.recordSubspace
-            )
-
-            return try await maintainer.getTotalCount(
-                groupingValues: [],
+                recordSubspace: self.recordStore.recordSubspace,
+                groupingValues: grouping,
                 transaction: transaction
             )
         }
@@ -299,23 +359,26 @@ public struct RankQuery<Record: Recordable>: Sendable {
     ///
     /// Returns the score value at the specified rank without fetching the full record.
     ///
-    /// - Parameter rank: Rank position (1-indexed)
+    /// **Return Type**: Score type matches the index's scoreTypeName (Int64, Double, Float, or Int).
+    /// Cast the result to the appropriate type based on your index configuration.
+    ///
+    /// - Parameters:
+    ///   - rank: Rank position (1-indexed)
+    ///   - grouping: Values for grouping fields (default: empty for ungrouped indexes)
     /// - Returns: Score at the specified rank, or nil if rank is out of bounds
     /// - Throws: RecordLayerError if operation fails
-    public func scoreAtRank(_ rank: Int) async throws -> Int64? {
+    public func scoreAtRank(_ rank: Int, grouping: [any TupleElement] = []) async throws -> (any TupleElement)? {
         guard rank > 0 else {
             throw RecordLayerError.invalidArgument("Rank must be positive")
         }
 
         return try await recordStore.withDatabaseTransaction { transaction in
-            let maintainer = RankIndexMaintainer<Record>(
+            return try await getScoreAtRankDynamic(
+                recordType: Record.self,
                 index: self.index,
                 subspace: self.indexSubspace,
-                recordSubspace: self.recordStore.recordSubspace
-            )
-
-            return try await maintainer.getScoreAtRank(
-                groupingValues: [],
+                recordSubspace: self.recordStore.recordSubspace,
+                groupingValues: grouping,
                 rank: rank,
                 transaction: transaction
             )
