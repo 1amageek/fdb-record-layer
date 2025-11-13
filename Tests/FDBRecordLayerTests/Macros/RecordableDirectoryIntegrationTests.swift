@@ -9,8 +9,11 @@ import FoundationDB
 @Recordable
 struct UserWithDirectory {
     #Directory<UserWithDirectory>("app", "users", layer: .recordStore)
+    #PrimaryKey<UserWithDirectory>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    
+
+    var userID: Int64
     var name: String
     var email: String
 }
@@ -19,8 +22,11 @@ struct UserWithDirectory {
 @Recordable
 struct OrderWithDirectory {
     #Directory<OrderWithDirectory>("app", "orders", layer: .recordStore)
+    #PrimaryKey<OrderWithDirectory>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    
+
+    var orderID: Int64
     var userID: Int64
     var total: Double
 }
@@ -29,8 +35,11 @@ struct OrderWithDirectory {
 @Recordable
 struct ProductWithCustomLayer {
     #Directory<ProductWithCustomLayer>("app", "products", layer: .luceneIndex)
+    #PrimaryKey<ProductWithCustomLayer>([\.productID])
 
-    @PrimaryKey var productID: Int64
+    
+
+    var productID: Int64
     var name: String
     var description: String
 }
@@ -39,8 +48,11 @@ struct ProductWithCustomLayer {
 @Recordable
 struct TenantOrder {
     #Directory<TenantOrder>("tenants", Field(\TenantOrder.tenantID), "orders", layer: .partition)
+    #PrimaryKey<TenantOrder>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    
+
+    var orderID: Int64
     var tenantID: String
     var total: Double
 }
@@ -49,8 +61,11 @@ struct TenantOrder {
 @Recordable
 struct ChannelMessage {
     #Directory<ChannelMessage>("tenants", Field(\ChannelMessage.tenantID), "channels", Field(\ChannelMessage.channelID), "messages", layer: .partition)
+    #PrimaryKey<ChannelMessage>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    
+
+    var messageID: Int64
     var tenantID: String
     var channelID: String
     var content: String

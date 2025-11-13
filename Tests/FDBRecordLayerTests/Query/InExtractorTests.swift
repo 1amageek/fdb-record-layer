@@ -8,8 +8,11 @@ struct InExtractorTestUser {
     #Index<InExtractorTestUser>([\.city])
     #Index<InExtractorTestUser>([\.age])
     #Index<InExtractorTestUser>([\.name])
+    #PrimaryKey<InExtractorTestUser>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    
+
+    var userID: Int64
     var name: String
     var age: Int
     var city: String

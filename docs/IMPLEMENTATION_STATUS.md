@@ -1,9 +1,10 @@
 # FoundationDB Record Layer - 実装状況レポート
 
 **作成日**: 2025-01-12
-**最終更新**: 2025-01-12（Covering Index完全実装、Sendable警告修正完了）
+**最終更新**: 2025-11-12（正確な実装状況調査完了）
 **基準**: swift-implementation-roadmap.md
-**総合進捗**: **97%** 🎉
+**総合進捗**: **92%** 🎉
+**テスト**: **359テスト全パス** ✅
 
 ---
 
@@ -13,9 +14,9 @@
 |-------|---------|--------|------|
 | **Phase 1** | クエリ最適化 | **100%** | ✅ **完了** ✨ |
 | **Phase 2** | スキーマ進化 | **100%** | ✅ **完了** ✨ |
-| **Phase 3** | RANK Index | **90%** | ✅ ほぼ完了 |
-| **Phase 4** | 集約機能強化 | **100%** | ✅ **完了** ✨ |
-| **Phase 5** | トランザクション機能 | **100%** | ✅ 完了 |
+| **Phase 3** | RANK Index | **85%** | ⚠️ API未実装 |
+| **Phase 4** | GROUP BY集約 | **100%** | ✅ **完了** ✨ |
+| **Phase 5** | Migration Manager | **75%** | ⚠️ インデックス操作未実装 |
 
 ---
 
@@ -182,28 +183,36 @@ extension UserWithAddress: Recordable {
 
 ---
 
-### ❌ 未実装機能
+#### 1.5 InExtractor（完全実装）✨
+**ファイル**: `Sources/FDBRecordLayer/Query/InExtractor.swift` (180行)
 
-#### 1.5 InExtractor（クエリリライト）
-**優先度**: 🟡 **中**
-
-**必要な実装**:
 ```swift
-// 1. Visitor protocol定義
-protocol QueryComponentVisitor {
-    func visit(_ component: TypedFieldQueryComponent) throws
-    func visit(_ component: TypedInQueryComponent) throws
-}
+/// ✅ 実装内容（2025-11-12確認）
+- InExtractor: IN述語抽出（Visitor pattern）
+- InPredicate: IN述語メタデータ（Hashable, Equatable）
+- 自動重複排除（Set使用）
+- 順序独立比較（パック化による効率的な比較）
+- プランナー統合（generateInJoinPlansWithExtractor）
 
-// 2. InExtractor実装
-struct InExtractor: QueryComponentVisitor {
-    mutating func visit(_ component: TypedInQueryComponent) throws
-}
+/// パフォーマンス
+- 再帰的なAND/OR/NOT訪問
+- O(n)時間でIN述語抽出
+- Set重複排除による効率化
 ```
 
-**影響**: 複雑なIN述語を含むクエリの最適化が未完成
+**実装状況**:
+- [x] InExtractor struct 実装
+- [x] InPredicate struct 実装（Hashable, Equatable）
+- [x] visit() メソッド（全QueryComponent対応）
+- [x] extractedInPredicates() メソッド
+- [x] 順序独立比較（compareBytesLexicographic）
+- [x] プランナー統合（TypedRecordQueryPlanner）
+- [x] テスト完了（18 InExtractorTests passed）
 
-**見積もり**: 3日
+**既存のFilterExpression ASTを活用**:
+- TypedQueryComponent が既にASTとして機能
+- FilterExpression は不要だった！
+- クリーンな設計
 
 ---
 
@@ -365,15 +374,15 @@ public final class MigrationManager: Sendable {
 
 ---
 
-## Phase 3: RANK Index（90%）
+## Phase 3: RANK Index（85%）⚠️ RankIndexAPI未実装
 
 ### ✅ 完全実装済み
 
-#### 3.1 RankedSet（Skip-list）
-**ファイル**: `Sources/FDBRecordLayer/Index/RankedSet.swift`
+#### 3.1 RankedSet（Skip-list）⚠️ メモリのみ
+**ファイル**: `Sources/FDBRecordLayer/Index/RankedSet.swift` (144行)
 
 ```swift
-/// ✅ 実装内容
+/// ⚠️ 実装内容（メモリのみ、FDB永続化なし）
 public struct RankedSet<Element: Comparable & Sendable>: Sendable {
     public mutating func insert(_ value: Element) -> Int  // O(log n)
     public func rank(of value: Element) -> Int?           // O(log n)
@@ -382,9 +391,10 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
 }
 
 /// 機能
-- Skip-listデータ構造
+- Skip-listアルゴリズム実装済み
 - O(log n) insert/rank/select
 - Copy-on-write最適化
+- ⚠️ FDBへの永続化なし（メモリのみ）
 ```
 
 **実装状況**:
@@ -396,7 +406,7 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
 - [x] randomLevel() 実装
 - [x] Copy-on-write最適化
 - [ ] delete() 実装（未実装）
-- [ ] 永続化最適化
+- [ ] **FDB永続化**（未実装、高優先度）
 
 ---
 
@@ -421,36 +431,79 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
 
 ---
 
-### ❌ 未実装機能
+#### 3.3 BY_VALUE / BY_RANK スキャン（完全実装）✨
+**ファイル**:
+- `Sources/FDBRecordLayer/Query/RankScanType.swift` (80行)
+- `Sources/FDBRecordLayer/Query/TypedRankIndexScanPlan.swift` (348行)
+- `Sources/FDBRecordLayer/Query/QueryBuilder.swift`
 
-#### 3.3 BY_VALUE / BY_RANK スキャン
-**優先度**: 🟡 **中**
-
-**必要な実装**:
 ```swift
-// 1. RankScanType定義
-public enum RankScanType: Sendable {
-    case byValue
-    case byRank
-}
+/// ✅ 実装内容（2025-11-12確認）
+- RankScanType: byValue / byRank
+- RankRange: ランク範囲（0-based, end-exclusive）
+- TypedRankIndexScanPlan: RANK index専用プラン
+- RankIndexValueCursor: 値ベーススキャン
+- RankIndexRankCursor: ランクベーススキャン
+- QueryBuilder.topN/bottomN統合
 
-// 2. 専用プラン
-public struct RankIndexScanPlan: TypedQueryPlan { ... }
-
-// 3. QueryBuilder統合
-extension QueryBuilder {
-    public func topN(_ n: Int, by keyPath: KeyPath<Record, some Comparable>) -> Self
-    public func rank(of value: some TupleElement, in keyPath: KeyPath<Record, some Comparable>) async throws -> Int?
-}
+/// パフォーマンス
+- By Value: O(n) where n = 結果数
+- By Rank: O(log n + k) where n = 総レコード数, k = 結果数
 ```
 
-**影響**: ランクインデックスの使いやすいクエリAPIが不足
-
-**見積もり**: 5日
+**実装状況**:
+- [x] RankScanType enum 実装
+- [x] RankRange struct 実装
+- [x] TypedRankIndexScanPlan 実装
+- [x] RankIndexValueCursor 実装
+- [x] RankIndexRankCursor 実装
+- [x] QueryBuilder.topN() 実装
+- [x] QueryBuilder.bottomN() 実装
+- [x] フィルター制限の明確化（シンプルRANKでは不可）
+- [x] 複合RANKインデックス対応
 
 ---
 
-## Phase 4: 集約機能強化（100%）✨ **2025-01-12完了**
+### ❌ 未実装機能
+
+#### 3.4 RankIndexAPI（未実装）
+**優先度**: 🔴 **高**
+
+**ファイル**: `Sources/FDBRecordLayer/Index/RankIndexAPI.swift` (242行、全未実装)
+
+**未実装メソッド** (全て `throw RecordLayerError.internalError`):
+```swift
+public struct RankIndexAPI<Record: Recordable> {
+    // ❌ 全メソッド未実装
+    func byRank(_ rank: Int) async throws -> Record?
+    func range(startRank: Int, endRank: Int) async throws -> [Record]
+    func top(_ count: Int) async throws -> [Record]
+    func getRank(score: Int64, primaryKey: any TupleElement) async throws -> Int?
+    func byScoreRange(minScore: Int64, maxScore: Int64) async throws -> [Record]
+    func count() async throws -> Int
+    func scoreAtRank(_ rank: Int) async throws -> Int64?
+}
+```
+
+**未実装の理由**:
+```
+Missing Dependency: Persistent RankedSet
+
+RankedSetがメモリのみの実装であるため、RankIndexAPIの全メソッドが
+実装できない。FDB永続化が前提条件。
+```
+
+**必要な実装**:
+1. RankedSetのFDB永続化（3-5日）
+2. RankIndexAPIメソッド実装（2-3日）
+
+**影響**: ランクベースのクエリAPIが使用不可（topN/bottomNは動作）
+
+**見積もり**: 5-8日
+
+---
+
+## Phase 4: GROUP BY集約（100%）✨ **2025-11-12確認**
 
 ### ✅ 完全実装済み
 
@@ -510,103 +563,160 @@ public struct GenericAverageIndexMaintainer<Record: Sendable>: GenericIndexMaint
 ---
 
 #### 4.3 GROUP BY Result Builder（完全実装）✨
-**ファイル**: `Sources/FDBRecordLayer/Query/GroupByBuilder.swift`
+**ファイル**: `Sources/FDBRecordLayer/Query/GroupByBuilder.swift` (578行)
 
 ```swift
-/// ✅ 実装内容（2025-01-12完了）
+/// ✅ 実装内容（2025-11-12確認）
 - GroupByBuilder: @resultBuilder準拠
-- GBCount, GBSum, GBAverage, GBMin, GBMax: 集約コンポーネント
+- AggregationAccumulator: 型保存集約（AggregationValue使用）
+- AggregationValue: Int64, Double, Decimal, String, UUID対応
 - GroupByQueryBuilder: 複数集約の並行実行
-- having句サポート
-- Swift-Native declarative API
+- HAVING句サポート
+- メモリ制限（10,000グループ、エラーメッセージ付き）
 
 /// 使用例
-let results = try await store.query(Sale.self)
-    .groupBy(\.region) {
-        .sum(\.amount, as: "totalSales")
-        .average(\.price, as: "avgPrice")
+let builder = GroupByQueryBuilder<Sale, String>(
+    recordStore: store,
+    groupByField: "region",
+    aggregations: [
+        .sum("amount", as: "totalSales"),
+        .average("price", as: "avgPrice"),
         .count(as: "orderCount")
-    }
-    .having { groupKey, aggs in
-        (aggs["totalSales"] ?? 0) > 10000
+    ]
+)
+let results = try await builder
+    .having { groupKey, aggregations in
+        (aggregations["totalSales"] ?? .integer(0)) > .integer(10000)
     }
     .execute()
 ```
 
 **実装状況**:
 - [x] @resultBuilder GroupByBuilder 実装
+- [x] AggregationAccumulator 実装（型保存）
+- [x] AggregationValue 実装（フル型保持）
 - [x] 集約コンポーネント（COUNT、SUM、AVG、MIN、MAX）
 - [x] GroupByQueryBuilder 実装
-- [x] having句サポート
-- [x] 複数集約の並行実行
-- [x] RecordStore統合
+- [x] HAVING句サポート
+- [x] メモリ制限（10,000グループ）
+- [x] 詳細なエラーメッセージ
 
 ---
 
-## Phase 5: トランザクション機能（100%）✅
+## Phase 5: Migration Manager（75%）⚠️ インデックス操作未実装
 
 ### ✅ 完全実装済み
 
-#### 5.1 Commit Hooks（完全実装）
-**ファイル**:
-- `Sources/FDBRecordLayer/Transaction/CommitHook.swift`
-- `Sources/FDBRecordLayer/Transaction/RecordContext.swift`
+#### 5.1 MigrationManager（完全実装）
+**ファイル**: `Sources/FDBRecordLayer/Schema/MigrationManager.swift` (284行)
 
 ```swift
-/// ✅ 実装内容
-public protocol CommitHook: Sendable {
-    func execute(context: RecordContext) async throws
-}
+/// ✅ 実装内容（2025-11-12確認）
+public final class MigrationManager: Sendable {
+    public func migrate(to targetVersion: SchemaVersion) async throws
+    public func getCurrentVersion() async throws -> SchemaVersion?
 
-public final class RecordContext: Sendable {
-    public func addPreCommitHook(_ hook: any CommitHook)
-    public func addPostCommitHook(_ closure: @Sendable () async throws -> Void)
-    public func commit() async throws
+    // Mutex + final classパターン（actorではない）
+    private let lock: Mutex<MigrationState>
 }
 
 /// 機能
-- Pre-commit hooks（トランザクション前実行）
-- Post-commit hooks（トランザクション後実行）
-- async/await対応
-- Mutex同期
+- バージョンベースマイグレーション
+- 自動マイグレーションチェーン構築
+- 冪等性保証
+- 並行実行制御
 ```
 
 **実装状況**:
-- [x] CommitHook protocol 実装
-- [x] ClosureCommitHook 実装
-- [x] RecordContext.addPreCommitHook() 実装
-- [x] RecordContext.addPostCommitHook() 実装
-- [x] commit()でのフック実行ロジック
-- [x] async/await対応
+- [x] MigrationManager struct 実装
+- [x] getCurrentVersion() 実装
+- [x] migrate(to:) 実装
+- [x] 自動マイグレーションチェーン構築
+- [x] 冪等性保証
 - [x] Mutex同期
-- [x] テスト完了
 
 ---
 
-#### 5.2 Transaction Options（完全実装）
-**ファイル**: `Sources/FDBRecordLayer/Transaction/RecordContext.swift`
+#### 5.2 Migration（データ操作完全実装）
+**ファイル**: `Sources/FDBRecordLayer/Schema/Migration.swift` (637行)
 
 ```swift
-/// ✅ 実装内容
-public final class RecordContext: Sendable {
-    public func setTimeout(milliseconds: Int) throws
-    public func disableReadYourWrites() throws
-    // ... その他のオプション
-}
+/// ✅ 実装内容（データ操作のみ）
+public struct MigrationContext: Sendable {
+    // ✅ 完全実装
+    public func transformRecords<Record>(
+        recordType: String,
+        config: BatchConfig = .makeDefault(),
+        transform: @escaping @Sendable (Record) async throws -> Record
+    ) async throws
 
-/// 機能
-- Timeout設定
-- Read-your-writes制御
-- FDBトランザクションオプションとの統合
+    public func deleteRecords<Record>(
+        recordType: String,
+        where predicate: @escaping @Sendable (Record) -> Bool,
+        config: BatchConfig = .makeDefault()
+    ) async throws
+
+    public func executeOperation<T: Sendable>(
+        _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
+    ) async throws -> T
+
+    // ❌ 未実装
+    public func addIndex(_ index: Index) async throws
+    public func removeIndex(indexName: String, addedVersion: SchemaVersion) async throws
+    public func rebuildIndex(indexName: String) async throws
+}
 ```
 
+**データ操作の特徴**:
+- ✅ RangeSetによる進捗追跡（再開可能）
+- ✅ アトミックトランザクション（データ+進捗）
+- ✅ バッチ処理（FDB制限遵守: 5秒、10MB）
+- ✅ while ループによる正しい継続処理
+- ✅ successor() による重複回避
+
 **実装状況**:
-- [x] setTimeout() 実装
-- [x] disableReadYourWrites() 実装
-- [x] FDBオプション適用
-- [x] テスト完了
-- [ ] TransactionOptions struct（低優先度、個別メソッドで十分）
-- [ ] Priority enum（低優先度）
+- [x] transformRecords() 完全実装
+- [x] deleteRecords() 完全実装
+- [x] executeOperation() 実装
+- [x] RangeSet統合
+- [x] BatchConfig（制限設定）
+- [x] アトミックトランザクション
+- [ ] addIndex()（未実装）
+- [ ] removeIndex()（未実装）
+- [ ] rebuildIndex()（未実装）
+
+---
+
+### ❌ 未実装機能
+
+#### 5.3 Migration Index Operations（未実装）
+**優先度**: 🟡 **中**
+
+**未実装メソッド** (全て `throw RecordLayerError.internalError`):
+```swift
+// ❌ 全て未実装
+public func addIndex(_ index: Index) async throws
+public func removeIndex(indexName: String, addedVersion: SchemaVersion) async throws
+public func rebuildIndex(indexName: String) async throws
+```
+
+**未実装の理由** (エラーメッセージより):
+```
+Missing requirements:
+1. Type-safe RecordStore factory (to obtain Record type)
+2. RecordStore subspace in MigrationContext (for IndexStateManager and data operations)
+
+Current limitation: MigrationContext.storeFactory returns Any, preventing type-safe operations.
+```
+
+**必要な実装**:
+1. 型安全なRecordStore factory（2日）
+2. MigrationContextへのsubspace追加（1日）
+3. インデックス操作メソッド実装（2日）
+
+**影響**: インデックスの動的追加・削除・再構築が不可（スキーマ変更後に再起動が必要）
+
+**見積もり**: 5日
 
 ---
 

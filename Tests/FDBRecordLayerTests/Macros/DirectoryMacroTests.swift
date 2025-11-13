@@ -146,7 +146,6 @@ struct DirectoryMacroTests {
 
     let integrationMacros: [String: Macro.Type] = [
         "Recordable": RecordableMacro.self,
-        "PrimaryKey": PrimaryKeyMacro.self,
         "Directory": DirectoryMacro.self
     ]
 
@@ -160,8 +159,9 @@ struct DirectoryMacroTests {
             @Recordable
             struct User {
                 #Directory<User>(["app", "users"], layer: .recordStore)
+                #PrimaryKey<User>([\\.userID])
 
-                @PrimaryKey var userID: Int64
+                var userID: Int64
                 var name: String
             }
             """
@@ -184,8 +184,9 @@ struct DirectoryMacroTests {
             @Recordable
             struct Order {
                 #Directory<Order>("tenants", Field(\\.accountID), "orders", layer: .partition)
+                #PrimaryKey<Order>([\\.orderID])
 
-                @PrimaryKey var orderID: Int64
+                var orderID: Int64
                 var accountID: String
                 var total: Int64
             }
@@ -193,7 +194,7 @@ struct DirectoryMacroTests {
             expandedSource: """
             struct Order {
 
-                @PrimaryKey var orderID: Int64
+                var orderID: Int64
                 var accountID: String
                 var total: Int64
 

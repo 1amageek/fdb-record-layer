@@ -298,11 +298,11 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
             var currentRank = 0
             for try await (key, _) in sequence {
                 currentRank += 1
-                if currentRank >= startRank && currentRank < endRank {
+                if currentRank >= startRank && currentRank <= endRank {
                     let pk = try extractPrimaryKeyFromIndexKey(key)
                     results.append(pk)
                 }
-                if currentRank >= endRank {
+                if currentRank > endRank {
                     break
                 }
             }
@@ -318,20 +318,126 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
                 }
             }
 
-            // Extract elements from startRank to endRank
-            let rangeSize = endRank - startRank
+            // Extract elements from startRank to endRank (inclusive)
+            // For descending: buffer is in ascending order, so highest score is at the end
+            // rank 1 = buffer.last, rank 2 = buffer[count-2], etc.
             if buffer.count >= startRank {
-                let startIndex = buffer.count - endRank + (startRank - 1)
-                let endIndex = min(startIndex + rangeSize, buffer.count)
-
-                for i in startIndex..<endIndex {
-                    let pk = try extractPrimaryKeyFromIndexKey(buffer[i])
+                for rank in startRank...min(endRank, buffer.count) {
+                    // Convert rank to buffer index (descending)
+                    // rank 1 -> buffer[count-1], rank 2 -> buffer[count-2], etc.
+                    let bufferIndex = buffer.count - rank
+                    let pk = try extractPrimaryKeyFromIndexKey(buffer[bufferIndex])
                     results.append(pk)
                 }
             }
         }
 
         return results
+    }
+
+    /// Get total count of entries (excluding count nodes)
+    ///
+    /// Returns the total number of ranked entries in the index, excluding internal count nodes
+    /// used by the Range Tree algorithm.
+    ///
+    /// - Parameters:
+    ///   - groupingValues: Values for grouping fields (empty for ungrouped indexes)
+    ///   - transaction: Transaction to use for reading
+    /// - Returns: Total number of ranked entries
+    /// - Throws: RecordLayerError if operation fails
+    public func getTotalCount(
+        groupingValues: [any TupleElement],
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        let groupingTuple = TupleHelpers.toTuple(groupingValues)
+        let beginKey = subspace.pack(groupingTuple)
+        let endKey = beginKey + [0xFF]
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        var totalCount = 0
+        for try await (key, _) in sequence {
+            // Skip count nodes (internal Range Tree structure)
+            let keyWithoutPrefix = Array(key.dropFirst(subspace.prefix.count))
+            let elements = try Tuple.unpack(from: keyWithoutPrefix)
+
+            let hasCountMarker = elements.contains { element in
+                (element as? String) == "_count"
+            }
+
+            if !hasCountMarker {
+                totalCount += 1
+            }
+        }
+
+        return totalCount
+    }
+
+    /// Get score at specific rank
+    ///
+    /// Returns the score value at the specified rank position without fetching the full record.
+    ///
+    /// - Parameters:
+    ///   - groupingValues: Values for grouping fields (empty for ungrouped indexes)
+    ///   - rank: Rank position (1-indexed)
+    ///   - transaction: Transaction to use for reading
+    /// - Returns: Score at the specified rank, or nil if rank is out of bounds
+    /// - Throws: RecordLayerError if operation fails
+    public func getScoreAtRank(
+        groupingValues: [any TupleElement],
+        rank: Int,
+        transaction: any TransactionProtocol
+    ) async throws -> Int64? {
+        // First get the primary key at this rank
+        guard let primaryKeyTuple = try await getRecordByRank(
+            groupingValues: groupingValues,
+            rank: rank,
+            transaction: transaction
+        ) else {
+            return nil
+        }
+
+        // Scan index entries to find the score for this primary key
+        let groupingTuple = TupleHelpers.toTuple(groupingValues)
+        let beginKey = subspace.pack(groupingTuple)
+        let endKey = beginKey + [0xFF]
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        for try await (key, _) in sequence {
+            let keyWithoutPrefix = Array(key.dropFirst(subspace.prefix.count))
+            let elements = try Tuple.unpack(from: keyWithoutPrefix)
+
+            // Skip count nodes
+            let hasCountMarker = elements.contains { element in
+                (element as? String) == "_count"
+            }
+            if hasCountMarker { continue }
+
+            // Extract primary key from index key
+            let indexPrimaryKey = try extractPrimaryKeyFromIndexKey(key)
+
+            // Compare primary keys (use pack() for byte-level comparison)
+            if indexPrimaryKey.pack() == primaryKeyTuple.pack() {
+                // Extract score: it's at position (indexedFieldCount - 1)
+                // Index key structure: [grouping...][score][primaryKey...]
+                let scoreIndex = index.rootExpression.columnCount - 1
+                if scoreIndex >= 0 && scoreIndex < elements.count,
+                   let score = elements[scoreIndex] as? Int64 {
+                    return score
+                }
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Private Methods
@@ -461,11 +567,19 @@ public struct RankIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         let keyWithoutPrefix = Array(key.dropFirst(subspace.prefix.count))
         let elements = try Tuple.unpack(from: keyWithoutPrefix)
 
-        guard let lastElement = elements.last else {
-            throw RecordLayerError.invalidKey("Cannot extract primary key from index key")
+        // Index key structure: [grouping...][score][primaryKey...]
+        // index.rootExpression.columnCount = grouping columns + 1 (score)
+        let indexedFieldCount = index.rootExpression.columnCount
+
+        guard elements.count > indexedFieldCount else {
+            throw RecordLayerError.invalidKey("Index key does not contain primary key")
         }
 
-        return Tuple(lastElement)
+        // Extract primary key elements (everything after indexed fields)
+        let primaryKeyElements = Array(elements.suffix(from: indexedFieldCount))
+
+        // Convert to tuple elements array for Tuple constructor
+        return Tuple(primaryKeyElements)
     }
 
     /// Update count nodes at each level of the range tree

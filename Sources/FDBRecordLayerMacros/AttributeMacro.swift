@@ -6,17 +6,23 @@ import SwiftDiagnostics
 
 /// Implementation of the @Attribute macro
 ///
-/// This peer macro provides metadata about a property for schema evolution.
-/// Used to track field renames and other schema changes.
+/// This peer macro provides metadata about a property for schema evolution and constraints.
+/// Supports SwiftData-compliant variadic options pattern.
 ///
 /// Usage:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     @PrimaryKey var userID: Int64
+///     #PrimaryKey<User>([\.userID])
+///
+///     @Attribute(.unique)
+///     var email: String
 ///
 ///     @Attribute(originalName: "username")
-///     var name: String  // Renamed from "username"
+///     var name: String
+///
+///     @Attribute(.unique, originalName: "old_email", hashModifier: "v2")
+///     var primaryEmail: String
 /// }
 /// ```
 public struct AttributeMacro: PeerMacro {
@@ -50,56 +56,128 @@ public struct AttributeMacro: PeerMacro {
 
         let propertyName = identifier.identifier.text
 
-        // Extract arguments
+        // Extract arguments (may be empty for @Attribute with no args)
         guard case let .argumentList(arguments) = node.arguments else {
-            throw DiagnosticsError(diagnostics: [
-                Diagnostic(
-                    node: node,
-                    message: MacroExpansionErrorMessage("@Attribute requires arguments")
-                )
-            ])
+            // No arguments - valid, just generate empty metadata
+            return generateMetadata(
+                propertyName: propertyName,
+                options: [],
+                originalName: nil,
+                hashModifier: nil
+            )
         }
 
-        // Find the originalName argument
-        guard let originalNameArg = arguments.first(where: { $0.label?.text == "originalName" }) else {
-            throw DiagnosticsError(diagnostics: [
-                Diagnostic(
-                    node: node,
-                    message: MacroExpansionErrorMessage("@Attribute requires an 'originalName' argument")
-                )
-            ])
+        // Parse options, originalName, and hashModifier
+        var options: [String] = []
+        var originalName: String? = nil
+        var hashModifier: String? = nil
+
+        for argument in arguments {
+            if let label = argument.label?.text {
+                // Named parameters: originalName, hashModifier
+                switch label {
+                case "originalName":
+                    originalName = try extractStringLiteral(from: argument.expression)
+                case "hashModifier":
+                    hashModifier = try extractStringLiteral(from: argument.expression)
+                default:
+                    throw DiagnosticsError(diagnostics: [
+                        Diagnostic(
+                            node: argument,
+                            message: MacroExpansionErrorMessage("Unknown parameter '\(label)'")
+                        )
+                    ])
+                }
+            } else {
+                // Unlabeled variadic arguments: options
+                let option = try extractOption(from: argument.expression)
+                options.append(option)
+            }
         }
 
-        // Extract the original name from the string literal
-        guard let stringLiteral = originalNameArg.expression.as(StringLiteralExprSyntax.self),
+        return generateMetadata(
+            propertyName: propertyName,
+            options: options,
+            originalName: originalName,
+            hashModifier: hashModifier
+        )
+    }
+
+    /// Extract string literal value from expression
+    private static func extractStringLiteral(from expression: ExprSyntax) throws -> String {
+        guard let stringLiteral = expression.as(StringLiteralExprSyntax.self),
               let segment = stringLiteral.segments.first?.cast(StringSegmentSyntax.self) else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
-                    node: originalNameArg.expression,
-                    message: MacroExpansionErrorMessage("originalName must be a string literal")
+                    node: expression,
+                    message: MacroExpansionErrorMessage("Expected a string literal")
                 )
             ])
         }
+        return segment.content.text
+    }
 
-        let originalName = segment.content.text
+    /// Extract option enum case from expression
+    private static func extractOption(from expression: ExprSyntax) throws -> String {
+        // Handle .unique, .someOtherOption patterns
+        if let memberAccess = expression.as(MemberAccessExprSyntax.self) {
+            return memberAccess.declName.baseName.text
+        }
 
-        // Generate attribute metadata as a static property
-        // This will be accessible during deserialization to handle field renames
+        throw DiagnosticsError(diagnostics: [
+            Diagnostic(
+                node: expression,
+                message: MacroExpansionErrorMessage("Expected an attribute option (e.g., .unique)")
+            )
+        ])
+    }
+
+    /// Generate metadata declaration
+    private static func generateMetadata(
+        propertyName: String,
+        options: [String],
+        originalName: String?,
+        hashModifier: String?
+    ) -> [DeclSyntax] {
+        var metadataParts: [String] = []
+
+        metadataParts.append("propertyName: \"\(propertyName)\"")
+
+        if !options.isEmpty {
+            let optionsArray = options.map { "\"\($0)\"" }.joined(separator: ", ")
+            metadataParts.append("options: [\(optionsArray)]")
+        } else {
+            metadataParts.append("options: []")
+        }
+
+        if let originalName = originalName {
+            metadataParts.append("originalName: \"\(originalName)\"")
+        } else {
+            metadataParts.append("originalName: nil")
+        }
+
+        if let hashModifier = hashModifier {
+            metadataParts.append("hashModifier: \"\(hashModifier)\"")
+        } else {
+            metadataParts.append("hashModifier: nil")
+        }
+
+        let metadataContent = metadataParts.joined(separator: ", ")
+
         let attributeMetadata: DeclSyntax = """
         static let _attribute_\(raw: propertyName) = AttributeMetadata(
-            propertyName: "\(raw: propertyName)",
-            originalName: "\(raw: originalName)"
+            \(raw: metadataContent)
         )
         """
 
-        // This macro generates metadata that can be used during deserialization
-        // to handle schema evolution (e.g., field renames)
         return [attributeMetadata]
     }
 }
 
-/// Metadata for property attributes used in schema evolution
-public struct AttributeMetadata {
+/// Metadata for property attributes used in schema evolution and constraints
+public struct AttributeMetadata: Sendable {
     let propertyName: String
-    let originalName: String
+    let options: [String]  // e.g., ["unique"]
+    let originalName: String?
+    let hashModifier: String?
 }

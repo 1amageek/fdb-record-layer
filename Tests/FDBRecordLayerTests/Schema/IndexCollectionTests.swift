@@ -5,8 +5,10 @@ import FDBRecordLayer
 // MARK: - Test Types
 
 @Recordable
-struct UserWithIndexes {
-    @PrimaryKey var userID: Int64
+struct UserWithIndexes {#PrimaryKey<UserWithIndexes>([\.userID])
+
+    
+    var userID: Int64
     var email: String
     var city: String
     var state: String
@@ -34,8 +36,10 @@ extension UserWithIndexes {
 }
 
 @Recordable
-struct UserWithUniqueIndex {
-    @PrimaryKey var userID: Int64
+struct UserWithUniqueIndex {#PrimaryKey<UserWithUniqueIndex>([\.userID])
+
+    
+    var userID: Int64
     var email: String
     var name: String
 }
@@ -54,8 +58,10 @@ extension UserWithUniqueIndex {
 }
 
 @Recordable
-struct UserWithoutIndexes {
-    @PrimaryKey var userID: Int64
+struct UserWithoutIndexes {#PrimaryKey<UserWithoutIndexes>([\.userID])
+
+    
+    var userID: Int64
     var name: String
 }
 

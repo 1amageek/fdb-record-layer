@@ -320,6 +320,12 @@ extension Schema {
     ///
     /// Corresponds to SwiftData's Schema.Attribute
     public struct Attribute: Sendable, Hashable, SchemaProperty {
+        /// Options that customize attribute behavior (SwiftData compatible)
+        public enum Option: Sendable {
+            /// Mark the property as unique, creating a unique constraint
+            case unique
+        }
+
         /// Attribute name
         public let name: String
 

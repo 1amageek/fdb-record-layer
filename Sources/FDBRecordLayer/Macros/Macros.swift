@@ -33,26 +33,44 @@ import Foundation
 @attached(extension, conformances: Recordable, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName), named(store), named(indexDefinitions), arbitrary)
 public macro Recordable(recordName: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "RecordableMacro")
 
-/// Marks a property as the primary key
+/// Defines the primary key fields for a record type
 ///
-/// Every `@Recordable` struct must have exactly one `@PrimaryKey` property.
-/// The primary key can be a single field or multiple fields (compound key).
+/// Every `@Recordable` struct must have exactly one `#PrimaryKey` definition.
 ///
-/// **Usage**:
+/// **Single Primary Key**:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     @PrimaryKey var userID: Int64  // Single primary key
-/// }
+///     #PrimaryKey<User>([\.userID])
 ///
-/// @Recordable
-/// struct TenantUser {
-///     @PrimaryKey var tenantID: String
-///     @PrimaryKey var userID: Int64    // Compound primary key
+///     var userID: Int64
+///     var email: String
 /// }
 /// ```
-@attached(peer)
-public macro PrimaryKey() = #externalMacro(module: "FDBRecordLayerMacros", type: "PrimaryKeyMacro")
+///
+/// **Composite Primary Key**:
+/// ```swift
+/// @Recordable
+/// struct Hotel {
+///     #PrimaryKey<Hotel>([\.ownerID, \.hotelID])  // Order matters!
+///
+///     var ownerID: String
+///     var hotelID: Int64
+///     var name: String
+///     var rating: Double
+/// }
+/// ```
+///
+/// **When to use composite primary keys**:
+/// - Global uniqueness across partitions with global indexes
+/// - Multi-category rankings (e.g., game modes, regions)
+/// - Time-series data partitioning
+///
+/// **Note**: This is a marker macro that generates no code itself.
+/// The `@Recordable` macro detects `#PrimaryKey` calls and uses the KeyPath information
+/// to generate primary key extraction logic.
+@freestanding(declaration)
+public macro PrimaryKey<T>(_ keyPaths: [PartialKeyPath<T>]) = #externalMacro(module: "FDBRecordLayerMacros", type: "PrimaryKeyMacroDeclaration")
 
 /// Marks a property as transient (not persisted)
 ///
@@ -357,19 +375,45 @@ public enum DirectoryLayerType: Sendable {
 @attached(peer)
 public macro Relationship(deleteRule: DeleteRule = .noAction, inverse: AnyKeyPath) = #externalMacro(module: "FDBRecordLayerMacros", type: "RelationshipMacro")
 
-/// Provides metadata about a property for schema evolution
+/// Attribute option for @Attribute macro (SwiftData compatible)
 ///
-/// Used to track field renames and other schema changes.
+/// Matches Schema.Entity.Attribute.Option for compatibility
+public enum AttributeOption: Sendable {
+    /// Mark the property as unique, creating a unique constraint
+    case unique
+}
+
+/// Provides metadata about a property for schema evolution and constraints
+///
+/// SwiftData-compliant macro that supports variadic options, field renaming, and hash modifiers.
 ///
 /// **Usage**:
 /// ```swift
 /// @Recordable
 /// struct User {
-///     @PrimaryKey var userID: Int64
+///     #PrimaryKey<User>([\.userID])
 ///
+///     // Unique constraint
+///     @Attribute(.unique)
+///     var email: String
+///
+///     // Field rename (schema evolution)
 ///     @Attribute(originalName: "username")
-///     var name: String  // Renamed from "username"
+///     var name: String
+///
+///     // Multiple options
+///     @Attribute(.unique, originalName: "old_email", hashModifier: "v2")
+///     var primaryEmail: String
 /// }
 /// ```
+///
+/// **Parameters**:
+/// - `options`: Variadic attribute options (e.g., `.unique`)
+/// - `originalName`: Previous field name for schema migration (optional)
+/// - `hashModifier`: Hash modifier for property uniqueness calculation (optional)
 @attached(peer)
-public macro Attribute(originalName: String) = #externalMacro(module: "FDBRecordLayerMacros", type: "AttributeMacro")
+public macro Attribute(
+    _ options: AttributeOption...,
+    originalName: String? = nil,
+    hashModifier: String? = nil
+) = #externalMacro(module: "FDBRecordLayerMacros", type: "AttributeMacro")

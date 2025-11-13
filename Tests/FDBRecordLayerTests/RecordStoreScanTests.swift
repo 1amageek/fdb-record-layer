@@ -383,7 +383,9 @@ struct RecordStoreScanTests {
 
 @Recordable
 struct SimpleScanRecord: Sendable {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<SimpleScanRecord>([\.id])
+
+    var id: Int64
     var name: String
     var age: Int64
 }

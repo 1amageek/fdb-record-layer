@@ -8,8 +8,11 @@ struct E2EProduct {
     #Index<E2EProduct>([\.category])
     #Index<E2EProduct>([\.price])
     #Index<E2EProduct>([\.region])
+    #PrimaryKey<E2EProduct>([\.productID])
 
-    @PrimaryKey var productID: Int64
+    
+
+    var productID: Int64
     var name: String
     var category: String
     var price: Int

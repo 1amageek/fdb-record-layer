@@ -9,8 +9,9 @@ import FoundationDB
 @Recordable
 struct StaticDirRecord {
     #Directory<StaticDirRecord>("app", "static", layer: .recordStore)
+    #PrimaryKey<StaticDirRecord>([\.id])
 
-    @PrimaryKey var id: Int64
+    var id: Int64
     var value: String
 }
 

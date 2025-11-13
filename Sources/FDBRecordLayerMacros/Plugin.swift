@@ -5,7 +5,7 @@ import SwiftSyntaxMacros
 struct FDBRecordLayerMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         RecordableMacro.self,
-        PrimaryKeyMacro.self,
+        PrimaryKeyMacroDeclaration.self,  // #PrimaryKey
         TransientMacro.self,
         DefaultMacro.self,
         IndexMacro.self,

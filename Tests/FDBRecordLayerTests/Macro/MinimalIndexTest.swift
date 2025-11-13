@@ -3,8 +3,10 @@ import Foundation
 @testable import FDBRecordLayer
 
 @Recordable
-struct MinimalUser {
-    @PrimaryKey var id: Int64
+struct MinimalUser {#PrimaryKey<MinimalUser>([\.id])
+
+    
+    var id: Int64
     var email: String
 }
 

@@ -8,7 +8,9 @@ import FoundationDB
 /// Basic test user type
 @Recordable
 struct TestUser {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<TestUser>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -17,15 +19,19 @@ struct TestUser {
 /// Test type with compound primary key
 @Recordable
 struct TestTenantUser {
-    @PrimaryKey var tenantID: String
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<TestTenantUser>([\.tenantID, \.userID])
+
+    var tenantID: String
+    var userID: Int64
     var name: String
 }
 
 /// Test type with transient field
 @Recordable
 struct TestUserWithTransient {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<TestUserWithTransient>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Transient var isLoggedIn: Bool = false
@@ -34,7 +40,9 @@ struct TestUserWithTransient {
 /// Test product type
 @Recordable
 struct TestProduct {
-    @PrimaryKey var productID: Int64
+    #PrimaryKey<TestProduct>([\.productID])
+
+    var productID: Int64
     var name: String
     var price: Int64
 }
@@ -42,7 +50,9 @@ struct TestProduct {
 /// Test order type
 @Recordable
 struct TestOrder {
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<TestOrder>([\.orderID])
+
+    var orderID: Int64
     var customerID: Int64
     var total: Int64
 }
@@ -50,7 +60,9 @@ struct TestOrder {
 /// Test type with all primitive types
 @Recordable
 struct TestAllTypes {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestAllTypes>([\.id])
+
+    var id: Int64
 
     // Primitive types
     var int32Field: Int32
@@ -67,7 +79,9 @@ struct TestAllTypes {
 /// Test type with optional fields
 @Recordable
 struct TestOptionalFields {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestOptionalFields>([\.id])
+
+    var id: Int64
 
     // Optional primitives
     var optInt32: Int32?
@@ -81,7 +95,9 @@ struct TestOptionalFields {
 /// Test type with array fields
 @Recordable
 struct TestArrayFields {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestArrayFields>([\.id])
+
+    var id: Int64
 
     // Primitive arrays (packed repeated)
     var int32Array: [Int32]
@@ -98,7 +114,9 @@ struct TestArrayFields {
 /// Nested custom type
 @Recordable
 struct TestAddress {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestAddress>([\.id])
+
+    var id: Int64
     var street: String
     var city: String
 }
@@ -106,7 +124,9 @@ struct TestAddress {
 /// Test type with nested custom type
 @Recordable
 struct TestUserWithAddress {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<TestUserWithAddress>([\.userID])
+
+    var userID: Int64
     var name: String
     var address: TestAddress
 }
@@ -114,7 +134,9 @@ struct TestUserWithAddress {
 /// Test type with optional array fields
 @Recordable
 struct TestOptionalArrayFields {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestOptionalArrayFields>([\.id])
+
+    var id: Int64
 
     // Optional primitive arrays
     var optInt32Array: [Int32]?
@@ -131,8 +153,9 @@ struct TestOptionalArrayFields {
 @Recordable
 struct TestGlobalConfig {
     #Directory<TestGlobalConfig>("global", "config", layer: .recordStore)
+    #PrimaryKey<TestGlobalConfig>([\.key])
 
-    @PrimaryKey var key: String
+    var key: String
     var value: String
 }
 
@@ -140,8 +163,9 @@ struct TestGlobalConfig {
 @Recordable
 struct TestTenantConfig {
     #Directory<TestTenantConfig>("tenants", "config", layer: .recordStore)
+    #PrimaryKey<TestTenantConfig>([\.key])
 
-    @PrimaryKey var key: String
+    var key: String
     var tenantID: String
     var value: String
 }
@@ -150,8 +174,9 @@ struct TestTenantConfig {
 @Recordable
 struct TestOrderWithDirectory {
     #Directory<TestOrderWithDirectory>("orders", layer: .recordStore)
+    #PrimaryKey<TestOrderWithDirectory>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var accountID: String
     var total: Int64
 }
@@ -160,8 +185,9 @@ struct TestOrderWithDirectory {
 @Recordable
 struct TestMessage {
     #Directory<TestMessage>("messages", layer: .recordStore)
+    #PrimaryKey<TestMessage>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    var messageID: Int64
     var accountID: String
     var channelID: String
     var text: String

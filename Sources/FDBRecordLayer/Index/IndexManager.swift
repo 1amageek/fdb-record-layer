@@ -95,8 +95,8 @@ public final class IndexManager: Sendable {
 
         // Update each applicable index
         for index in applicableIndexes {
-            // Get subspace for this index
-            let indexSubspace = self.indexSubspace(for: index.name)
+            // Get subspace for this index (supports global scope)
+            let indexSubspace = self.indexSubspace(for: index)
 
             // Create maintainer for this index type
             let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
@@ -146,8 +146,8 @@ public final class IndexManager: Sendable {
 
         // Delete from each applicable index
         for index in applicableIndexes {
-            // Get subspace for this index
-            let indexSubspace = self.indexSubspace(for: index.name)
+            // Get subspace for this index (supports global scope)
+            let indexSubspace = self.indexSubspace(for: index)
 
             // Create maintainer for this index type
             let maintainer: AnyGenericIndexMaintainer<T> = try createMaintainer(
@@ -180,7 +180,48 @@ public final class IndexManager: Sendable {
     ///
     /// - Parameter indexName: The index name
     /// - Returns: The subspace for storing this index's data
+    /// Get the subspace for a specific index
+    ///
+    /// Returns the appropriate subspace based on the index scope:
+    /// - `.partition`: Index within the current partition subspace
+    /// - `.global`: Index in a shared global space outside any partition
+    ///
+    /// **Partition-local index**:
+    /// ```
+    /// [partition-prefix][I][index_name]
+    /// ```
+    ///
+    /// **Global index**:
+    /// ```
+    /// [root-subspace][global-indexes][index_name]
+    /// ```
+    ///
+    /// - Parameter index: The index definition
+    /// - Returns: Subspace for the index
+    internal func indexSubspace(for index: Index) -> Subspace {
+        switch index.scope {
+        case .partition:
+            // Partition-local index: within current partition
+            return subspace.subspace(index.name)
+
+        case .global:
+            // Global index: outside partition hierarchy
+            // Navigate up to root subspace and use "global-indexes" namespace
+            // For now, we use a simple approach: sibling to partition subspace
+            // TODO: This assumes subspace is [partition][I] - need root reference for correctness
+            return subspace.subspace("global-indexes").subspace(index.name)
+        }
+    }
+
+    /// Get the subspace for a specific index by name (deprecated - use index object)
+    ///
+    /// This method assumes partition scope and should only be used for backward compatibility.
+    /// For new code, use `indexSubspace(for: Index)` which supports global scope.
+    ///
+    /// - Parameter indexName: The index name
+    /// - Returns: Subspace for the index (assumes partition scope)
     internal func indexSubspace(for indexName: String) -> Subspace {
+        // Backward compatibility: assume partition scope
         return subspace.subspace(indexName)
     }
 

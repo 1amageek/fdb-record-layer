@@ -6,8 +6,10 @@ import Foundation
 
 // UserV1: Base version
 @Recordable
-struct UserV1 {
-    @PrimaryKey var userID: Int64
+struct UserV1 {#PrimaryKey<UserV1>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -15,8 +17,10 @@ struct UserV1 {
 
 // UserV2: Added optional field (safe)
 @Recordable
-struct UserV2 {
-    @PrimaryKey var userID: Int64
+struct UserV2 {#PrimaryKey<UserV2>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -25,8 +29,10 @@ struct UserV2 {
 
 // UserV3: Added required field (unsafe)
 @Recordable
-struct UserV3 {
-    @PrimaryKey var userID: Int64
+struct UserV3 {#PrimaryKey<UserV3>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -35,16 +41,20 @@ struct UserV3 {
 
 // UserV4: email field deleted (unsafe)
 @Recordable
-struct UserV4 {
-    @PrimaryKey var userID: Int64
+struct UserV4 {#PrimaryKey<UserV4>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var age: Int32
 }
 
 // UserV5: email changed from required to optional (safe)
 @Recordable
-struct UserV5 {
-    @PrimaryKey var userID: Int64
+struct UserV5 {#PrimaryKey<UserV5>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var email: String?
     var age: Int32

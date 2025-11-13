@@ -8,8 +8,11 @@ struct InJoinTestUser {
     #Index<InJoinTestUser>([\.city])
     #Index<InJoinTestUser>([\.age])
     #Index<InJoinTestUser>([\.country])
+    #PrimaryKey<InJoinTestUser>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    
+
+    var userID: Int64
     var name: String
     var age: Int
     var city: String

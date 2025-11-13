@@ -7,8 +7,10 @@ import Synchronization
 // MARK: - Test Record Type (defined outside suite for macro compatibility)
 
 @Recordable
-struct CoveringTestUser {
-    @PrimaryKey var userID: Int64
+struct CoveringTestUser {#PrimaryKey<CoveringTestUser>([\.userID])
+
+    
+    var userID: Int64
     var name: String
     var email: String
     var city: String

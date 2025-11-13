@@ -34,20 +34,22 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
         let members = structDecl.memberBlock.members
 
-        // Extract field information
-        let fields = try extractFields(from: members, context: context)
-        let primaryKeyFields = fields.filter { $0.isPrimaryKey }
-        let persistentFields = fields.filter { !$0.isTransient }
+        // Extract primary key fields from #PrimaryKey macro
+        let primaryKeyFieldNames = try extractPrimaryKeyFields(from: members)
 
         // Validate: must have at least one primary key
-        guard !primaryKeyFields.isEmpty else {
+        guard !primaryKeyFieldNames.isEmpty else {
             throw DiagnosticsError(diagnostics: [
                 Diagnostic(
                     node: structDecl,
-                    message: MacroExpansionErrorMessage("@Recordable struct must have at least one @PrimaryKey field")
+                    message: MacroExpansionErrorMessage("@Recordable struct must have exactly one #PrimaryKey<T>([...]) declaration")
                 )
             ])
         }
+
+        // Extract field information
+        let fields = try extractFields(from: members, primaryKeyFields: Set(primaryKeyFieldNames), context: context)
+        let persistentFields = fields.filter { !$0.isTransient }
 
         // Generate the extension members
         var results: [DeclSyntax] = []
@@ -84,10 +86,17 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Extract recordName from macro arguments (if provided)
         let recordName = extractRecordName(from: node) ?? structName
 
+        // Extract primary key fields from #PrimaryKey macro
+        let primaryKeyFieldNames = try extractPrimaryKeyFields(from: members)
+
         // Extract field information
-        let fields = try extractFields(from: members, context: context)
-        let primaryKeyFields = fields.filter { $0.isPrimaryKey }
+        let fields = try extractFields(from: members, primaryKeyFields: Set(primaryKeyFieldNames), context: context)
         let persistentFields = fields.filter { !$0.isTransient }
+
+        // Build primary key FieldInfo array from field names (preserve order from #PrimaryKey)
+        let primaryKeyFields = primaryKeyFieldNames.compactMap { pkName in
+            fields.first { $0.name == pkName }
+        }
 
         // Detect #Directory metadata
         let directoryMetadata = extractDirectoryMetadata(from: members)
@@ -96,7 +105,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Note: We need to check ALL members, including those added by other macros
         // Use declaration.memberBlock.members to get the complete member list
         let allMembers = declaration.memberBlock.members
-        let indexInfo = extractIndexInfo(from: allMembers)
+        var indexInfo = extractIndexInfo(from: allMembers)
+
+        // Extract unique constraints from @Attribute(.unique)
+        let attributeUniques = extractUniqueFromAttributes(from: members, typeName: structName)
+
+        // Merge and deduplicate (allows @Attribute(.unique) and #Unique to coexist)
+        indexInfo = deduplicateIndexes(indexInfo + attributeUniques)
 
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
@@ -234,6 +249,61 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return nil
     }
 
+    /// Extracts primary key fields from #PrimaryKey macro call
+    ///
+    /// Scans the struct body for #PrimaryKey<T>([\.field1, \.field2, ...]) macro expansion
+    /// and extracts the field names from the KeyPath array.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// #PrimaryKey<User>([\.userID])          → ["userID"]
+    /// #PrimaryKey<Hotel>([\.ownerID, \.hotelID]) → ["ownerID", "hotelID"]
+    /// ```
+    ///
+    /// **Validation**:
+    /// - Exactly ONE #PrimaryKey macro per struct
+    /// - At least ONE field in the KeyPath array
+    ///
+    /// - Parameter members: Struct members to scan
+    /// - Returns: Array of primary key field names (empty if not found)
+    /// - Throws: DiagnosticsError if multiple #PrimaryKey macros found
+    private static func extractPrimaryKeyFields(
+        from members: MemberBlockItemListSyntax
+    ) throws -> [String] {
+        var foundPrimaryKeys: [(node: MacroExpansionDeclSyntax, fields: [String])] = []
+
+        for member in members {
+            // Look for #PrimaryKey macro expansion
+            guard let macroExpansion = member.decl.as(MacroExpansionDeclSyntax.self),
+                  macroExpansion.macroName.text == "PrimaryKey" else {
+                continue
+            }
+
+            // Extract the KeyPath array argument (first unlabeled argument)
+            guard let arrayArg = macroExpansion.arguments.first else {
+                continue
+            }
+
+            let fields = extractFieldNamesFromKeyPaths(arrayArg.expression)
+
+            if !fields.isEmpty {
+                foundPrimaryKeys.append((macroExpansion, fields))
+            }
+        }
+
+        // Validate: exactly one #PrimaryKey macro
+        if foundPrimaryKeys.count > 1 {
+            throw DiagnosticsError(diagnostics: [
+                Diagnostic(
+                    node: foundPrimaryKeys[1].node,
+                    message: MacroExpansionErrorMessage("Only one #PrimaryKey macro is allowed per struct. Found \(foundPrimaryKeys.count).")
+                )
+            ])
+        }
+
+        return foundPrimaryKeys.first?.fields ?? []
+    }
+
     /// Extracts IndexDefinition static property names from struct members
     /// These are generated by #Index and #Unique macros
     /// Extract index information from marker properties generated by #Index and #Unique macros
@@ -307,6 +377,109 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return indexes
     }
 
+    /// Extract unique constraints from @Attribute(.unique) properties
+    ///
+    /// Scans all properties with @Attribute macro and checks if the `.unique` option is specified.
+    /// Creates single-field unique constraints (IndexInfo with isUnique = true).
+    ///
+    /// **Example**:
+    /// ```swift
+    /// @Attribute(.unique)
+    /// var email: String  // → IndexInfo(fields: ["email"], isUnique: true)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - members: Struct members to scan
+    ///   - typeName: Type name for IndexInfo
+    /// - Returns: Array of IndexInfo for unique constraints
+    private static func extractUniqueFromAttributes(
+        from members: MemberBlockItemListSyntax,
+        typeName: String
+    ) -> [IndexInfo] {
+        var uniqueConstraints: [IndexInfo] = []
+
+        for member in members {
+            guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+                  let binding = varDecl.bindings.first,
+                  let identifier = binding.pattern.as(IdentifierPatternSyntax.self) else {
+                continue
+            }
+
+            let fieldName = identifier.identifier.text
+
+            // Check for @Attribute macro with .unique option
+            let hasUniqueOption = varDecl.attributes.contains { attr in
+                guard let attributeSyntax = attr.as(AttributeSyntax.self),
+                      attributeSyntax.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Attribute" else {
+                    return false
+                }
+
+                // Check arguments for .unique option
+                guard case let .argumentList(arguments) = attributeSyntax.arguments else {
+                    return false
+                }
+
+                // Look for unlabeled arguments (variadic options)
+                for argument in arguments {
+                    if argument.label == nil {
+                        // Check if it's .unique member access
+                        if let memberAccess = argument.expression.as(MemberAccessExprSyntax.self),
+                           memberAccess.declName.baseName.text == "unique" {
+                            return true
+                        }
+                    }
+                }
+
+                return false
+            }
+
+            if hasUniqueOption {
+                uniqueConstraints.append(IndexInfo(
+                    fields: [fieldName],
+                    isUnique: true,
+                    customName: nil,
+                    typeName: typeName
+                ))
+            }
+        }
+
+        return uniqueConstraints
+    }
+
+    /// Deduplicate index definitions by field combination
+    ///
+    /// Removes duplicate IndexInfo entries that have the same set of fields.
+    /// When duplicates are found, the first occurrence is kept.
+    ///
+    /// **Deduplication strategy**:
+    /// - Same fields → Keep first occurrence (no error)
+    /// - Allows @Attribute(.unique) and #Unique<T>([\.field]) to coexist
+    ///
+    /// **Example**:
+    /// ```swift
+    /// @Attribute(.unique)
+    /// var email: String
+    ///
+    /// #Unique<User>([\.email])  // Deduplicated, no error
+    /// ```
+    ///
+    /// - Parameter indexes: Array of IndexInfo to deduplicate
+    /// - Returns: Deduplicated array (preserving original order)
+    private static func deduplicateIndexes(_ indexes: [IndexInfo]) -> [IndexInfo] {
+        var seen: Set<Set<String>> = []
+        var result: [IndexInfo] = []
+
+        for index in indexes {
+            let fieldSet = Set(index.fields)
+            if !seen.contains(fieldSet) {
+                seen.insert(fieldSet)
+                result.append(index)
+            }
+        }
+
+        return result
+    }
+
     /// Extract field names from KeyPath array expression
     /// Example: [\.email] -> ["email"]
     /// Example: [\.country, \.city] -> ["country", "city"]
@@ -342,6 +515,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
     private static func extractFields(
         from members: MemberBlockItemListSyntax,
+        primaryKeyFields: Set<String>,
         context: some MacroExpansionContext
     ) throws -> [FieldInfo] {
         var fields: [FieldInfo] = []
@@ -353,10 +527,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
             let fieldName = identifier.identifier.text
 
-            // Check for @PrimaryKey
-            let isPrimaryKey = varDecl.attributes.contains { attr in
-                attr.as(AttributeSyntax.self)?.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "PrimaryKey"
-            }
+            // Check if this field is in the primary key set
+            let isPrimaryKey = primaryKeyFields.contains(fieldName)
 
             // Check for @Transient
             let isTransient = varDecl.attributes.contains { attr in

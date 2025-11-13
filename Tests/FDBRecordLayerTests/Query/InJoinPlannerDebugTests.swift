@@ -9,8 +9,9 @@ struct InJoinPlannerDebugTests {
     @Recordable
     struct DebugProduct {
         #Index<DebugProduct>([\.category])
+        #PrimaryKey<DebugProduct>([\.productID])
 
-        @PrimaryKey var productID: Int64
+        var productID: Int64
         var category: String
     }
 

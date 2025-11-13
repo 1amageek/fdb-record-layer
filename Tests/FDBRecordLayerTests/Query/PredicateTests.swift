@@ -8,8 +8,11 @@ import Testing
 @Recordable
 struct PredicateTestUser {
     #Directory<PredicateTestUser>("test", "predicate_users", layer: .recordStore)
+    #PrimaryKey<PredicateTestUser>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    
+
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32

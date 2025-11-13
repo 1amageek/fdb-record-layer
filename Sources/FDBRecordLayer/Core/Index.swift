@@ -1,5 +1,65 @@
 import Foundation
 
+// MARK: - Index Scope
+
+/// Defines the scope of an index relative to partitions
+///
+/// When using `#Directory` with `layer: .partition`, you can choose whether an index
+/// should be partition-local or global across all partitions.
+///
+/// **Example**:
+/// ```swift
+/// @Recordable
+/// struct Hotel {
+///     #PrimaryKey<Hotel>([\.ownerID, \.hotelID])
+///     #Directory<Hotel>(["owners", Field(\.ownerID), "hotels"], layer: .partition)
+///
+///     // Partition-local index (default)
+///     #Index<Hotel>([\.name], name: "by_name", scope: .partition)
+///
+///     // Global index (cross-partition)
+///     #Index<Hotel>([\.rating], type: .rank, name: "global_rating", scope: .global)
+///
+///     var ownerID: String
+///     var hotelID: Int64
+///     var name: String
+///     var rating: Double
+/// }
+/// ```
+///
+/// **Key structures**:
+/// ```
+/// // Records: partition-local
+/// [owner-A-prefix][records][Hotel][ownerID][hotelID]
+/// [owner-B-prefix][records][Hotel][ownerID][hotelID]
+///
+/// // by_name index: partition-local (scope: .partition)
+/// [owner-A-prefix][indexes][by_name][name][ownerID][hotelID]
+/// [owner-B-prefix][indexes][by_name][name][ownerID][hotelID]
+///
+/// // global_rating index: cross-partition (scope: .global)
+/// [root-subspace][global-indexes][global_rating][rating][ownerID][hotelID]
+/// ```
+///
+/// **Important**: Global indexes with partitions MUST include partition key in primary key.
+public enum IndexScope: String, Sendable {
+    /// Index is local to each partition (default)
+    ///
+    /// The index is created within each partition's subspace.
+    /// Queries are scoped to the current partition.
+    case partition
+
+    /// Index spans across all partitions globally
+    ///
+    /// The index is created in a shared global space outside any partition.
+    /// Queries can access records from all partitions.
+    ///
+    /// **Requirements**:
+    /// - Primary key MUST include partition key fields for global uniqueness
+    /// - Example: `#PrimaryKey<T>([\.partitionKey, \.recordID])`
+    case global
+}
+
 /// Index definition
 ///
 /// Defines a secondary index on record fields. Indexes are maintained automatically
@@ -24,6 +84,9 @@ public struct Index: Sendable {
 
     /// Index options
     public let options: IndexOptions
+
+    /// Index scope (partition-local or global)
+    public let scope: IndexScope
 
     /// Covering fields (stored in index value for record reconstruction)
     ///
@@ -61,6 +124,7 @@ public struct Index: Sendable {
         subspaceKey: String? = nil,
         recordTypes: Set<String>? = nil,
         options: IndexOptions = IndexOptions(),
+        scope: IndexScope = .partition,
         coveringFields: [KeyExpression]? = nil
     ) {
         self.name = name
@@ -69,6 +133,7 @@ public struct Index: Sendable {
         self.subspaceKey = subspaceKey ?? name
         self.recordTypes = recordTypes
         self.options = options
+        self.scope = scope
         self.coveringFields = coveringFields
     }
 }
@@ -131,12 +196,14 @@ extension Index {
     ///   - name: Index name
     ///   - on: Key expression defining indexed fields
     ///   - unique: Whether to enforce uniqueness (default: false)
+    ///   - scope: Index scope (partition-local or global, default: .partition)
     ///   - recordTypes: Optional set of record types this index applies to
     /// - Returns: Value index instance
     public static func value(
         named name: String,
         on expression: KeyExpression,
         unique: Bool = false,
+        scope: IndexScope = .partition,
         recordTypes: Set<String>? = nil
     ) -> Index {
         Index(
@@ -144,7 +211,8 @@ extension Index {
             type: .value,
             rootExpression: expression,
             recordTypes: recordTypes,
-            options: IndexOptions(unique: unique)
+            options: IndexOptions(unique: unique),
+            scope: scope
         )
     }
 

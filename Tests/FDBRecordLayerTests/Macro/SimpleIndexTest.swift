@@ -6,8 +6,11 @@ import Foundation
 @Recordable
 struct SimpleUser {
     #Index<SimpleUser>([\.email])
+    #PrimaryKey<SimpleUser>([\.id])
 
-    @PrimaryKey var id: Int64
+    
+
+    var id: Int64
     var email: String
 }
 
@@ -15,8 +18,11 @@ struct SimpleUser {
 @Recordable
 struct VariadicUser {
     #Index<VariadicUser>([\.email], [\.username])
+    #PrimaryKey<VariadicUser>([\.id])
 
-    @PrimaryKey var id: Int64
+    
+
+    var id: Int64
     var email: String
     var username: String
 }

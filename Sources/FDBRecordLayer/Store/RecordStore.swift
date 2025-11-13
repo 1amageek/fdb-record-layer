@@ -112,6 +112,52 @@ public final class RecordStore<Record: Recordable>: Sendable {
     internal let recordSubspace: Subspace
     internal let indexSubspace: Subspace
 
+    // MARK: - Internal API for Index Operations
+
+    /// Execute a closure with direct database transaction access
+    ///
+    /// **INTERNAL USE ONLY**: This method is for internal index implementations
+    /// that need direct TransactionProtocol access (e.g., RankIndexAPI).
+    ///
+    /// - Parameter operation: Closure that receives a TransactionProtocol
+    /// - Returns: The result of the operation
+    /// - Throws: Any error thrown by the operation
+    internal func withDatabaseTransaction<T: Sendable>(
+        _ operation: @Sendable (any TransactionProtocol) async throws -> T
+    ) async throws -> T {
+        return try await database.withTransaction(operation)
+    }
+
+    /// Fetch record by primary key using TransactionProtocol
+    ///
+    /// **INTERNAL USE ONLY**: This method is for internal index implementations
+    /// that already have a TransactionProtocol (e.g., RankIndexAPI).
+    ///
+    /// - Parameters:
+    ///   - primaryKey: Primary key value (Tuple or TupleElement)
+    ///   - transaction: Transaction to use for the fetch
+    /// - Returns: The fetched record, or nil if not found
+    /// - Throws: RecordLayerError if fetch fails
+    internal func fetchByPrimaryKey(
+        _ primaryKey: any TupleElement,
+        transaction: any TransactionProtocol
+    ) async throws -> Record? {
+        let recordAccess = GenericRecordAccess<Record>()
+
+        // Subspace control: Always automatically add record type name
+        let effectiveSubspace = recordSubspace.subspace(Record.recordName)
+
+        // Composite primary key support: Use Tuple as-is, or convert single value to Tuple
+        let keyTuple = (primaryKey as? Tuple) ?? Tuple([primaryKey])
+        let key = effectiveSubspace.subspace(keyTuple).pack(Tuple())
+
+        guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
+            return nil
+        }
+
+        return try recordAccess.deserialize(bytes)
+    }
+
     // MARK: - Initialization
 
     /// Initialize RecordStore with injected StatisticsManager

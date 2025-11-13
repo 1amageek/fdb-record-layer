@@ -10,8 +10,11 @@ struct IndexMacroUser {
     #Unique<IndexMacroUser>([\.email])
     #Index<IndexMacroUser>([\.createdAt])
     #Index<IndexMacroUser>([\.country, \.city], name: "location_index")
+    #PrimaryKey<IndexMacroUser>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    
+
+    var userID: Int64
     var email: String
     var name: String
     var country: String
@@ -25,8 +28,11 @@ struct IndexMacroProduct {
     #Unique<IndexMacroProduct>([\.sku])
     #Index<IndexMacroProduct>([\.category])
     #Index<IndexMacroProduct>([\.price])
+    #PrimaryKey<IndexMacroProduct>([\.productID])
 
-    @PrimaryKey var productID: Int64
+    
+
+    var productID: Int64
     var sku: String
     var name: String
     var category: String
@@ -40,8 +46,11 @@ struct IndexMacroOrder {
     #Index<IndexMacroOrder>([\.status])
     #Index<IndexMacroOrder>([\.createdAt])
     #Index<IndexMacroOrder>([\.userID, \.status], name: "user_status_index")
+    #PrimaryKey<IndexMacroOrder>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    
+
+    var orderID: Int64
     var userID: Int64
     var status: String
     var createdAt: Int64
@@ -50,8 +59,10 @@ struct IndexMacroOrder {
 
 /// Model without indexes
 @Recordable
-struct IndexMacroSimpleModel {
-    @PrimaryKey var id: Int64
+struct IndexMacroSimpleModel {#PrimaryKey<IndexMacroSimpleModel>([\.id])
+
+    
+    var id: Int64
     var value: String
 }
 
@@ -60,8 +71,11 @@ struct IndexMacroSimpleModel {
 struct IndexMacroUniqueModel {
     #Unique<IndexMacroUniqueModel>([\.username])
     #Unique<IndexMacroUniqueModel>([\.email])
+    #PrimaryKey<IndexMacroUniqueModel>([\.id])
 
-    @PrimaryKey var id: Int64
+    
+
+    var id: Int64
     var username: String
     var email: String
 }
@@ -72,8 +86,11 @@ struct IndexMacroIndexedModel {
     #Index<IndexMacroIndexedModel>([\.field1])
     #Index<IndexMacroIndexedModel>([\.field2])
     #Index<IndexMacroIndexedModel>([\.field3])
+    #PrimaryKey<IndexMacroIndexedModel>([\.id])
 
-    @PrimaryKey var id: Int64
+    
+
+    var id: Int64
     var field1: String
     var field2: String
     var field3: String
@@ -81,8 +98,10 @@ struct IndexMacroIndexedModel {
 
 /// Nested struct for testing nested field indexes
 @Recordable
-struct NestedAddress {
-    @PrimaryKey var addressID: Int64 = 0
+struct NestedAddress {#PrimaryKey<NestedAddress>([\.addressID])
+
+    
+    var addressID: Int64 = 0
     var city: String
     var zipCode: String
 }
@@ -92,8 +111,11 @@ struct NestedAddress {
 struct IndexMacroNestedModel {
     #Index<IndexMacroNestedModel>([\.address.city])
     #Index<IndexMacroNestedModel>([\.address.city, \.address.zipCode], name: "city_zip_index")
+    #PrimaryKey<IndexMacroNestedModel>([\.personID])
 
-    @PrimaryKey var personID: Int64
+    
+
+    var personID: Int64
     var name: String
     var address: NestedAddress
 }

@@ -5,8 +5,10 @@ import Foundation
 // MARK: - Test Types with Negative Values
 
 @Recordable
-struct TestIntegerTypes {
-    @PrimaryKey var id: Int64
+struct TestIntegerTypes {#PrimaryKey<TestIntegerTypes>([\.id])
+
+    
+    var id: Int64
     var int32Value: Int32
     var int64Value: Int64
     var uint32Value: UInt32
@@ -14,8 +16,10 @@ struct TestIntegerTypes {
 }
 
 @Recordable
-struct TestFloatingPointTypes {
-    @PrimaryKey var id: Int64
+struct TestFloatingPointTypes {#PrimaryKey<TestFloatingPointTypes>([\.id])
+
+    
+    var id: Int64
     var doubleValue: Double
     var floatValue: Float
 }
