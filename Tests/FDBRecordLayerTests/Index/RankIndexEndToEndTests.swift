@@ -899,7 +899,7 @@ struct RankIndexEndToEndTests {
 
         // Create schema with grouped RANK index
         // Use unique subspace to avoid transaction conflicts
-        let subspace = Subspace(prefix: [0x01, 0x10, 0x01])
+        let subspace = Subspace(prefix: Array("test_grouped_rank_\(UUID().uuidString)".utf8))
 
         // Create RANK index manually (macro generates VALUE by default)
         let groupedRankIndex = Index(
@@ -973,9 +973,8 @@ struct RankIndexEndToEndTests {
     @Test("Grouped RANK: Query API with grouping parameter")
     func testGroupedRankQueryAPI() async throws {
         let database = try createDatabase()
-        try await clearTestData(database: database)
 
-        let subspace = Subspace(prefix: [0x01, 0x10, 0x02])
+        let subspace = Subspace(prefix: Array("test_grouped_query_\(UUID().uuidString)".utf8))
 
         // Create RANK index manually
         let groupedRankIndex = Index(
@@ -1039,9 +1038,8 @@ struct RankIndexEndToEndTests {
     @Test("Grouped RANK: Verify last field detection (not first field)")
     func testGroupedRankLastFieldDetection() async throws {
         let database = try createDatabase()
-        try await clearTestData(database: database)
 
-        let subspace = Subspace(prefix: [0x01, 0x10, 0x03])
+        let subspace = Subspace(prefix: Array("test_last_field_\(UUID().uuidString)".utf8))
 
         // Create RANK index manually
         let groupedRankIndex = Index(
@@ -1098,9 +1096,8 @@ struct RankIndexEndToEndTests {
     @Test("Bug #2: rank(of:in:for:indexName:) should reject non-RANK indexes")
     func testRankWithWrongIndexType() async throws {
         let database = try createDatabase()
-        try await clearTestData(database: database)
 
-        let subspace = Subspace(prefix: [0x01, 0x11, 0x01])
+        let subspace = Subspace(prefix: Array("test_wrong_type_\(UUID().uuidString)".utf8))
 
         // Create both VALUE and RANK indexes on the same field
         let valueIndex = Index(
@@ -1180,7 +1177,7 @@ struct RankIndexEndToEndTests {
     @Test("Bug #2: rank(of:in:for:indexName:) with non-existent index name")
     func testRankWithNonExistentIndexName() async throws {
         let database = try createDatabase()
-        let subspace = Subspace(prefix: [0x01, 0x11, 0x02])
+        let subspace = Subspace(prefix: Array("test_nonexistent_\(UUID().uuidString)".utf8))
 
         let rankIndex = Index(
             name: "score_rank_index",
@@ -1228,7 +1225,7 @@ struct RankIndexEndToEndTests {
     @Test("Bug #2: rank(of:in:for:indexName:) with COUNT index")
     func testRankWithCountIndexType() async throws {
         let database = try createDatabase()
-        let subspace = Subspace(prefix: [0x01, 0x11, 0x03])
+        let subspace = Subspace(prefix: Array("test_count_type_\(UUID().uuidString)".utf8))
 
         // Create COUNT index on score field
         let countIndex = Index(

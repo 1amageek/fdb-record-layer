@@ -1066,9 +1066,7 @@ internal struct RankIndexMaintainer<Record: Sendable, Score: RankScore>: Generic
 /// Allows dynamic score type selection at runtime based on IndexOptions.scoreTypeName.
 /// This is necessary because Swift generics must be resolved at compile time, but
 /// we need to select the Score type based on runtime configuration.
-internal protocol AnyRankIndexMaintainerProtocol<Record>: GenericIndexMaintainer {
-    associatedtype Record: Sendable
-}
+internal protocol AnyRankIndexMaintainerProtocol<Record>: GenericIndexMaintainer where Record == Self.Record {}
 
 /// Helper function to create rank index maintainer with dynamic score type
 ///

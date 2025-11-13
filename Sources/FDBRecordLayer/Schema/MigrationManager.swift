@@ -37,6 +37,11 @@ public final class MigrationManager: Sendable {
     private let migrationSubspace: Subspace
     private let lock: Mutex<MigrationState>
 
+    /// Type-erased record store registry
+    ///
+    /// Maps record type names to their RecordStores for migration operations.
+    private let storeRegistry: [String: any AnyRecordStore]
+
     private struct MigrationState {
         var isRunning: Bool = false
         var currentVersion: SchemaVersion?
@@ -44,24 +49,54 @@ public final class MigrationManager: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize migration manager
+    /// Initialize migration manager with store registry
     ///
     /// - Parameters:
     ///   - database: Database instance
     ///   - schema: Target schema
     ///   - migrations: Array of migrations to manage
+    ///   - storeRegistry: Registry of RecordStores for each record type
     ///   - migrationSubspace: Subspace for migration metadata (default: "migrations")
     public init(
         database: any DatabaseProtocol,
         schema: Schema,
         migrations: [Migration],
+        storeRegistry: [String: any AnyRecordStore],
         migrationSubspace: Subspace? = nil
     ) {
         self.database = database
         self.schema = schema
         self.migrations = migrations.sorted { $0.toVersion < $1.toVersion }
+        self.storeRegistry = storeRegistry
         self.migrationSubspace = migrationSubspace ?? Subspace(prefix: Tuple("migrations").pack())
         self.lock = Mutex(MigrationState())
+    }
+
+    /// Convenience initializer for single RecordStore
+    ///
+    /// Use this when migrating a single record type.
+    ///
+    /// - Parameters:
+    ///   - database: Database instance
+    ///   - schema: Target schema
+    ///   - migrations: Array of migrations
+    ///   - store: RecordStore to migrate
+    ///   - migrationSubspace: Subspace for migration metadata
+    public convenience init<Record: Recordable>(
+        database: any DatabaseProtocol,
+        schema: Schema,
+        migrations: [Migration],
+        store: RecordStore<Record>,
+        migrationSubspace: Subspace? = nil
+    ) {
+        let registry: [String: any AnyRecordStore] = [Record.recordName: store]
+        self.init(
+            database: database,
+            schema: schema,
+            migrations: migrations,
+            storeRegistry: registry,
+            migrationSubspace: migrationSubspace
+        )
     }
 
     // MARK: - Public API
@@ -79,14 +114,32 @@ public final class MigrationManager: Sendable {
 
             // Decode version
             let tuple = try Tuple.unpack(from: versionData)
-            guard tuple.count >= 3,
-                  let major = tuple[0] as? Int64,
-                  let minor = tuple[1] as? Int64,
-                  let patch = tuple[2] as? Int64 else {
-                throw RecordLayerError.invalidSerializedData("Invalid version format")
+            guard tuple.count >= 3 else {
+                throw RecordLayerError.invalidSerializedData("Invalid version format: tuple count \(tuple.count), expected 3")
             }
 
-            return SchemaVersion(major: Int(major), minor: Int(minor), patch: Int(patch))
+            // Tuple encoding returns Int for zero, Int64 for non-zero
+            // We need to handle both types
+            func extractInt(_ element: any TupleElement) -> Int? {
+                if let value = element as? Int {
+                    return value
+                } else if let value = element as? Int64 {
+                    return Int(value)
+                }
+                return nil
+            }
+
+            guard let major = extractInt(tuple[0]),
+                  let minor = extractInt(tuple[1]),
+                  let patch = extractInt(tuple[2]) else {
+                let types = (0..<tuple.count).map { i in
+                    let element = tuple[i]
+                    return "\(i): \(type(of: element)) = \(element)"
+                }.joined(separator: ", ")
+                throw RecordLayerError.invalidSerializedData("Invalid version format. Types: [\(types)]")
+            }
+
+            return SchemaVersion(major: major, minor: minor, patch: patch)
         }
     }
 
@@ -183,17 +236,13 @@ public final class MigrationManager: Sendable {
             return
         }
 
-        // Create migration context
+        // Create migration context with store registry
         let metadataSubspace = migrationSubspace.subspace("metadata")
         let context = MigrationContext(
             database: database,
             schema: schema,
             metadataSubspace: metadataSubspace,
-            storeFactory: { recordType in
-                // Factory to create record stores
-                // This would need proper implementation
-                throw RecordLayerError.internalError("Store factory not implemented")
-            }
+            storeRegistry: storeRegistry
         )
 
         // Execute migration

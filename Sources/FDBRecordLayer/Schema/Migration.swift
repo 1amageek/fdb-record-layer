@@ -85,22 +85,16 @@ public struct MigrationContext: Sendable {
     /// Metadata subspace for storing migration progress
     public let metadataSubspace: Subspace
 
-    /// Record store factory
+    /// Type-erased record store registry
     ///
-    /// **Current Limitation**: Returns `Any` instead of type-safe `RecordStore<Record>`.
+    /// Maps record type names to their corresponding RecordStores.
+    /// All stores conform to AnyRecordStore for type-safe operations.
     ///
-    /// This prevents implementing migration operations that require:
-    /// - Type-safe record scanning and iteration
-    /// - Type-safe record transformation
-    /// - Index building with specific Record types
-    ///
-    /// **Future Design Options**:
-    /// 1. Protocol-based approach with associated types
-    /// 2. Type-erased wrapper (AnyRecordStore)
-    /// 3. Generic factory with type registration
-    ///
-    /// See Migration.swift method implementations for detailed requirements.
-    private let storeFactory: @Sendable (String) throws -> Any
+    /// **Redesigned with type safety**:
+    /// - No more `Any` casting
+    /// - Protocol-based approach with AnyRecordStore
+    /// - Enables index operations and data transformations
+    private let storeRegistry: [String: any AnyRecordStore]
 
     // MARK: - Initialization
 
@@ -108,43 +102,101 @@ public struct MigrationContext: Sendable {
         database: any DatabaseProtocol,
         schema: Schema,
         metadataSubspace: Subspace,
-        storeFactory: @escaping @Sendable (String) throws -> Any
+        storeRegistry: [String: any AnyRecordStore]
     ) {
         self.database = database
         self.schema = schema
         self.metadataSubspace = metadataSubspace
-        self.storeFactory = storeFactory
+        self.storeRegistry = storeRegistry
+    }
+
+    // MARK: - Store Access
+
+    /// Get RecordStore for a record type
+    ///
+    /// - Parameter recordName: Record type name
+    /// - Returns: Type-erased RecordStore
+    /// - Throws: RecordLayerError if store not found
+    public func store(for recordName: String) throws -> any AnyRecordStore {
+        guard let store = storeRegistry[recordName] else {
+            throw RecordLayerError.invalidArgument(
+                "RecordStore for '\(recordName)' not found in registry. " +
+                "Available stores: \(storeRegistry.keys.sorted().joined(separator: ", "))"
+            )
+        }
+        return store
     }
 
     // MARK: - Index Operations
 
     /// Add a new index and build it online
     ///
+    /// **Implementation**:
+    /// 1. Determine applicable record types (from index.recordTypes or all stores)
+    /// 2. For each record type:
+    ///    a. Enable index (sets to writeOnly via IndexStateManager)
+    ///    b. Build index (via OnlineIndexer through AnyRecordStore)
+    ///    c. Mark as readable (via IndexStateManager)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let emailIndex = Index.value(
+    ///     named: "user_by_email",
+    ///     on: FieldKeyExpression(fieldName: "email")
+    /// )
+    /// try await context.addIndex(emailIndex)
+    /// ```
+    ///
     /// - Parameter index: The index to add
     /// - Throws: RecordLayerError if index addition fails
     public func addIndex(_ index: Index) async throws {
-        throw RecordLayerError.internalError(
-            """
-            Migration index operations not yet implemented.
+        // 1. Determine applicable record types
+        let applicableTypes: Set<String>
+        if let recordTypes = index.recordTypes {
+            applicableTypes = recordTypes
+        } else {
+            // Universal index: applies to all record types
+            applicableTypes = Set(storeRegistry.keys)
+        }
 
-            Missing requirements:
-            1. Type-safe RecordStore factory (to obtain Record type)
-            2. RecordStore subspace in MigrationContext (for IndexStateManager and data operations)
+        // 2. Build index for each applicable record type
+        // Note: OnlineIndexer handles the full workflow:
+        //   - Enables index (disabled → writeOnly)
+        //   - Builds index in batches
+        //   - Transitions to readable (writeOnly → readable)
+        for recordName in applicableTypes {
+            let store = try self.store(for: recordName)
 
-            Current limitation: MigrationContext.storeFactory returns Any, preventing type-safe operations.
-
-            Future implementation:
-            1. Add index to schema (if not already present)
-            2. Create IndexStateManager with RecordStore subspace
-            3. Enable index (sets to writeOnly)
-            4. Create OnlineIndexer with proper Record type from factory
-            5. Build index using OnlineIndexer.buildIndex()
-            6. Mark index as readable via IndexStateManager.makeReadable()
-            """
-        )
+            // Build index using OnlineIndexer (via AnyRecordStore)
+            try await store.buildIndex(
+                indexName: index.name,
+                batchSize: 1000,
+                throttleDelayMs: 10
+            )
+        }
     }
 
     /// Remove an index and add FormerIndex entry
+    ///
+    /// **Implementation**:
+    /// 1. Create FormerIndex metadata entry
+    /// 2. Disable index (via IndexStateManager)
+    /// 3. Clear all index data (range clear)
+    /// 4. Update schema to remove from active indexes
+    ///
+    /// **FormerIndex Storage**:
+    /// ```
+    /// Key: [subspace][storeInfo][formerIndexes][indexName]
+    /// Value: Tuple(addedVersion.major, minor, patch, removedTimestamp)
+    /// ```
+    ///
+    /// **Example**:
+    /// ```swift
+    /// try await context.removeIndex(
+    ///     indexName: "legacy_index",
+    ///     addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
+    /// )
+    /// ```
     ///
     /// - Parameters:
     ///   - indexName: Name of the index to remove
@@ -154,53 +206,108 @@ public struct MigrationContext: Sendable {
         indexName: String,
         addedVersion: SchemaVersion
     ) async throws {
-        throw RecordLayerError.internalError(
-            """
-            Migration index operations not yet implemented.
+        // Remove from all stores
+        for (_, store) in storeRegistry {
+            // 1. Create FormerIndex entry
+            let formerIndexKey = store.subspace
+                .subspace(RecordStoreKeyspace.storeInfo.rawValue)
+                .subspace("formerIndexes")
+                .pack(Tuple(indexName))
 
-            Missing requirements:
-            1. Type-safe RecordStore factory (to obtain Record type)
-            2. RecordStore subspace in MigrationContext (for IndexStateManager and data operations)
+            try await database.withTransaction { transaction in
+                let timestamp = Date().timeIntervalSince1970
+                transaction.setValue(
+                    Tuple(
+                        Int64(addedVersion.major),
+                        Int64(addedVersion.minor),
+                        Int64(addedVersion.patch),
+                        timestamp
+                    ).pack(),
+                    for: formerIndexKey
+                )
+            }
 
-            Current limitation: MigrationContext.storeFactory returns Any, preventing type-safe operations.
+            // 2. Disable index
+            let indexStateManager = IndexStateManager(
+                database: database,
+                subspace: store.subspace
+            )
+            try await indexStateManager.disable(indexName)
 
-            Future implementation:
-            1. Create FormerIndex entry in schema metadata
-               Key: [subspace][storeInfo][formerIndexes][indexName]
-               Value: Tuple(addedVersion, removedTimestamp)
-            2. Disable index state via IndexStateManager
-            3. Clear all index data
-               Range: [subspace][index][indexName]/*
-            4. Update schema to remove index from active indexes list
-            """
-        )
+            // 3. Clear index data
+            let indexRange = store.indexSubspace.subspace(indexName).range()
+            try await database.withTransaction { transaction in
+                transaction.clearRange(
+                    beginKey: indexRange.begin,
+                    endKey: indexRange.end
+                )
+            }
+        }
     }
 
     /// Rebuild an existing index
     ///
+    /// **Implementation**:
+    /// 1. Disable index (via IndexStateManager)
+    /// 2. Clear existing index data (range clear)
+    /// 3. Build index (via OnlineIndexer - handles enable → build → readable)
+    ///
+    /// **Important**: OnlineIndexer handles the complete workflow internally:
+    /// - Transitions to writeOnly (disabled → writeOnly)
+    /// - Builds index in batches
+    /// - Transitions to readable (writeOnly → readable)
+    ///
+    /// **Use Cases**:
+    /// - Index corruption recovery
+    /// - Index definition change (e.g., adding uniqueness constraint)
+    /// - Performance optimization (rebuild with better distribution)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// try await context.rebuildIndex(indexName: "user_by_email")
+    /// ```
+    ///
     /// - Parameter indexName: Name of the index to rebuild
     /// - Throws: RecordLayerError if rebuild fails
     public func rebuildIndex(indexName: String) async throws {
-        throw RecordLayerError.internalError(
-            """
-            Migration index operations not yet implemented.
+        guard let index = schema.index(named: indexName) else {
+            throw RecordLayerError.indexNotFound(
+                "Index '\(indexName)' not found in schema"
+            )
+        }
 
-            Missing requirements:
-            1. Type-safe RecordStore factory (to obtain Record type)
-            2. RecordStore subspace in MigrationContext (for IndexStateManager and data operations)
+        let applicableTypes = index.recordTypes ?? Set(storeRegistry.keys)
 
-            Current limitation: MigrationContext.storeFactory returns Any, preventing type-safe operations.
+        for recordName in applicableTypes {
+            let store = try self.store(for: recordName)
 
-            Future implementation:
-            1. Disable index via IndexStateManager
-            2. Clear existing index data
-               Range: [subspace][index][indexName]/*
-            3. Enable index (sets to writeOnly)
-            4. Create OnlineIndexer with proper Record type from factory
-            5. Build index using OnlineIndexer.buildIndex()
-            6. Mark as readable via IndexStateManager.makeReadable()
-            """
-        )
+            // 1. Disable index
+            let indexStateManager = IndexStateManager(
+                database: database,
+                subspace: store.subspace
+            )
+            try await indexStateManager.disable(indexName)
+
+            // 2. Clear existing data
+            let indexRange = store.indexSubspace.subspace(indexName).range()
+            try await database.withTransaction { transaction in
+                transaction.clearRange(
+                    beginKey: indexRange.begin,
+                    endKey: indexRange.end
+                )
+            }
+
+            // 3. Build index
+            // Note: OnlineIndexer handles the full workflow:
+            //   - Enables index (disabled → writeOnly)
+            //   - Builds index in batches
+            //   - Transitions to readable (writeOnly → readable)
+            try await store.buildIndex(
+                indexName: indexName,
+                batchSize: 1000,
+                throttleDelayMs: 10
+            )
+        }
     }
 
     // MARK: - Data Transformation
@@ -250,10 +357,19 @@ public struct MigrationContext: Sendable {
         config: BatchConfig = .makeDefault(),
         transform: @escaping @Sendable (Record) async throws -> Record
     ) async throws {
-        // Get RecordStore from factory
-        guard let store = try storeFactory(recordType) as? RecordStore<Record> else {
+        // Get RecordStore from registry
+        guard let anyStore = storeRegistry[recordType] else {
+            throw RecordLayerError.invalidArgument(
+                "RecordStore for '\(recordType)' not found in registry. " +
+                "Available stores: \(storeRegistry.keys.sorted().joined(separator: ", "))"
+            )
+        }
+
+        // Cast to concrete RecordStore<Record>
+        guard let store = anyStore as? RecordStore<Record> else {
             throw RecordLayerError.internalError(
-                "Failed to get RecordStore<\(Record.self)> from factory for recordType '\(recordType)'"
+                "RecordStore for '\(recordType)' has unexpected type. " +
+                "Expected RecordStore<\(Record.self)>, got \(type(of: anyStore))"
             )
         }
 
@@ -460,10 +576,19 @@ public struct MigrationContext: Sendable {
         where predicate: @escaping @Sendable (Record) -> Bool,
         config: BatchConfig = .makeDefault()
     ) async throws {
-        // Get RecordStore from factory
-        guard let store = try storeFactory(recordType) as? RecordStore<Record> else {
+        // Get RecordStore from registry
+        guard let anyStore = storeRegistry[recordType] else {
+            throw RecordLayerError.invalidArgument(
+                "RecordStore for '\(recordType)' not found in registry. " +
+                "Available stores: \(storeRegistry.keys.sorted().joined(separator: ", "))"
+            )
+        }
+
+        // Cast to concrete RecordStore<Record>
+        guard let store = anyStore as? RecordStore<Record> else {
             throw RecordLayerError.internalError(
-                "Failed to get RecordStore<\(Record.self)> from factory for recordType '\(recordType)'"
+                "RecordStore for '\(recordType)' has unexpected type. " +
+                "Expected RecordStore<\(Record.self)>, got \(type(of: anyStore))"
             )
         }
 

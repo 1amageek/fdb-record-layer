@@ -38,6 +38,7 @@
 - クエリプランナー
 - Record Layerアーキテクチャ
 - マクロAPI
+- スキーママイグレーション
 
 ---
 
@@ -1800,8 +1801,9 @@ struct User {
     #Unique<User>([\.email])
     #Index<User>([\.city, \.age])
     #Directory<User>("tenants", Field(\.tenantID), "users", layer: .partition)
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var email: String
     var city: String
     var age: Int
@@ -1828,15 +1830,606 @@ let users = try await store.query(User.self)
 ```
 
 **実装済み機能**:
-- ✅ @Recordable, @PrimaryKey, @Transient, @Default
-- ✅ #Index, #Unique, #Directory
+- ✅ @Recordable, @Transient, @Default
+- ✅ #PrimaryKey, #Index, #Unique, #Directory
 - ✅ @Relationship, @Attribute
 - ✅ 自動生成されるstore()メソッド
 - ✅ マルチテナント対応（#Directoryマクロ）
 
+**マクロの種類**:
+- **@Recordable**: 構造体マクロ（attached macro）- Recordableプロトコル適合を自動生成
+- **@Transient**: プロパティマクロ - 永続化から除外するフィールドをマーク
+- **@Default(value:)**: プロパティマクロ - デフォルト値を指定
+- **@Relationship**: プロパティマクロ - リレーションシップを定義
+- **@Attribute**: プロパティマクロ - 属性メタデータを指定
+- **#PrimaryKey<T>([...])**: フリースタンディングマクロ - プライマリキーフィールドを宣言（KeyPath配列）
+- **#Index<T>([...])**: フリースタンディングマクロ - インデックスを宣言
+- **#Unique<T>([...])**: フリースタンディングマクロ - 一意制約インデックスを宣言
+- **#Directory<T>(...)**: フリースタンディングマクロ - Directory Layer設定を宣言
+
+### スキーママイグレーション
+
+**MigrationManager**は、スキーマの進化（バージョン間の変更）を安全かつ自動的に適用するシステムです。
+
+#### 概要
+
+**主要コンポーネント**:
+
+| コンポーネント | 役割 |
+|--------------|------|
+| **MigrationManager** | マイグレーション全体を調整、バージョン管理 |
+| **Migration** | 単一のマイグレーション操作を定義 |
+| **MigrationContext** | マイグレーション実行時のコンテキスト、API提供 |
+| **AnyRecordStore** | 型消去されたRecordStore、マルチレコードタイプ対応 |
+| **FormerIndex** | 削除されたインデックスのメタデータ |
+
+**マイグレーションフロー**:
+```
+1. getCurrentVersion() - 現在のスキーマバージョンを取得
+2. migrate(to: targetVersion) - ターゲットバージョンへのパスを構築
+3. マイグレーションチェーンの実行 - 各Migrationを順次実行
+4. setCurrentVersion() - 新バージョンを記録
+```
+
+#### MigrationManager API
+
+**初期化**:
+
+```swift
+// パターン1: 単一RecordStore用
+let manager = MigrationManager(
+    database: database,
+    schema: schema,
+    migrations: [migration1, migration2],
+    store: recordStore
+)
+
+// パターン2: 複数RecordStore用（ストアレジストリ）
+let storeRegistry: [String: any AnyRecordStore] = [
+    "User": userStore,
+    "Product": productStore,
+    "Order": orderStore
+]
+let manager = MigrationManager(
+    database: database,
+    schema: schema,
+    migrations: migrations,
+    storeRegistry: storeRegistry
+)
+```
+
+**主要メソッド**:
+
+```swift
+// 現在のバージョンを取得
+let currentVersion = try await manager.getCurrentVersion()
+// → SchemaVersion(major: 1, minor: 0, patch: 0) or nil
+
+// 指定バージョンへマイグレーション
+try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
+
+// マイグレーション一覧
+let allMigrations = manager.listMigrations()
+
+// 特定マイグレーションの適用状態確認
+let isApplied = try await manager.isMigrationApplied(migration)
+```
+
+#### Migration定義
+
+**基本構造**:
+
+```swift
+let migration = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Add email index to User"
+) { context in
+    // マイグレーション処理
+    let emailIndex = Index(
+        name: "user_by_email",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "email")
+    )
+    try await context.addIndex(emailIndex)
+}
+```
+
+**SchemaVersion vs Schema.Version**:
+
+| 型 | 用途 | 例 |
+|------|------|-----|
+| **SchemaVersion** | マイグレーション管理用 | `SchemaVersion(major: 1, minor: 0, patch: 0)` |
+| **Schema.Version** | スキーマ定義用 | `Schema.Version(1, 0, 0)` |
+
+**変換**:
+```swift
+// Schema.Version → SchemaVersion
+let migrationVersion = SchemaVersion(
+    major: schemaVersion.major,
+    minor: schemaVersion.minor,
+    patch: schemaVersion.patch
+)
+
+// SchemaVersion → Schema.Version
+let schemaVersion = Schema.Version(
+    migrationVersion.major,
+    migrationVersion.minor,
+    migrationVersion.patch
+)
+```
+
+#### MigrationContext操作
+
+**インデックス操作**:
+
+```swift
+// 1. インデックス追加（オンライン構築）
+let migration1 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
+    description: "Add city index"
+) { context in
+    let cityIndex = Index(
+        name: "user_by_city",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "city")
+    )
+    // OnlineIndexerを使用して構築（バッチ処理）
+    try await context.addIndex(cityIndex)
+}
+
+// 2. インデックス再構築（既存データから再生成）
+let migration2 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
+    toVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
+    description: "Rebuild email index due to data corruption"
+) { context in
+    // 内部処理: disable → clear → buildIndex (enable → build → readable)
+    try await context.rebuildIndex(indexName: "user_by_email")
+}
+
+// 3. インデックス削除（FormerIndexとして記録）
+let migration3 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Remove deprecated nickname index"
+) { context in
+    // FormerIndexを作成してスキーマに追加、既存データをクリア
+    try await context.removeIndex(
+        indexName: "user_by_nickname",
+        addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
+    )
+}
+```
+
+**データ操作**:
+
+```swift
+// レコード全件スキャンとデータ変換
+let migration = Migration(
+    fromVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 1, patch: 0),
+    description: "Normalize phone numbers"
+) { context in
+    let store = try context.store(for: "User")
+
+    // 全レコードをスキャン
+    let records = try await store.scanRecords { data in
+        // フィルタリングロジック（例: 旧フォーマットの電話番号のみ）
+        return true  // すべてのレコードを処理
+    }
+
+    // 各レコードを変換
+    for try await recordData in records {
+        // データ変換処理
+        let normalizedData = normalizePhoneNumber(recordData)
+        // 更新（実装は RecordStore API に依存）
+    }
+}
+```
+
+#### インデックス状態遷移の詳細
+
+**状態遷移フロー**:
+
+```
+addIndex:
+  初期状態 → writeOnly → readable
+
+rebuildIndex:
+  初期状態 → disabled → writeOnly → readable
+  ※ disable後に既存データをクリア
+
+removeIndex:
+  初期状態 → disabled → FormerIndex作成
+```
+
+**重要な実装パターン**:
+
+```swift
+// ✅ 正しい: addIndex - OnlineIndexerに完全委譲
+public func addIndex(_ index: Index) async throws {
+    // OnlineIndexerが以下を実行:
+    // 1. enable() - disabled → writeOnly
+    // 2. build() - バッチ処理でインデックスエントリ構築
+    // 3. makeReadable() - writeOnly → readable
+    try await store.buildIndex(indexName: index.name, batchSize: 1000, throttleDelayMs: 10)
+}
+
+// ✅ 正しい: rebuildIndex - disable/clearしてからOnlineIndexer委譲
+public func rebuildIndex(indexName: String) async throws {
+    // 1. disable - 既存インデックスを無効化
+    try await indexStateManager.disable(indexName)
+
+    // 2. clear - 既存データを削除
+    let indexRange = store.indexSubspace.subspace(indexName).range()
+    try await database.withTransaction { transaction in
+        transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+    }
+
+    // 3. rebuild - OnlineIndexerが enable → build → readable を実行
+    try await store.buildIndex(indexName: indexName, batchSize: 1000, throttleDelayMs: 10)
+}
+
+// ❌ 間違い: 手動で状態遷移を管理（重複した遷移が発生）
+public func rebuildIndex(indexName: String) async throws {
+    try await indexStateManager.enable(indexName)       // ❌ OnlineIndexerも enable() を呼ぶ
+    try await store.buildIndex(...)                     // 内部で enable() → 重複
+    try await indexStateManager.makeReadable(indexName) // ❌ OnlineIndexerも makeReadable() を呼ぶ
+}
+```
+
+**OnlineIndexerの責務**:
+- `enable()`: インデックスを writeOnly 状態にする
+- `build()`: RangeSetを使用してバッチ処理でインデックス構築
+- `makeReadable()`: インデックスを readable 状態にする
+
+**MigrationContextの責務**:
+- `addIndex()`: OnlineIndexerを呼ぶだけ（状態遷移は触らない）
+- `rebuildIndex()`: disable/clear してからOnlineIndexerに委譲
+- `removeIndex()`: disable してからFormerIndexを作成
+
+#### Lightweight Migration
+
+**軽量マイグレーション**は、単純なスキーマ変更を自動的に適用します。
+
+**サポートされる変更**:
+- ✅ 新しいレコードタイプの追加
+- ✅ 新しいインデックスの追加
+- ✅ オプショナルフィールドの追加（デフォルト値あり）
+
+**サポートされない変更**（カスタムマイグレーション必須）:
+- ❌ レコードタイプの削除
+- ❌ フィールドの削除
+- ❌ フィールドの型変更
+- ❌ データ変換
+
+**使用例**:
+
+```swift
+// スキーマV1
+protocol SchemaV1: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
+}
+
+// スキーマV2（新しいインデックスを追加）
+protocol SchemaV2: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
+}
+
+// 軽量マイグレーションの作成
+let lightweightMigration = MigrationManager.lightweightMigration(
+    from: SchemaV1.self,
+    to: SchemaV2.self
+)
+
+// マイグレーション実行
+let manager = MigrationManager(
+    database: database,
+    schema: schemaV2,
+    migrations: [lightweightMigration],
+    store: store
+)
+try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
+```
+
+**内部処理**:
+```swift
+// 1. スキーマ変更を検出
+let changes = detectSchemaChanges(from: schemaV1, to: schemaV2)
+
+// 2. 自動適用可能か検証
+guard changes.canBeAutomatic else {
+    throw RecordLayerError.internalError("Cannot perform lightweight migration: ...")
+}
+
+// 3. 変更を自動適用
+for indexToAdd in changes.indexesToAdd {
+    try await context.addIndex(indexToAdd)
+}
+```
+
+#### ヘルパーメソッド
+
+**MigrationManager**には便利なヘルパーメソッドがあります：
+
+```swift
+// インデックス追加マイグレーションを簡単に作成
+let addIndexMigration = MigrationManager.addIndexMigration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
+    index: emailIndex
+)
+
+// インデックス削除マイグレーションを簡単に作成
+let removeIndexMigration = MigrationManager.removeIndexMigration(
+    fromVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 1, patch: 0),
+    indexName: "user_by_nickname",
+    addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
+)
+```
+
+#### 実用例
+
+**例1: 段階的なスキーマ進化**
+
+```swift
+// V1: 初期スキーマ
+let schemaV1 = Schema(
+    [User.self],
+    version: Schema.Version(1, 0, 0),
+    indexes: []
+)
+
+// V1.1: emailインデックス追加
+let migration1_1 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
+    description: "Add email index"
+) { context in
+    let emailIndex = Index(
+        name: "user_by_email",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "email")
+    )
+    try await context.addIndex(emailIndex)
+}
+
+// V1.2: cityインデックス追加
+let migration1_2 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
+    toVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
+    description: "Add city index"
+) { context in
+    let cityIndex = Index(
+        name: "user_by_city",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "city")
+    )
+    try await context.addIndex(cityIndex)
+}
+
+// V2.0: nicknameインデックス削除
+let migration2_0 = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Remove nickname index"
+) { context in
+    try await context.removeIndex(
+        indexName: "user_by_nickname",
+        addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
+    )
+}
+
+// マイグレーションマネージャーの作成
+let manager = MigrationManager(
+    database: database,
+    schema: schemaV2,
+    migrations: [migration1_1, migration1_2, migration2_0],
+    store: userStore
+)
+
+// V1.0 → V2.0への自動マイグレーション
+// MigrationManagerが自動的にパスを構築: V1.0 → V1.1 → V1.2 → V2.0
+try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
+```
+
+**例2: マルチレコードタイプのマイグレーション**
+
+```swift
+// 複数のRecordStoreを管理
+let storeRegistry: [String: any AnyRecordStore] = [
+    "User": userStore,
+    "Product": productStore,
+    "Order": orderStore
+]
+
+// 複数レコードタイプに影響するマイグレーション
+let migration = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Add indexes to multiple record types"
+) { context in
+    // Userにインデックス追加
+    let userStore = try context.store(for: "User")
+    let emailIndex = Index(
+        name: "user_by_email",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "email")
+    )
+    try await context.addIndex(emailIndex)
+
+    // Productにインデックス追加
+    let productStore = try context.store(for: "Product")
+    let categoryIndex = Index(
+        name: "product_by_category",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "category")
+    )
+    try await context.addIndex(categoryIndex)
+}
+
+let manager = MigrationManager(
+    database: database,
+    schema: schema,
+    migrations: [migration],
+    storeRegistry: storeRegistry
+)
+try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
+```
+
+#### ベストプラクティス
+
+**1. セマンティックバージョニング**:
+```swift
+// MAJOR: 後方互換性のない変更
+SchemaVersion(major: 2, minor: 0, patch: 0)  // レコードタイプ削除、フィールド削除
+
+// MINOR: 後方互換性のある機能追加
+SchemaVersion(major: 1, minor: 1, patch: 0)  // インデックス追加、フィールド追加
+
+// PATCH: バグ修正
+SchemaVersion(major: 1, minor: 0, patch: 1)  // インデックス再構築
+```
+
+**2. マイグレーションチェーン**:
+```swift
+// ✅ 正しい: 連続したバージョンチェーン
+migrations: [
+    migration_1_0_to_1_1,  // 1.0 → 1.1
+    migration_1_1_to_2_0,  // 1.1 → 2.0
+    migration_2_0_to_2_1   // 2.0 → 2.1
+]
+// MigrationManagerが自動的にパスを構築
+
+// ❌ 間違い: ギャップのあるチェーン
+migrations: [
+    migration_1_0_to_1_1,  // 1.0 → 1.1
+    migration_2_0_to_2_1   // 2.0 → 2.1  ← 1.1 → 2.0 が欠落
+]
+// エラー: "No migration path found from 1.1 to 2.1"
+```
+
+**3. 冪等性の確保**:
+```swift
+// ✅ 正しい: isMigrationApplied()で既適用をチェック
+let migration = Migration(...) { context in
+    // MigrationManagerが自動的にチェック
+    try await context.addIndex(index)
+}
+
+// 同じマイグレーションを複数回実行しても安全
+try await manager.migrate(to: targetVersion)
+try await manager.migrate(to: targetVersion)  // 2回目は何もしない
+```
+
+**4. ダウンタイム最小化**:
+```swift
+// OnlineIndexerを使用してバッチ処理
+let migration = Migration(...) { context in
+    // バッチサイズとスロットルを調整
+    try await context.addIndex(index)  // 内部で buildIndex(batchSize: 1000, throttleDelayMs: 10)
+}
+
+// トランザクション制限を遵守
+// - 各バッチは5秒以内
+// - 各バッチは10MB以内
+// - RangeSetで進行状況を記録 → 中断から再開可能
+```
+
+**5. ロールバック対応（将来実装）**:
+```swift
+// 現在は前方マイグレーションのみサポート
+// 将来的には Migration.down クロージャを追加予定
+let migration = Migration(
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Add email index",
+    up: { context in
+        try await context.addIndex(emailIndex)
+    },
+    down: { context in  // 将来実装
+        try await context.removeIndex(indexName: "user_by_email", ...)
+    }
+)
+```
+
+#### エラーハンドリング
+
+**主要なエラー**:
+
+```swift
+// マイグレーションパスが見つからない
+RecordLayerError.internalError("No migration path found from 1.0.0 to 2.0.0")
+→ 連続したマイグレーションチェーンを確認
+
+// マイグレーションが既に実行中
+RecordLayerError.internalError("Migration already in progress")
+→ 並行実行を避ける
+
+// 軽量マイグレーションが不可能
+RecordLayerError.internalError("Cannot perform lightweight migration: Index 'foo' removed")
+→ カスタムマイグレーションを作成
+
+// インデックスが見つからない
+RecordLayerError.indexNotFound("Index 'user_by_email' not found in schema")
+→ スキーマにインデックスが定義されているか確認
+
+// レコードストアが見つからない
+RecordLayerError.internalError("RecordStore for record type 'User' not found in registry")
+→ storeRegistry に必要なストアが登録されているか確認
+```
+
+#### デバッグとモニタリング
+
+**現在のバージョン確認**:
+```swift
+let currentVersion = try await manager.getCurrentVersion()
+print("Current schema version: \(currentVersion)")
+// 出力: Current schema version: Optional(SchemaVersion(major: 1, minor: 2, patch: 0))
+```
+
+**マイグレーション履歴確認**:
+```swift
+let allMigrations = manager.listMigrations()
+for migration in allMigrations {
+    let isApplied = try await manager.isMigrationApplied(migration)
+    print("\(migration.description): \(isApplied ? "✅ Applied" : "⏳ Pending")")
+}
+```
+
+**OnlineIndexer進行状況**:
+```swift
+// OnlineIndexer内部でRangeSetを使用
+// MigrationManager自体は進行状況APIを提供しない
+// 将来的にはコールバックやProgress APIを追加予定
+```
+
+#### まとめ
+
+**MigrationManager**の主要機能:
+- ✅ **型安全**: スキーマバージョン管理とマイグレーションチェーン
+- ✅ **冪等性**: 同じマイグレーションを複数回実行しても安全
+- ✅ **オンライン操作**: バッチ処理で本番環境でも実行可能
+- ✅ **再開可能**: RangeSetで中断からの再開をサポート
+- ✅ **マルチレコードタイプ**: 複数RecordStoreを統合管理
+- ✅ **軽量マイグレーション**: 単純な変更を自動適用
+
+**実装状況**:
+- ✅ MigrationManager本体
+- ✅ MigrationContext (addIndex, rebuildIndex, removeIndex)
+- ✅ Lightweight Migration
+- ✅ AnyRecordStore protocol
+- ✅ RecordStore+Migration extension
+- ✅ FormerIndex
+- ✅ **24テスト全合格** (基本11テスト + 高度な13テスト)
+
 ---
 
-**Last Updated**: 2025-01-12
+**Last Updated**: 2025-01-13
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
-**Record Layer (Swift)**: プロダクション対応 | **テスト**: 297合格 | **進捗**: 94%完了
+**Record Layer (Swift)**: プロダクション対応 | **テスト**: 321合格 | **進捗**: 98%完了
 **Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）
+**Phase 3 (Migration Manager)**: ✅ 100%完了（**24テスト全合格**、包括的テストカバレッジ）

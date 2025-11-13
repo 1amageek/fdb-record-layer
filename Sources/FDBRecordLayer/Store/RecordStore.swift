@@ -94,7 +94,7 @@ import Logging
 public final class RecordStore<Record: Recordable>: Sendable {
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) public let database: any DatabaseProtocol
     public let subspace: Subspace
     public let schema: Schema
     private let logger: Logger
@@ -109,8 +109,8 @@ public final class RecordStore<Record: Recordable>: Sendable {
     public let aggregateMetrics: AggregateMetrics
 
     // Subspaces
-    internal let recordSubspace: Subspace
-    internal let indexSubspace: Subspace
+    public let recordSubspace: Subspace
+    public let indexSubspace: Subspace
 
     /// Root subspace for global indexes
     ///
