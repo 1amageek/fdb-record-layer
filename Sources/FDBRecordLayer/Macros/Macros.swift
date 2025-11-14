@@ -13,6 +13,7 @@ public enum MacroIndexType {
     case sum
     case min
     case max
+    case version
 }
 
 /// Index scope for #Index macro (mirrors IndexScope from Core/Index.swift)

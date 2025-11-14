@@ -428,6 +428,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     indexType = .min
                 case "max":
                     indexType = .max
+                case "version":
+                    indexType = .version
                 default:
                     indexType = .value
                 }

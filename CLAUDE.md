@@ -1508,6 +1508,163 @@ let value = extractNumericValue(dataElements[0])  // O(1)
 
 **対応する数値型**: Int64, Int, Int32, Double, Float（すべてInt64に変換）
 
+#### VERSION インデックス（楽観的並行性制御）
+
+レコードのバージョン管理とOCC（Optimistic Concurrency Control）を提供。FoundationDBのversionstamp機能を使用して、自動的に単調増加する一意な値を生成します。
+
+**インデックス定義**:
+
+**注意**: Version Indexは実際のレコードフィールドを持たないため、`#Index`マクロでは直接サポートされていません。手動で`Index`を作成してSchemaに追加する必要があります。
+
+```swift
+@Recordable
+struct Document {
+    #PrimaryKey<Document>([\.documentID])
+
+    var documentID: Int64
+    var title: String
+    var content: String
+}
+
+// 手動でVersion Indexを作成
+let versionIndex = Index(
+    name: "Document_version_index",
+    type: .version,
+    rootExpression: FieldKeyExpression(fieldName: "_version"),
+    recordTypes: Set(["Document"])
+)
+
+// Schemaに追加
+let schema = Schema([Document.self], indexes: [versionIndex])
+```
+
+**インデックス構造**: `[indexSubspace][primaryKey][versionstamp] = timestamp`
+
+- **versionstamp**: FDBが自動生成する10バイトの一意な値
+  - 8バイト: トランザクションバージョン（データベースのコミットバージョン）
+  - 2バイト: 同一トランザクション内の順序
+- **timestamp**: レコード作成時のタイムスタンプ（時間ベースのクリーンアップ用）
+
+**使用例**:
+```swift
+// 1. 現在のバージョンを取得
+let versionIndex = try await indexManager.maintainer(for: "Document_version_index") as? VersionIndexMaintainer<Document>
+let currentVersion = try await versionIndex?.getCurrentVersion(
+    primaryKey: Tuple(document.documentID),
+    transaction: transaction
+)
+
+// 2. レコードを更新
+document.title = "新しいタイトル"
+try await store.save(document)
+
+// 3. バージョンをチェック（競合検出）
+if let currentVersion = currentVersion {
+    try await versionIndex?.checkVersion(
+        primaryKey: Tuple(document.documentID),
+        expectedVersion: currentVersion,
+        transaction: transaction
+    )
+    // → 別のトランザクションが更新していた場合、エラーがスローされる
+}
+
+// 4. バージョン履歴の取得
+let versions = try await versionIndex?.getVersionHistory(
+    primaryKey: Tuple(document.documentID),
+    transaction: transaction
+)
+for version in versions {
+    print("Version: \(version.versionstamp), Timestamp: \(version.timestamp)")
+}
+```
+
+**バージョン履歴管理戦略**:
+```swift
+// すべてのバージョンを保持
+let strategy = VersionHistoryStrategy.keepAll
+
+// 最新N個のバージョンのみ保持
+let strategy = VersionHistoryStrategy.keepLast(count: 10)
+
+// 指定期間のバージョンのみ保持
+let strategy = VersionHistoryStrategy.keepForDuration(seconds: 86400)  // 24時間
+```
+
+**重要な特徴**:
+- **`_version`は特別なフィールド名**: 実際のレコードフィールドではなく、インデックスのみに存在
+- **自動生成**: レコード保存時にFDBが自動的にversionstampを割り当て
+- **単調増加**: データベース全体で単調増加（グローバルな順序保証）
+- **OCC**: 楽観的並行性制御に使用（複数ユーザーの同時編集検出）
+- **履歴追跡**: 過去のバージョンを追跡可能
+
+**並行更新の検出**:
+```swift
+// ユーザーA: ドキュメントを読み込み
+let docA = try await store.load(Document.self, primaryKey: Tuple(123))
+let versionA = try await versionIndex.getCurrentVersion(...)
+
+// ユーザーB: 同じドキュメントを更新（先にコミット）
+let docB = try await store.load(Document.self, primaryKey: Tuple(123))
+docB.title = "ユーザーBの更新"
+try await store.save(docB)  // → 新しいversionstampが生成される
+
+// ユーザーA: 更新を試みる
+docA.title = "ユーザーAの更新"
+try await store.save(docA)
+try await versionIndex.checkVersion(..., expectedVersion: versionA, ...)
+// → RecordLayerError.versionMismatch がスローされる
+// → ユーザーAは最新データを再読み込みして更新をやり直す必要がある
+```
+
+**バージョンインデックスのキー生成**:
+```swift
+// VersionIndexMaintainer内部の実装
+public func updateIndex(...) async throws {
+    let primaryKey = record.extractPrimaryKey()
+    var key = subspace.pack(primaryKey)
+    let versionPosition = key.count
+
+    // 10バイトのversionstampプレースホルダーを追加
+    key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
+
+    // 4バイトのオフセット（FDB仕様）を追加
+    let position32 = UInt32(versionPosition)
+    let positionBytes = withUnsafeBytes(of: position32.littleEndian) { Array($0) }
+    key.append(contentsOf: positionBytes)
+
+    // FDBのsetVersionstampedKeyアトミック操作を使用
+    // → コミット時にFDBがversionstampを自動挿入
+    transaction.atomicOp(
+        key: key,
+        param: timestampBytes,
+        mutationType: .setVersionstampedKey
+    )
+}
+```
+
+**マクロAPIでの使い方**:
+```swift
+// Version Indexは明示的に指定する必要がある
+@Recordable
+struct User {
+    #Index<User>([\_version], type: .version)  // ← 明示的に指定
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
+    var name: String
+}
+
+// 自動生成されない理由:
+// - すべてのレコードにVersion Indexが必要とは限らない
+// - OCCが不要なユースケースでは余計なオーバーヘッド
+// - ユーザーが必要な時だけ明示的に有効化
+```
+
+**Java版Record Layerとの整合性**:
+- Swift版もJava版と同様に、Version Indexは明示的なopt-in方式
+- `_version`フィールドはレコードに追加されない（インデックスのみ）
+- VersionIndexMaintainerがバージョン管理を担当
+
 ### RangeSet（進行状況追跡）
 
 オンライン操作（インデックス構築、スクラビング）の進行状況を追跡する仕組み：

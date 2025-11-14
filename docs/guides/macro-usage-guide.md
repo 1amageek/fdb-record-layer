@@ -515,10 +515,11 @@ let maxAmount = try await store.evaluateAggregate(.max(indexName: "Sale_region_a
 
 レコードのバージョン管理とOCC（Optimistic Concurrency Control）に使用。
 
+**注意**: Version Indexは実際のレコードフィールドを持たないため、`#Index`マクロでは直接サポートされていません。手動で`Index`を作成してSchemaに追加する必要があります。
+
 ```swift
 @Recordable
 struct Document {
-    #Index<Document>([\_version], type: .version)
     #PrimaryKey<Document>([\.documentID])
 
     var documentID: Int64
@@ -526,17 +527,43 @@ struct Document {
     var content: String
 }
 
+// Schemaで手動でVersion Indexを追加
+let versionIndex = Index(
+    name: "Document_version",
+    type: .version,
+    rootExpression: FieldKeyExpression(fieldName: "_version"),
+    recordTypes: Set(["Document"])
+)
+
+let schema = Schema([Document.self], indexes: [versionIndex])
+
 // 使用例: バージョンチェック付き更新
-let currentVersion = try await versionIndex.getCurrentVersion(primaryKey: Tuple(doc.documentID), transaction: transaction)
+let store = try await RecordStore.open(
+    database: database,
+    subspace: recordSubspace,
+    schema: schema
+)
+
+// VersionIndexMaintainerを取得
+let versionIndexMaintainer = store.indexManager.getVersionIndexMaintainer(for: versionIndex)
+let currentVersion = try await versionIndexMaintainer.getCurrentVersion(
+    primaryKey: Tuple(doc.documentID),
+    transaction: transaction
+)
 // ... 更新処理 ...
-try await versionIndex.checkVersion(primaryKey: Tuple(doc.documentID), expectedVersion: currentVersion, transaction: transaction)
+try await versionIndexMaintainer.checkVersion(
+    primaryKey: Tuple(doc.documentID),
+    expectedVersion: currentVersion,
+    transaction: transaction
+)
 ```
 
 **Version Indexの特徴**:
 - FoundationDBのversionstamp機能を使用
 - 自動的に単調増加する10バイトの一意な値を生成
 - 並行更新時の競合検出に使用
-- `_version`は特別なフィールド名（実際のフィールドではない）
+- `_version`は特別なフィールド名（実際のレコードフィールドではない）
+- マクロAPIではサポートされておらず、手動でIndexを作成する必要がある
 
 ##### VECTOR インデックス
 
