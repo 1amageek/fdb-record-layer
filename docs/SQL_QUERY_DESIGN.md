@@ -798,7 +798,9 @@ let results = try await store.aggregateGrouped(Order.self) {
 // リレーションシップ定義
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Relationship(\.userID, on: Order.self, references: \.userID)
@@ -807,7 +809,9 @@ struct User {
 
 @Recordable
 struct Order {
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
     var userID: Int64  // 外部キー
     var total: Double
 }
@@ -839,7 +843,9 @@ for (user, order) in results {
 struct Order {
     #Directory<Order>("tenants", Field(\.accountID), "orders", layer: .partition)
 
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
     var accountID: String  // パーティションキー
     var total: Double
 }

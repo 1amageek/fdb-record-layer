@@ -1,0 +1,393 @@
+import Foundation
+import FoundationDB
+
+// MARK: - Generic Spatial Index Maintainer
+
+/// Maintainer for spatial indexes using Z-order curve (Morton encoding)
+///
+/// **Algorithm**: Z-order curve maps multi-dimensional coordinates to a single dimension
+/// while preserving spatial locality. This enables efficient range queries using FDB's
+/// ordered key-value structure.
+///
+/// **Index Structure**:
+/// ```
+/// Key: [indexSubspace][zOrderValue][primaryKey]
+/// Value: [] (empty)
+/// ```
+///
+/// **Z-order Encoding**:
+/// - 2D (geo, cartesian): 32 bits per dimension → 64-bit total
+/// - 3D (geo3D, cartesian3D): 21 bits per dimension → 63-bit total
+/// - Bit interleaving: lat[n]lon[n]lat[n-1]lon[n-1]...
+///
+/// **Spatial Types**:
+/// - `.geo`: 2D geographic (latitude, longitude)
+/// - `.geo3D`: 3D geographic (latitude, longitude, altitude)
+/// - `.cartesian`: 2D Cartesian (x, y)
+/// - `.cartesian3D`: 3D Cartesian (x, y, z)
+///
+/// **Usage**:
+/// ```swift
+/// let maintainer = GenericSpatialIndexMaintainer(
+///     index: spatialIndex,
+///     subspace: spatialSubspace,
+///     recordSubspace: recordSubspace
+/// )
+/// ```
+public struct GenericSpatialIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
+    public let index: Index
+    public let subspace: Subspace
+    public let recordSubspace: Subspace
+
+    // Extract spatial options from index
+    private let spatialType: SpatialType
+
+    public init(
+        index: Index,
+        subspace: Subspace,
+        recordSubspace: Subspace
+    ) throws {
+        self.index = index
+        self.subspace = subspace
+        self.recordSubspace = recordSubspace
+
+        // Extract spatial options
+        guard index.type == .spatial else {
+            throw RecordLayerError.internalError("GenericSpatialIndexMaintainer requires spatial index type")
+        }
+
+        guard let options = index.options.spatialOptions else {
+            throw RecordLayerError.internalError("Spatial index must have spatialOptions configured")
+        }
+
+        self.spatialType = options.type
+    }
+
+    public func updateIndex(
+        oldRecord: Record?,
+        newRecord: Record?,
+        recordAccess: any RecordAccess<Record>,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Remove old index entry
+        if let oldRecord = oldRecord {
+            let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess)
+            transaction.clear(key: oldKey)
+        }
+
+        // Add new index entry
+        if let newRecord = newRecord {
+            let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
+            transaction.setValue([], for: newKey)  // Empty value
+        }
+    }
+
+    public func scanRecord(
+        _ record: Record,
+        primaryKey: Tuple,
+        recordAccess: any RecordAccess<Record>,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let indexKey = try buildIndexKey(record: record, recordAccess: recordAccess)
+        transaction.setValue([], for: indexKey)
+    }
+
+    // MARK: - Private Methods
+
+    /// Build index key using Z-order value and primary key
+    ///
+    /// **Key structure**: [indexSubspace][zOrderValue][primaryKey]
+    ///
+    /// The Z-order value maps multi-dimensional coordinates to a single UInt64,
+    /// preserving spatial locality for efficient range queries.
+    private func buildIndexKey(
+        record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> FDB.Bytes {
+        // Evaluate index expression to get spatial field
+        let indexedValues = try recordAccess.evaluate(
+            record: record,
+            expression: index.rootExpression
+        )
+
+        guard let spatialField = indexedValues.first else {
+            throw RecordLayerError.invalidArgument("Spatial index requires exactly one field")
+        }
+
+        // Convert to SpatialRepresentable
+        guard let spatial = spatialField as? any SpatialRepresentable else {
+            throw RecordLayerError.invalidArgument(
+                "Spatial index field must conform to SpatialRepresentable protocol. " +
+                "Got: \(type(of: spatialField))"
+            )
+        }
+
+        // Get normalized coordinates [0, 1] range
+        let coords: [Double]
+        if is3D(spatialType) {
+            // 3D: Use toNormalizedCoordinates(altitudeRange:)
+            guard let options = index.options.spatialOptions else {
+                throw RecordLayerError.internalError("Spatial index missing spatialOptions")
+            }
+            guard let altitudeRange = options.altitudeRange else {
+                throw RecordLayerError.internalError(
+                    "3D spatial index requires altitudeRange in spatialOptions"
+                )
+            }
+            coords = spatial.toNormalizedCoordinates(altitudeRange: altitudeRange)
+        } else {
+            // 2D: Use toNormalizedCoordinates()
+            coords = spatial.toNormalizedCoordinates()
+        }
+
+        // Validate dimensionality
+        let expectedDims = is3D(spatialType) ? 3 : 2
+        guard coords.count == expectedDims else {
+            throw RecordLayerError.invalidArgument(
+                "Spatial coordinate dimension mismatch for type \(spatialType). " +
+                "Expected: \(expectedDims), Got: \(coords.count)"
+            )
+        }
+
+        // Calculate Z-order value
+        let zOrderValue = try calculateZOrder(coords: coords, spatialType: spatialType)
+
+        // Extract primary key
+        let primaryKeyTuple: Tuple
+        if let recordableRecord = record as? any Recordable {
+            primaryKeyTuple = recordableRecord.extractPrimaryKey()
+        } else {
+            throw RecordLayerError.internalError("Record does not conform to Recordable")
+        }
+
+        // Build key: [indexSubspace][zOrderValue][primaryKey...]
+        let primaryKeyElements = try Tuple.unpack(from: primaryKeyTuple.pack())
+        var keyElements: [any TupleElement] = [zOrderValue]
+        for i in 0..<primaryKeyElements.count {
+            keyElements.append(primaryKeyElements[i])
+        }
+        let keyTuple = Tuple(keyElements)
+        return subspace.pack(keyTuple)
+    }
+
+    /// Check if spatial type is 3D
+    private func is3D(_ type: SpatialType) -> Bool {
+        switch type {
+        case .geo, .cartesian:
+            return false
+        case .geo3D, .cartesian3D:
+            return true
+        }
+    }
+}
+
+// MARK: - Z-order Curve Calculation
+
+extension GenericSpatialIndexMaintainer {
+    /// Calculate Z-order value (Morton code) from normalized coordinates
+    ///
+    /// **Algorithm**: Bit interleaving
+    /// - 2D: 32 bits per dimension → lat[31]lon[31]lat[30]lon[30]...lat[0]lon[0]
+    /// - 3D: 21 bits per dimension → lat[20]lon[20]alt[20]...lat[0]lon[0]alt[0]
+    ///
+    /// - Parameters:
+    ///   - coords: Normalized coordinates in [0, 1] range
+    ///   - spatialType: Type of spatial coordinates
+    /// - Returns: Z-order value as UInt64
+    private func calculateZOrder(coords: [Double], spatialType: SpatialType) throws -> UInt64 {
+        switch coords.count {
+        case 2:
+            return calculateZOrder2D(x: coords[0], y: coords[1])
+        case 3:
+            return calculateZOrder3D(x: coords[0], y: coords[1], z: coords[2])
+        default:
+            throw RecordLayerError.internalError("Invalid coordinate count: \(coords.count)")
+        }
+    }
+
+    /// Calculate 2D Z-order value (32 bits per dimension)
+    ///
+    /// Maps [0, 1] × [0, 1] → [0, 2^64-1]
+    private func calculateZOrder2D(x: Double, y: Double) -> UInt64 {
+        // Map [0, 1] to [0, 2^32-1]
+        let xInt = UInt32(x * Double(UInt32.max))
+        let yInt = UInt32(y * Double(UInt32.max))
+
+        // Interleave bits: y[31]x[31]y[30]x[30]...y[0]x[0]
+        return interleaveBits2D(xInt, yInt)
+    }
+
+    /// Calculate 3D Z-order value (21 bits per dimension)
+    ///
+    /// Maps [0, 1] × [0, 1] × [0, 1] → [0, 2^63-1]
+    private func calculateZOrder3D(x: Double, y: Double, z: Double) -> UInt64 {
+        // Map [0, 1] to [0, 2^21-1]
+        let maxValue = UInt32((1 << 21) - 1)
+        let xInt = UInt32(x * Double(maxValue))
+        let yInt = UInt32(y * Double(maxValue))
+        let zInt = UInt32(z * Double(maxValue))
+
+        // Interleave bits: z[20]y[20]x[20]...z[0]y[0]x[0]
+        return interleaveBits3D(xInt, yInt, zInt)
+    }
+
+    /// Interleave bits for 2D Morton code
+    ///
+    /// Input: x = x[31]x[30]...x[0], y = y[31]y[30]...y[0]
+    /// Output: y[31]x[31]y[30]x[30]...y[0]x[0]
+    private func interleaveBits2D(_ x: UInt32, _ y: UInt32) -> UInt64 {
+        var result: UInt64 = 0
+
+        for i in 0..<32 {
+            let xBit = UInt64((x >> i) & 1)
+            let yBit = UInt64((y >> i) & 1)
+
+            result |= (xBit << (2 * i))        // x bit at position 2i
+            result |= (yBit << (2 * i + 1))    // y bit at position 2i+1
+        }
+
+        return result
+    }
+
+    /// Interleave bits for 3D Morton code (21 bits per dimension)
+    ///
+    /// Input: x = x[20]x[19]...x[0], y = y[20]y[19]...y[0], z = z[20]z[19]...z[0]
+    /// Output: z[20]y[20]x[20]...z[0]y[0]x[0]
+    private func interleaveBits3D(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt64 {
+        var result: UInt64 = 0
+
+        for i in 0..<21 {
+            let xBit = UInt64((x >> i) & 1)
+            let yBit = UInt64((y >> i) & 1)
+            let zBit = UInt64((z >> i) & 1)
+
+            result |= (xBit << (3 * i))        // x bit at position 3i
+            result |= (yBit << (3 * i + 1))    // y bit at position 3i+1
+            result |= (zBit << (3 * i + 2))    // z bit at position 3i+2
+        }
+
+        return result
+    }
+}
+
+// MARK: - Spatial Range Queries
+
+extension GenericSpatialIndexMaintainer {
+    /// Search for records within a 2D bounding box
+    ///
+    /// **Algorithm**:
+    /// 1. Calculate Z-order ranges for the bounding box
+    /// 2. Scan index keys in those ranges
+    /// 3. Filter false positives (due to Z-order curve limitations)
+    ///
+    /// **Note**: Z-order curves can have false positives (keys that are close in
+    /// Z-order but far in actual space). Always filter results by actual coordinates.
+    ///
+    /// - Parameters:
+    ///   - minX: Minimum x coordinate (normalized [0, 1])
+    ///   - minY: Minimum y coordinate (normalized [0, 1])
+    ///   - maxX: Maximum x coordinate (normalized [0, 1])
+    ///   - maxY: Maximum y coordinate (normalized [0, 1])
+    ///   - transaction: FDB transaction
+    /// - Returns: Array of primary keys
+    public func rangeQuery2D(
+        minX: Double,
+        minY: Double,
+        maxX: Double,
+        maxY: Double,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        guard spatialType == .geo || spatialType == .cartesian else {
+            throw RecordLayerError.invalidArgument("rangeQuery2D requires 2D spatial type")
+        }
+
+        // Calculate Z-order range for bounding box
+        let minZ = calculateZOrder2D(x: minX, y: minY)
+        let maxZ = calculateZOrder2D(x: maxX, y: maxY)
+
+        // Scan index keys in Z-order range
+        // Note: This is a simplified implementation. A full implementation would
+        // decompose the bounding box into multiple Z-order ranges for better precision.
+        let beginKey = subspace.pack(Tuple([minZ]))
+        let endKey = subspace.pack(Tuple([maxZ + 1]))  // Exclusive end
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        var results: [Tuple] = []
+
+        for try await (key, _) in sequence {
+            // Decode key: [indexSubspace][zOrderValue][primaryKey...]
+            let keyTuple = try subspace.unpack(key)
+
+            // Extract primary key (skip zOrderValue at index 0)
+            var primaryKeyElements: [any TupleElement] = []
+            for i in 1..<keyTuple.count {
+                if let element = keyTuple[i] {
+                    primaryKeyElements.append(element)
+                }
+            }
+
+            let primaryKey = Tuple(primaryKeyElements)
+            results.append(primaryKey)
+        }
+
+        // TODO: Filter false positives by fetching actual coordinates
+        // and verifying they are within the bounding box
+        return results
+    }
+
+    /// Search for records within a 3D bounding box
+    ///
+    /// Similar to rangeQuery2D but for 3D coordinates.
+    public func rangeQuery3D(
+        minX: Double,
+        minY: Double,
+        minZ: Double,
+        maxX: Double,
+        maxY: Double,
+        maxZ: Double,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        guard spatialType == .geo3D || spatialType == .cartesian3D else {
+            throw RecordLayerError.invalidArgument("rangeQuery3D requires 3D spatial type")
+        }
+
+        // Calculate Z-order range for 3D bounding box
+        let zOrderMin = calculateZOrder3D(x: minX, y: minY, z: minZ)
+        let zOrderMax = calculateZOrder3D(x: maxX, y: maxY, z: maxZ)
+
+        // Scan index keys in Z-order range
+        let beginKey = subspace.pack(Tuple([zOrderMin]))
+        let endKey = subspace.pack(Tuple([zOrderMax + 1]))  // Exclusive end
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        var results: [Tuple] = []
+
+        for try await (key, _) in sequence {
+            // Decode key and extract primary key
+            let keyTuple = try subspace.unpack(key)
+
+            var primaryKeyElements: [any TupleElement] = []
+            for i in 1..<keyTuple.count {
+                if let element = keyTuple[i] {
+                    primaryKeyElements.append(element)
+                }
+            }
+
+            let primaryKey = Tuple(primaryKeyElements)
+            results.append(primaryKey)
+        }
+
+        // TODO: Filter false positives
+        return results
+    }
+}

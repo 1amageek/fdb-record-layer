@@ -279,6 +279,8 @@ public enum IndexType: String, Sendable {
     case max        // MAX aggregation index
     case version    // Version index
     case permuted   // Permuted index (multiple orderings)
+    case vector     // HNSW-based vector similarity search
+    case spatial    // Z-order curve spatial indexing
 }
 
 // MARK: - Tuple Element Aliases

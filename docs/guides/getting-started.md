@@ -127,9 +127,10 @@ struct User {
     #Index<User>([\email])
 
     // 主キー
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
 
     // フィールド
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -293,10 +294,10 @@ struct User {
 - `email`フィールドにインデックスを作成
 - 高速検索が可能
 
-### 4. @PrimaryKeyマクロ
+### 4. #PrimaryKeyマクロ
 
 ```swift
-@PrimaryKey var userID: Int64
+#PrimaryKey<User>([\.userID])
 ```
 
 - 主キーを指定
@@ -328,8 +329,9 @@ struct User {
     #Directory<User>("app", "users")
     #Index<User>([\email])
     #Index<User>([\age])  // 年齢インデックスを追加
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -348,8 +350,9 @@ let adults = try await store.query(User.self)
 struct User {
     #Directory<User>("app", "users")
     #Index<User>([\city, \age])  // 都市と年齢の複合インデックス
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var city: String
     var age: Int32
@@ -370,8 +373,9 @@ struct User {
     #Directory<User>("app", "users")
     #Index<User>([\email])
     #Unique<User>([\email])  // emailは一意
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
 }
@@ -385,7 +389,9 @@ struct User {
 @Recordable
 struct User {
     #Directory<User>("app", "users")
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 }
 
@@ -393,8 +399,9 @@ struct User {
 struct Order {
     #Directory<Order>("app", "orders")
     #Index<Order>([\userID])
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var userID: Int64  // 外部キー
     var total: Double
 }
@@ -418,7 +425,9 @@ struct TenantData {
         layer: .partition
     )
 
-    @PrimaryKey var dataID: Int64
+    #PrimaryKey<TenantData>([\.dataID])
+
+    var dataID: Int64
     var tenantID: String  // パーティションキー
     var content: String
 }

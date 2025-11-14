@@ -10,6 +10,8 @@ struct FDBRecordLayerMacrosPlugin: CompilerPlugin {
         DefaultMacro.self,
         IndexMacro.self,
         UniqueMacro.self,
+        VectorMacro.self,                 // @Vector
+        SpatialMacro.self,                // @Spatial
         DirectoryMacro.self,
         RelationshipMacro.self,
         AttributeMacro.self,

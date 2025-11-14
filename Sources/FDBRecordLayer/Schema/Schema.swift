@@ -115,7 +115,9 @@ public final class Schema: Sendable {
     /// @Recordable
     /// struct User {
     ///     #Index<User>([\\.email])  // ← Automatically collected
-    ///     @PrimaryKey var userID: Int64
+    ///     #PrimaryKey<User>([\.userID])
+    ///
+    ///     var userID: Int64
     ///     var email: String
     /// }
     ///
@@ -209,18 +211,52 @@ public final class Schema: Sendable {
         }
 
         // Determine index type and options
-        let indexType: IndexType = .value
-        let options = IndexOptions(unique: definition.unique)
+        let indexType: IndexType
+        let options: IndexOptions
+
+        switch definition.indexType {
+        case .value:
+            indexType = .value
+            options = IndexOptions(unique: definition.unique)
+        case .rank:
+            indexType = .rank
+            options = IndexOptions(unique: false)
+        case .count:
+            indexType = .count
+            options = IndexOptions(unique: false)
+        case .sum:
+            indexType = .sum
+            options = IndexOptions(unique: false)
+        case .min:
+            indexType = .min
+            options = IndexOptions(unique: false)
+        case .max:
+            indexType = .max
+            options = IndexOptions(unique: false)
+        case .vector(let vectorOpts):
+            indexType = .vector
+            options = IndexOptions(unique: false, vectorOptions: vectorOpts)
+        case .spatial(let spatialOpts):
+            indexType = .spatial
+            options = IndexOptions(unique: false, spatialOptions: spatialOpts)
+        case .version:
+            indexType = .version
+            options = IndexOptions(unique: false)
+        }
 
         // Create Index with recordTypes filter
         // OK: Use recordName parameter (from type.recordName) instead of definition.recordType
         // to avoid issues with "Self" or module-qualified names like "MyModule.User"
+        // Convert IndexDefinitionScope to IndexScope
+        let indexScope: IndexScope = definition.scope == .partition ? .partition : .global
+
         return Index(
             name: definition.name,
             type: indexType,
             rootExpression: keyExpression,
             recordTypes: Set([recordName]),  // OK: Use actual recordName
-            options: options
+            options: options,
+            scope: indexScope
         )
     }
 

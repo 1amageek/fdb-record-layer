@@ -18,8 +18,9 @@ import Foundation
 /// @Recordable
 /// struct User {
 ///     #Unique<User>([\.email])  // Email must be unique
+///     #PrimaryKey<User>([\.userID])
 ///
-///     @PrimaryKey var userID: Int64
+///     var userID: Int64
 ///     var email: String
 /// }
 /// ```

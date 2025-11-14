@@ -3,11 +3,11 @@ import FoundationDB
 
 public struct RankedSet<Element: Comparable & Sendable>: Sendable {
     private final class Node: @unchecked Sendable {
-        let value: Element
+        let value: Element?  // Optional for sentinel node
         var forward: [Node?]
         var span: [Int]
 
-        init(value: Element, level: Int) {
+        init(value: Element?, level: Int) {
             self.value = value
             self.forward = Array(repeating: nil, count: level)
             self.span = Array(repeating: 0, count: level)
@@ -26,7 +26,8 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
             self.maxLevel = maxLevel
             self.currentLevel = 1
             self.count = 0
-            self.head = Node(value: Element.self as! Element, level: maxLevel)
+            // Sentinel node with nil value (never accessed)
+            self.head = Node(value: nil, level: maxLevel)
         }
 
         func copy() -> Storage {
@@ -55,7 +56,7 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
         for level in stride(from: storage.currentLevel - 1, through: 0, by: -1) {
             rank[level] = (level == storage.currentLevel - 1) ? 0 : rank[level + 1]
 
-            while let next = current.forward[level], next.value < value {
+            while let next = current.forward[level], let nextValue = next.value, nextValue < value {
                 rank[level] += current.span[level]
                 current = next
             }
@@ -98,13 +99,13 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
         var rank = 0
 
         for level in stride(from: storage.currentLevel - 1, through: 0, by: -1) {
-            while let next = current.forward[level], next.value < value {
+            while let next = current.forward[level], let nextValue = next.value, nextValue < value {
                 rank += current.span[level]
                 current = next
             }
         }
 
-        if let next = current.forward[0], next.value == value {
+        if let next = current.forward[0], let nextValue = next.value, nextValue == value {
             return rank
         }
 
@@ -127,7 +128,11 @@ public struct RankedSet<Element: Comparable & Sendable>: Sendable {
             }
         }
 
-        return current.forward[0]?.value
+        // Flatten optional: Node? -> Element?
+        if let node = current.forward[0] {
+            return node.value
+        }
+        return nil
     }
 
     public var elementCount: Int {

@@ -175,12 +175,15 @@ public struct GenericAverageIndexMaintainer<Record: Sendable>: GenericIndexMaint
             return Int64(int)
         } else if let int32 = element as? Int32 {
             return Int64(int32)
-        } else if let double = element as? Double {
-            return Int64(double)
-        } else if let float = element as? Float {
-            return Int64(float)
+        } else if element is Double || element is Float {
+            throw RecordLayerError.invalidArgument(
+                "AVERAGE index does not support Double/Float fields. " +
+                "Use Int64 for exact arithmetic (e.g., store monetary values in cents)."
+            )
         } else {
-            throw RecordLayerError.internalError("Average index value must be numeric")
+            throw RecordLayerError.internalError(
+                "Average index value must be numeric integer type (Int64, Int, Int32), got: \(type(of: element))"
+            )
         }
     }
 }

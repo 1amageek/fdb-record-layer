@@ -401,6 +401,32 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
                 logger.error("Failed to create permuted index maintainer for '\(index.name)': \(error)")
                 throw RecordLayerError.internalError("Invalid permuted index configuration for '\(index.name)': \(error)")
             }
+
+        case .vector:
+            do {
+                let maintainer = try GenericVectorIndexMaintainer<Record>(
+                    index: index,
+                    subspace: indexSubspace,
+                    recordSubspace: recordSubspace
+                )
+                return AnyGenericIndexMaintainer(maintainer)
+            } catch {
+                logger.error("Failed to create vector index maintainer for '\(index.name)': \(error)")
+                throw RecordLayerError.internalError("Invalid vector index configuration for '\(index.name)': \(error)")
+            }
+
+        case .spatial:
+            do {
+                let maintainer = try GenericSpatialIndexMaintainer<Record>(
+                    index: index,
+                    subspace: indexSubspace,
+                    recordSubspace: recordSubspace
+                )
+                return AnyGenericIndexMaintainer(maintainer)
+            } catch {
+                logger.error("Failed to create spatial index maintainer for '\(index.name)': \(error)")
+                throw RecordLayerError.internalError("Invalid spatial index configuration for '\(index.name)': \(error)")
+            }
         }
     }
 }

@@ -14,10 +14,11 @@ struct SimpleUser {
     var email: String
 }
 
-/// Test variadic arguments
+/// Test multiple index definitions
 @Recordable
 struct VariadicUser {
-    #Index<VariadicUser>([\.email], [\.username])
+    #Index<VariadicUser>([\.email])
+    #Index<VariadicUser>([\.username])
     #PrimaryKey<VariadicUser>([\.id])
 
     

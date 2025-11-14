@@ -1,7 +1,7 @@
 # FoundationDB Record Layer Documentation
 
-**Last Updated:** 2025-01-15
-**Version:** 2.0 (Phase 2a Complete)
+**Last Updated:** 2025-01-13
+**Version:** 3.0 (Phase 3 Complete - Migration Manager)
 
 Welcome to the FoundationDB Record Layer documentation! This directory contains all technical documentation for the Swift implementation.
 
@@ -16,9 +16,8 @@ Welcome to the FoundationDB Record Layer documentation! This directory contains 
 
 ### 📊 Project Status
 
-- [STATUS.md](STATUS.md) - Current project status and features
-- [REMAINING_WORK.md](REMAINING_WORK.md) - Roadmap and planned features
-- [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md) - Detailed implementation plan
+- [../CLAUDE.md](../CLAUDE.md) - **Complete development guide** with current status, roadmap, and implementation details
+- [../README.md](../README.md) - Project overview with feature status
 
 ### 🏗️ Architecture
 
@@ -44,15 +43,24 @@ Detailed design specifications for major features:
 
 How-to guides for specific features:
 
+- [guides/getting-started.md](guides/getting-started.md) - Getting started with Record Layer
+- [guides/macro-usage-guide.md](guides/macro-usage-guide.md) - Using @Recordable macro API
 - [guides/partition-usage.md](guides/partition-usage.md) - Multi-tenant usage patterns
 - [guides/query-optimizer.md](guides/query-optimizer.md) - Query optimization guide
 - [guides/advanced-index-design.md](guides/advanced-index-design.md) - Index design patterns
 - [guides/versionstamp-usage.md](guides/versionstamp-usage.md) - Using version stamps
 - [guides/tuple-versionstamp.md](guides/tuple-versionstamp.md) - Tuple with versionstamp
+- [guides/best-practices.md](guides/best-practices.md) - Best practices and patterns
 
 ---
 
 ## 🎯 Documentation by Use Case
+
+### "I'm new to Record Layer"
+→ Start with [guides/getting-started.md](guides/getting-started.md)
+
+### "I want to use the macro API"
+→ Read [guides/macro-usage-guide.md](guides/macro-usage-guide.md) and [design/swift-macro-design.md](design/swift-macro-design.md)
 
 ### "I want to understand the system architecture"
 → Read [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -66,24 +74,23 @@ How-to guides for specific features:
 ### "I want to design indexes efficiently"
 → Read [guides/advanced-index-design.md](guides/advanced-index-design.md)
 
-### "I want to understand the macro API"
-→ Read [design/swift-macro-design.md](design/swift-macro-design.md)
+### "I want to follow best practices"
+→ Read [guides/best-practices.md](guides/best-practices.md)
 
 ### "I want to see examples"
 → Browse [../Examples/](../Examples/)
 
 ### "I want to know what's coming next"
-→ Read [REMAINING_WORK.md](REMAINING_WORK.md)
+→ Read [../CLAUDE.md](../CLAUDE.md) - See roadmap section at the end
 
 ---
 
 ## 📦 Document Categories
 
-### Status & Planning (3 docs)
+### Status & Planning
 ```
-STATUS.md                        - Project status
-REMAINING_WORK.md                - Roadmap
-IMPLEMENTATION_ROADMAP.md        - Implementation plan
+../CLAUDE.md                     - Complete development guide (status, roadmap, implementation)
+../README.md                     - Project overview
 ```
 
 ### Architecture (1 doc)
@@ -102,14 +109,29 @@ design/
 └── metadata-evolution-validator.md - Schema evolution
 ```
 
-### Guides (5 docs)
+### Guides (8 docs)
 ```
 guides/
+├── getting-started.md           - Getting started guide
+├── macro-usage-guide.md         - Macro API guide
 ├── partition-usage.md           - Multi-tenant usage
 ├── query-optimizer.md           - Query optimization
 ├── advanced-index-design.md     - Index design
 ├── versionstamp-usage.md        - Version stamps
-└── tuple-versionstamp.md        - Tuple + versionstamp
+├── tuple-versionstamp.md        - Tuple + versionstamp
+└── best-practices.md            - Best practices
+```
+
+### Reference (8 docs)
+```
+api-reference.md                 - API reference documentation
+design-principles.md             - Design principles and philosophy
+index.md                         - Documentation index
+JAVA_COMPARISON.md               - Comparison with Java Record Layer
+storage-design.md                - Storage layer design
+swift-query-features-design.md   - Query features design
+SQL_QUERY_DESIGN.md              - Future SQL support design
+TEST_ISOLATION_GUIDE.md          - Test isolation patterns
 ```
 
 ---
@@ -182,4 +204,4 @@ When adding or updating documentation:
 ---
 
 **Maintained by:** Claude Code
-**Last Major Update:** 2025-01-15 (Phase 2a Documentation Reorganization)
+**Last Major Update:** 2025-01-13 (Phase 3 Complete - Documentation Cleanup)

@@ -1,9 +1,9 @@
 # FDB Record Layer Swift Macro Design
 
 **Version**: 2.0
-**Date**: 2025-01-15
-**Last Updated**: 2025-01-15
-**Status**: ✅ Production-Ready (Core Features Complete)
+**Date**: 2025-01-13
+**Last Updated**: 2025-01-13
+**Status**: ✅ Production-Ready (All Macros Complete)
 
 ---
 
@@ -23,18 +23,23 @@ FDB Record Layer の Swift 実装に、SwiftData にインスパイアされた�
 
 **基盤APIを先に確定**: マクロが生成するコードは、安定した基盤API（Recordable、RecordAccess、RecordStore、IndexMaintainer）に依存します。これらのAPIを先に確定させることで、マクロ実装の手戻りを防ぎます。
 
-### 実装状況（2025-01-15現在）
+### 実装状況（2025-01-13現在）
 
-| フェーズ | 実装状況 | 進捗 | 備考 |
-|----------|----------|------|------|
-| **Phase 0: 基盤API** | ✅ 完了 | 100% | すべての基盤API実装済み |
-| **Phase 1: コアマクロ** | ✅ 完了 | 100% | @Recordable, @PrimaryKey, @Transient, @Default, @Attribute 実装済み |
-| **Phase 2: インデックスマクロ** | ✅ 完了 | 100% | #Index, #Unique 実装済み |
-| **Phase 3: リレーションシップ** | ✅ 完了 | 100% | @Relationship 実装済み |
-| **Phase 4: ディレクトリレイヤー** | ✅ 完了 | 100% | #Directory 実装済み |
-| **全体進捗** | ✅ 完了 | **100%** | 本番環境で使用可能 |
+| マクロ | 種類 | 実装状況 | 備考 |
+|--------|------|----------|------|
+| **@Recordable** | MemberMacro, ExtensionMacro | ✅ 完了 | Protobufシリアライズ、store()メソッド生成 |
+| **#PrimaryKey** | DeclarationMacro | ✅ 完了 | 単一・複合主キー対応 |
+| **@Transient** | PeerMacro | ✅ 完了 | 永続化除外 |
+| **@Default** | PeerMacro | ✅ 完了 | デフォルト値、スキーマ進化対応 |
+| **#Index** | DeclarationMacro | ✅ 完了 | 単一・複合インデックス、名前付き対応 |
+| **#Unique** | DeclarationMacro | ✅ 完了 | ユニーク制約 |
+| **#Directory** | DeclarationMacro | ✅ 完了 | マルチテナント、パーティション対応 |
+| **@Relationship** | PeerMacro | ✅ 完了 | リレーションシップ定義、削除ルール |
+| **@Attribute** | PeerMacro | ✅ 完了 | フィールドメタデータ、リネーム追跡 |
 
-**テストステータス**: ✅ 199テスト全合格
+**全体進捗**: ✅ **100%完了** - すべてのマクロが本番環境で使用可能
+
+**テストステータス**: ✅ マクロテスト全合格（統合テストに含まれる）
 
 **対応型**:
 - ✅ プリミティブ型（Int32, Int64, UInt32, UInt64, Bool, String, Data, Float, Double）
@@ -61,7 +66,9 @@ struct User {
     #Index<User>([\.createdAt])
     #Index<User>([\.country, \.city], name: "location_index")
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var name: String
     var country: String
@@ -78,7 +85,9 @@ struct Order {
     #Index<Order>([\.userID])
     #Index<Order>([\.createdAt])
 
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
     var userID: Int64
     var productName: String
     var price: Decimal
@@ -165,7 +174,9 @@ try await store.transaction { transaction in
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Relationship(deleteRule: .cascade, inverse: \Order.userID)
@@ -174,7 +185,9 @@ struct User {
 
 @Recordable
 struct Order {
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
 
     @Relationship(inverse: \User.orders)
     var userID: Int64
@@ -199,14 +212,18 @@ try await store.delete(User.self, by: 1)  // Order 100 も削除される
 // Version 1
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var username: String
 }
 
 // Version 2: フィールド名変更
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
 
     @Attribute(originalName: "username")
     var name: String  // フィールド名変更
@@ -645,7 +662,9 @@ public final class QueryBuilder<T: Recordable> {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var name: String
 
@@ -726,7 +745,9 @@ struct User {
     #Index<User>([\.email], unique: true)
     #Index<User>([\.country, \.city], name: "location_index")
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var country: String
     var city: String
@@ -778,7 +799,9 @@ extension User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Relationship(deleteRule: .cascade, inverse: \Order.userID)
@@ -787,7 +810,9 @@ struct User {
 
 @Recordable
 struct Order {
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
 
     @Relationship(inverse: \User.orders)
     var userID: Int64

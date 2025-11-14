@@ -147,33 +147,49 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
             throw RecordLayerError.internalError("Record does not conform to Recordable")
         }
 
-        if newRecord != nil {
-            // Insert: create new version entry using FDB versionstamp
+        if let _ = newRecord {
+            // INSERT/UPDATE: create new version entry using FDB versionstamp
             var key = subspace.pack(primaryKey)
             let versionPosition = key.count
 
-            // Validate position fits in UInt16 range (FDB requires 2-byte offset)
-            // SET_VERSIONSTAMPED_KEY expects a 2-byte little-endian offset
-            guard versionPosition <= Int(UInt16.max) - 10 else {
-                throw RecordLayerError.internalError("Version key too long (max \(UInt16.max - 10) bytes)")
+            // Validate position fits in UInt32 range (FDB requires 4-byte offset)
+            // SET_VERSIONSTAMPED_KEY expects a 4-byte little-endian offset
+            guard versionPosition <= Int(UInt32.max) - 10 else {
+                throw RecordLayerError.internalError("Version key too long (max \(UInt32.max - 10) bytes)")
             }
 
             // Append 10-byte versionstamp placeholder
             key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
 
-            // Append 2-byte position (little-endian) as required by FDB
-            let position16 = UInt16(versionPosition)
-            let positionBytes = withUnsafeBytes(of: position16.littleEndian) { Array($0) }
+            // Append 4-byte position (little-endian) as required by FDB
+            let position32 = UInt32(versionPosition)
+            let positionBytes = withUnsafeBytes(of: position32.littleEndian) { Array($0) }
             key.append(contentsOf: positionBytes)
 
-            // Use atomicOp with setVersionstampedKey
-            // FDB will read the last 2 bytes as the offset, replace 10 bytes at that offset
-            // with the versionstamp, and remove the last 2 bytes
-            transaction.atomicOp(key: key, param: FDB.Bytes(), mutationType: .setVersionstampedKey)
-        }
+            // Store current timestamp in value for time-based retention
+            let timestamp = Date().timeIntervalSince1970
+            let timestampBytes = withUnsafeBytes(of: timestamp.bitPattern) { Array($0) }
 
-        // Cleanup old versions based on strategy
-        try await cleanupOldVersions(primaryKey: primaryKey, transaction: transaction)
+            // Use atomicOp with setVersionstampedKey
+            // FDB will read the last 4 bytes as the offset, replace 10 bytes at that offset
+            // with the versionstamp, and remove the last 4 bytes
+            transaction.atomicOp(key: key, param: timestampBytes, mutationType: .setVersionstampedKey)
+
+            // Cleanup old versions based on strategy
+            try await cleanupOldVersions(primaryKey: primaryKey, transaction: transaction)
+        } else if oldRecord != nil {
+            // DELETE: remove all version entries for this record
+            let allVersions = try await getAllVersions(
+                primaryKey: primaryKey,
+                transaction: transaction
+            )
+
+            for (version, _) in allVersions {
+                var key = subspace.pack(primaryKey)
+                key.append(contentsOf: version.bytes)
+                transaction.clear(key: key)
+            }
+        }
     }
 
     public func scanRecord(
@@ -199,8 +215,12 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         let positionBytes = withUnsafeBytes(of: position16.littleEndian) { Array($0) }
         key.append(contentsOf: positionBytes)
 
+        // Store current timestamp in value for time-based retention
+        let timestamp = Date().timeIntervalSince1970
+        let timestampBytes = withUnsafeBytes(of: timestamp.bitPattern) { Array($0) }
+
         // Use atomicOp with setVersionstampedKey
-        transaction.atomicOp(key: key, param: FDB.Bytes(), mutationType: .setVersionstampedKey)
+        transaction.atomicOp(key: key, param: timestampBytes, mutationType: .setVersionstampedKey)
     }
 
     // MARK: - Version Operations
@@ -257,11 +277,11 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         return Version(bytes: versionBytes)
     }
 
-    /// Get all versions for a record
+    /// Get all versions for a record with timestamps
     public func getAllVersions(
         primaryKey: Tuple,
         transaction: any TransactionProtocol
-    ) async throws -> [Version] {
+    ) async throws -> [(version: Version, timestamp: TimeInterval)] {
         let beginKey = subspace.pack(primaryKey)
         let endKey = beginKey + [0xFF]
 
@@ -273,12 +293,24 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
             snapshot: true
         )
 
-        var versions: [Version] = []
-        for try await (key, _) in sequence {
+        var versions: [(Version, TimeInterval)] = []
+        for try await (key, value) in sequence {
             // Extract 10-byte versionstamp from end of key
             guard key.count >= 10 else { continue }
             let versionBytes = Array(key.suffix(10))
-            versions.append(Version(bytes: versionBytes))
+            let version = Version(bytes: versionBytes)
+
+            // Extract timestamp from value (8 bytes for Double.bitPattern)
+            let timestamp: TimeInterval
+            if value.count >= 8 {
+                let bitPattern = value.withUnsafeBytes { $0.load(as: UInt64.self) }
+                timestamp = TimeInterval(bitPattern: bitPattern)
+            } else {
+                // Legacy entries without timestamps: use 0 (will be deleted by time-based retention)
+                timestamp = 0
+            }
+
+            versions.append((version, timestamp))
         }
 
         return versions
@@ -328,7 +360,7 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         // Keep only last N versions, delete older ones
         let toDelete = allVersions.dropLast(count)
 
-        for version in toDelete {
+        for (version, _) in toDelete {
             var key = subspace.pack(primaryKey)
             key.append(contentsOf: version.bytes)
             transaction.clear(key: key)
@@ -341,15 +373,21 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Calculate cutoff time
-        _ = Date().timeIntervalSince1970 - duration
+        let cutoffTime = Date().timeIntervalSince1970 - duration
 
         let allVersions = try await getAllVersions(
             primaryKey: primaryKey,
             transaction: transaction
         )
 
-        // Delete versions older than duration
-        for version in allVersions.dropLast(1) {
+        // Delete versions older than duration, but always keep at least one version
+        let versionsToDelete = allVersions.filter { $0.timestamp < cutoffTime }
+
+        // If all versions are old, keep the most recent one
+        let shouldKeepLast = versionsToDelete.count == allVersions.count
+        let toDelete = shouldKeepLast ? versionsToDelete.dropLast() : versionsToDelete
+
+        for (version, _) in toDelete {
             var key = subspace.pack(primaryKey)
             key.append(contentsOf: version.bytes)
             transaction.clear(key: key)

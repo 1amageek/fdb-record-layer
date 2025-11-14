@@ -1,6 +1,6 @@
 # Directory Layer Design
 
-**Last Updated:** 2025-01-15
+**Last Updated:** 2025-01-13
 **Status:** ✅ Design Complete
 **Phase:** 2b Implementation
 
@@ -329,9 +329,10 @@ KeyPath があっても partition を作成せず、動的パスとして扱い�
 ```swift
 @Recordable
 struct User {
-    #Directory<User>(["app", "users"])
+    #Directory<User>("app", "users")
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
 }
 ```
@@ -381,11 +382,14 @@ extension User {
 @Recordable
 struct Order {
     #Directory<Order>(
-        ["tenants", \.accountID, "orders"],
+        "tenants",
+        Field(\Order.accountID),
+        "orders",
         layer: .partition
     )
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var accountID: String
 }
 ```
@@ -457,11 +461,16 @@ try await orderStore.save(order)
 @Recordable
 struct Message {
     #Directory<Message>(
-        ["tenants", \.accountID, "channels", \.channelID, "messages"],
+        "tenants",
+        Field(\Message.accountID),
+        "channels",
+        Field(\Message.channelID),
+        "messages",
         layer: .partition
     )
+    #PrimaryKey<Message>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    var messageID: Int64
     var accountID: String
     var channelID: String
 }
@@ -616,9 +625,10 @@ import FDBRecordLayer
 // 1. シンプルなディレクトリ
 @Recordable
 struct User {
-    #Directory<User>(["app", "users"])
+    #Directory<User>("app", "users")
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
 }
 
@@ -626,22 +636,26 @@ struct User {
 @Recordable
 struct Product {
     #Directory<Product>(
-        ["app", "products"],
+        "app",
+        "products",
         layer: .recordStore
     )
+    #PrimaryKey<Product>([\.productID])
 
-    @PrimaryKey var productID: Int64
+    var productID: Int64
 }
 
 // 3. カスタム layer（バージョン管理）
 @Recordable
 struct LegacyData {
     #Directory<LegacyData>(
-        ["legacy", "data"],
+        "legacy",
+        "data",
         layer: .recordStoreVersion(1)
     )
+    #PrimaryKey<LegacyData>([\.id])
 
-    @PrimaryKey var id: Int64
+    var id: Int64
 }
 ```
 
@@ -652,11 +666,14 @@ struct LegacyData {
 @Recordable
 struct Order {
     #Directory<Order>(
-        ["tenants", \.accountID, "orders"],
+        "tenants",
+        Field(\Order.accountID),
+        "orders",
         layer: .partition
     )
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var accountID: String
     var amount: Double
 }
@@ -682,11 +699,16 @@ try await database.directory.remove(["tenants", "account-123"])
 @Recordable
 struct Message {
     #Directory<Message>(
-        ["tenants", \.accountID, "channels", \.channelID, "messages"],
+        "tenants",
+        Field(\Message.accountID),
+        "channels",
+        Field(\Message.channelID),
+        "messages",
         layer: .partition
     )
+    #PrimaryKey<Message>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    var messageID: Int64
     var accountID: String
     var channelID: String
     var content: String
@@ -708,11 +730,13 @@ let messageStore = try await Message.store(
 @Recordable
 struct Document {
     #Directory<Document>(
-        ["app", "documents"],
+        "app",
+        "documents",
         layer: .luceneIndex
     )
+    #PrimaryKey<Document>([\.documentID])
 
-    @PrimaryKey var documentID: Int64
+    var documentID: Int64
     var content: String
 }
 
@@ -720,11 +744,13 @@ struct Document {
 @Recordable
 struct Event {
     #Directory<Event>(
-        ["app", "events"],
+        "app",
+        "events",
         layer: .timeSeries
     )
+    #PrimaryKey<Event>([\.eventID])
 
-    @PrimaryKey var eventID: Int64
+    var eventID: Int64
     var timestamp: Date
 }
 
@@ -732,11 +758,13 @@ struct Event {
 @Recordable
 struct CustomData {
     #Directory<CustomData>(
-        ["app", "custom"],
+        "app",
+        "custom",
         layer: "my_custom_format_v2"
     )
+    #PrimaryKey<CustomData>([\.id])
 
-    @PrimaryKey var id: Int64
+    var id: Int64
 }
 ```
 

@@ -17,8 +17,9 @@ import Foundation
 /// struct User {
 ///     #Index<User>([\.email])
 ///     #Index<User>([\.country, \.city], name: "location_index")
+///     #PrimaryKey<User>([\.userID])
 ///
-///     @PrimaryKey var userID: Int64
+///     var userID: Int64
 ///     var email: String
 ///     var country: String
 ///     var city: String

@@ -161,7 +161,9 @@ struct User {
     #Unique<User>([\.email])
     #Index<User>([\.createdAt])
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
     var createdAt: Date

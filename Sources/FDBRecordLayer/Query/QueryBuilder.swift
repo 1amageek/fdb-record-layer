@@ -63,6 +63,7 @@ public final class QueryBuilder<T: Recordable> {
     private let schema: Schema
     private let database: any DatabaseProtocol
     private let subspace: Subspace
+    private let rootSubspace: Subspace?
     private let statisticsManager: any StatisticsManagerProtocol
     private var filters: [any TypedQueryComponent<T>] = []
     internal var sortOrders: [(field: String, direction: SortDirection)] = []
@@ -75,6 +76,7 @@ public final class QueryBuilder<T: Recordable> {
         schema: Schema,
         database: any DatabaseProtocol,
         subspace: Subspace,
+        rootSubspace: Subspace?,
         statisticsManager: any StatisticsManagerProtocol
     ) {
         self.store = store
@@ -82,6 +84,7 @@ public final class QueryBuilder<T: Recordable> {
         self.schema = schema
         self.database = database
         self.subspace = subspace
+        self.rootSubspace = rootSubspace
         self.statisticsManager = statisticsManager
     }
 
@@ -576,5 +579,319 @@ public final class QueryBuilder<T: Recordable> {
             return concatExpr.children.flatMap { extractFieldNames(from: $0) }
         }
         return []
+    }
+
+    /// Get the base index subspace based on index scope
+    ///
+    /// - For partition-local indexes: returns subspace.subspace("I")
+    /// - For global indexes: returns rootSubspace.subspace("G") if rootSubspace exists
+    ///
+    /// - Parameter index: The index definition
+    /// - Returns: Base index subspace (caller should add index.name)
+    /// - Throws: RecordLayerError.invalidArgument if global index requires rootSubspace but it's nil
+    private func baseIndexSubspace(for index: Index) throws -> Subspace {
+        switch index.scope {
+        case .partition:
+            // Partition-local index: use "I" subspace within current partition
+            return subspace.subspace("I")
+
+        case .global:
+            // Global index: use "G" subspace under root
+            guard let root = rootSubspace else {
+                throw RecordLayerError.invalidArgument(
+                    "Global index '\(index.name)' requires rootSubspace, but QueryBuilder was created without it. " +
+                    "Ensure RecordStore was initialized with a rootSubspace for global index support."
+                )
+            }
+            return root.subspace("G")
+        }
+    }
+
+    // MARK: - Vector Search
+
+    /// Perform k-nearest neighbors search using a vector index
+    ///
+    /// Searches for the k most similar records based on vector distance.
+    ///
+    /// **Distance Metrics**:
+    /// - Cosine: `1 - cosine_similarity` (range: [0, 2], 0 = identical)
+    /// - L2: Euclidean distance (range: [0, ∞))
+    /// - Inner Product: `-dot_product` (range: (-∞, ∞))
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let results = try await store.query(Product.self)
+    ///     .nearestNeighbors(k: 10, to: queryEmbedding, using: "product_embedding_vector")
+    ///     .filter(\.category == "Electronics")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - k: Number of nearest neighbors to return (must be > 0)
+    ///   - queryVector: Query vector conforming to VectorRepresentable
+    ///   - vectorIndex: Index name
+    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
+    /// - Throws: RecordLayerError.invalidArgument if k <= 0 or dimensions mismatch
+    /// - Returns: TypedVectorQuery for further refinement
+    public func nearestNeighbors<V: VectorRepresentable>(
+        k: Int,
+        to queryVector: V,
+        using vectorIndex: String
+    ) throws -> TypedVectorQuery<T> {
+        // Validate k
+        guard k > 0 else {
+            throw RecordLayerError.invalidArgument("k must be positive, got: \(k)")
+        }
+
+        // Find index
+        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == vectorIndex }) else {
+            throw RecordLayerError.indexNotFound(
+                "Vector index '\(vectorIndex)' not found in schema for record type '\(T.recordName)'"
+            )
+        }
+
+        // Validate index type
+        guard index.type == .vector else {
+            throw RecordLayerError.invalidArgument(
+                "Index '\(vectorIndex)' is not a vector index (type: \(index.type))"
+            )
+        }
+
+        // Convert to Float32 array
+        let queryVectorArray = queryVector.toFloatArray()
+
+        // Validate dimensions
+        guard let vectorOptions = index.options.vectorOptions else {
+            throw RecordLayerError.internalError(
+                "Vector index '\(vectorIndex)' missing vectorOptions"
+            )
+        }
+
+        guard queryVectorArray.count == vectorOptions.dimensions else {
+            throw RecordLayerError.invalidArgument(
+                "Query vector dimension mismatch. Expected: \(vectorOptions.dimensions), Got: \(queryVectorArray.count)"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedVectorQuery(
+            k: k,
+            queryVector: queryVectorArray,
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
+    /// Overload for [Float32] directly
+    ///
+    /// Convenience method for passing raw Float32 arrays without wrapping in VectorRepresentable.
+    ///
+    /// - Parameters:
+    ///   - k: Number of nearest neighbors to return
+    ///   - queryVector: Query vector as Float32 array
+    ///   - vectorIndex: Index name
+    /// - Returns: TypedVectorQuery for further refinement
+    public func nearestNeighbors(
+        k: Int,
+        to queryVector: [Float32],
+        using vectorIndex: String
+    ) throws -> TypedVectorQuery<T> {
+        // Wrap in VectorWrapper to reuse VectorRepresentable logic
+        return try nearestNeighbors(
+            k: k,
+            to: VectorWrapper(vector: queryVector),
+            using: vectorIndex
+        )
+    }
+
+    // MARK: - Spatial Search
+
+    /// Search within a 2D geographic bounding box
+    ///
+    /// **Coordinate System**:
+    /// - Geographic (.geo): latitude ∈ [-90, 90], longitude ∈ [-180, 180]
+    /// - Cartesian (.cartesian): application-defined range
+    ///
+    /// **Note**: Results are automatically filtered to remove false positives from Z-order approximation.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let restaurants = try await store.query(Restaurant.self)
+    ///     .withinBoundingBox(
+    ///         minLat: 35.6, minLon: 139.6,
+    ///         maxLat: 35.7, maxLon: 139.8,
+    ///         using: "restaurant_location_spatial"
+    ///     )
+    ///     .filter(\.rating >= 4.0)
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - minLat: Minimum latitude (or y for Cartesian)
+    ///   - minLon: Minimum longitude (or x for Cartesian)
+    ///   - maxLat: Maximum latitude (or y for Cartesian)
+    ///   - maxLon: Maximum longitude (or x for Cartesian)
+    ///   - spatialIndex: Index name
+    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
+    /// - Throws: RecordLayerError.invalidArgument if index is not 2D spatial
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinBoundingBox(
+        minLat: Double,
+        minLon: Double,
+        maxLat: Double,
+        maxLon: Double,
+        using spatialIndex: String
+    ) throws -> TypedSpatialQuery<T> {
+        // Find index
+        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == spatialIndex }) else {
+            throw RecordLayerError.indexNotFound(
+                "Spatial index '\(spatialIndex)' not found in schema for record type '\(T.recordName)'"
+            )
+        }
+
+        // Validate index type
+        guard index.type == .spatial else {
+            throw RecordLayerError.invalidArgument(
+                "Index '\(spatialIndex)' is not a spatial index (type: \(index.type))"
+            )
+        }
+
+        // Validate 2D
+        guard let spatialOptions = index.options.spatialOptions else {
+            throw RecordLayerError.internalError(
+                "Spatial index '\(spatialIndex)' missing spatialOptions"
+            )
+        }
+
+        let is2D = spatialOptions.type == .geo || spatialOptions.type == .cartesian
+        guard is2D else {
+            throw RecordLayerError.invalidArgument(
+                "withinBoundingBox requires 2D spatial index (geo or cartesian), got: \(spatialOptions.type)"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            boundingBox: .box2D(minLat: minLat, minLon: minLon, maxLat: maxLat, maxLon: maxLon),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
+    /// Search within a 3D bounding box (latitude, longitude, altitude)
+    ///
+    /// Similar to withinBoundingBox but for 3D coordinates.
+    ///
+    /// - Parameters:
+    ///   - minLat: Minimum latitude
+    ///   - minLon: Minimum longitude
+    ///   - minAlt: Minimum altitude
+    ///   - maxLat: Maximum latitude
+    ///   - maxLon: Maximum longitude
+    ///   - maxAlt: Maximum altitude
+    ///   - spatialIndex: Index name
+    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
+    /// - Throws: RecordLayerError.invalidArgument if index is not 3D spatial
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinBoundingBox3D(
+        minLat: Double,
+        minLon: Double,
+        minAlt: Double,
+        maxLat: Double,
+        maxLon: Double,
+        maxAlt: Double,
+        using spatialIndex: String
+    ) throws -> TypedSpatialQuery<T> {
+        // Find index
+        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == spatialIndex }) else {
+            throw RecordLayerError.indexNotFound("Spatial index '\(spatialIndex)' not found")
+        }
+
+        // Validate index type
+        guard index.type == .spatial else {
+            throw RecordLayerError.invalidArgument("Index '\(spatialIndex)' is not a spatial index")
+        }
+
+        // Validate 3D
+        guard let spatialOptions = index.options.spatialOptions else {
+            throw RecordLayerError.internalError("Spatial index missing spatialOptions")
+        }
+
+        let is3D = spatialOptions.type == .geo3D || spatialOptions.type == .cartesian3D
+        guard is3D else {
+            throw RecordLayerError.invalidArgument(
+                "withinBoundingBox3D requires 3D spatial index, got: \(spatialOptions.type)"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            boundingBox: .box3D(minLat: minLat, minLon: minLon, minAlt: minAlt, maxLat: maxLat, maxLon: maxLon, maxAlt: maxAlt),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
+    /// Search within radius (convenience method)
+    ///
+    /// Converts radius search to bounding box:
+    /// - minLat = centerLat - radius
+    /// - maxLat = centerLat + radius
+    /// - minLon = centerLon - radius
+    /// - maxLon = centerLon + radius
+    ///
+    /// **Note**: This is an approximation and may include points slightly outside the circular radius.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let nearby = try await store.query(Restaurant.self)
+    ///     .withinRadius(
+    ///         centerLat: 35.6812, centerLon: 139.7671,
+    ///         radius: 0.01,  // ~1km
+    ///         using: "restaurant_location_spatial"
+    ///     )
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - centerLat: Center latitude
+    ///   - centerLon: Center longitude
+    ///   - radius: Radius in coordinate units
+    ///   - spatialIndex: Index name
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinRadius(
+        centerLat: Double,
+        centerLon: Double,
+        radius: Double,
+        using spatialIndex: String
+    ) throws -> TypedSpatialQuery<T> {
+        return try withinBoundingBox(
+            minLat: centerLat - radius,
+            minLon: centerLon - radius,
+            maxLat: centerLat + radius,
+            maxLon: centerLon + radius,
+            using: spatialIndex
+        )
     }
 }

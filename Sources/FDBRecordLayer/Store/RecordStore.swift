@@ -235,6 +235,10 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ///   - context: Transaction context
     /// - Throws: RecordLayerError if save fails
     internal func saveInternal(_ record: Record, context: RecordContext) async throws {
+        // Validate @Vector and @Spatial fields before saving
+        try record.validateVectorFields()
+        try record.validateSpatialFields()
+
         let recordAccess = GenericRecordAccess<Record>()
         let bytes = try recordAccess.serialize(record)
         let primaryKey = recordAccess.extractPrimaryKey(from: record)
@@ -248,9 +252,11 @@ public final class RecordStore<Record: Recordable>: Sendable {
         // @Recordable
         // #Subspace([\.tenantID, \.region])
         // struct Order {
+        //     #PrimaryKey<Order>([\.orderID])
+        //
         //     var tenantID: String
         //     var region: String
-        //     @PrimaryKey var orderID: Int64
+        //     var orderID: Int64
         // }
         // ```
         //
@@ -495,6 +501,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
             schema: schema,
             database: database,
             subspace: subspace,
+            rootSubspace: rootSubspace,
             statisticsManager: statisticsManager
         )
     }
@@ -592,7 +599,34 @@ public final class RecordStore<Record: Recordable>: Sendable {
             )
         }
 
-        // 2. Verify index is in readable state
+        // 2. Verify score type matches index scoreTypeName
+        let scoreTypeName = targetIndex.options.scoreTypeName ?? "Int64"
+
+        let scoreTypeMatches: Bool
+        switch scoreTypeName {
+        case "Int64":
+            scoreTypeMatches = score is Int64
+        case "Double":
+            scoreTypeMatches = score is Double
+        case "Float":
+            scoreTypeMatches = score is Float
+        case "Int":
+            scoreTypeMatches = score is Int
+        default:
+            throw RecordLayerError.invalidArgument(
+                "Index '\(indexName)' has unsupported scoreTypeName '\(scoreTypeName)'. " +
+                "Supported types: Int64, Double, Float, Int"
+            )
+        }
+
+        guard scoreTypeMatches else {
+            throw RecordLayerError.invalidArgument(
+                "Score type mismatch for index '\(indexName)': " +
+                "provided score is \(type(of: score)), but index expects '\(scoreTypeName)'"
+            )
+        }
+
+        // 3. Verify index is in readable state
         let indexStateManager = IndexStateManager(database: database, subspace: subspace)
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
@@ -604,7 +638,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
             throw RecordLayerError.indexNotReady("RANK index '\(targetIndex.name)' is in '\(state)' state")
         }
 
-        // 3. Convert primaryKey to Tuple
+        // 4. Convert primaryKey to Tuple
         let primaryKeyTuple: Tuple
         if let tuple = primaryKey as? Tuple {
             primaryKeyTuple = tuple
@@ -612,7 +646,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
             primaryKeyTuple = Tuple(primaryKey)
         }
 
-        // 4. Delegate to dynamic rank helper for O(log n) rank calculation
+        // 5. Delegate to dynamic rank helper for O(log n) rank calculation
         let indexNameSubspace = indexSubspace.subspace(targetIndex.name)
         return try await getRankDynamic(
             recordType: Record.self,
@@ -696,7 +730,34 @@ public final class RecordStore<Record: Recordable>: Sendable {
             targetIndex = index
         }
 
-        // 2. Verify index is in readable state
+        // 2. Verify score type matches index scoreTypeName
+        let scoreTypeName = targetIndex.options.scoreTypeName ?? "Int64"
+
+        let scoreTypeMatches: Bool
+        switch scoreTypeName {
+        case "Int64":
+            scoreTypeMatches = score is Int64
+        case "Double":
+            scoreTypeMatches = score is Double
+        case "Float":
+            scoreTypeMatches = score is Float
+        case "Int":
+            scoreTypeMatches = score is Int
+        default:
+            throw RecordLayerError.invalidArgument(
+                "Index '\(targetIndex.name)' has unsupported scoreTypeName '\(scoreTypeName)'. " +
+                "Supported types: Int64, Double, Float, Int"
+            )
+        }
+
+        guard scoreTypeMatches else {
+            throw RecordLayerError.invalidArgument(
+                "Score type mismatch for index '\(targetIndex.name)': " +
+                "provided score is \(type(of: score)), but index expects '\(scoreTypeName)'"
+            )
+        }
+
+        // 3. Verify index is in readable state
         let indexStateManager = IndexStateManager(database: database, subspace: subspace)
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
@@ -708,7 +769,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
             throw RecordLayerError.indexNotReady("RANK index '\(targetIndex.name)' is in '\(state)' state")
         }
 
-        // 3. Extract grouping values from record (if grouped index)
+        // 4. Extract grouping values from record (if grouped index)
         // ✅ BUG FIX #4: Now throws if grouping fields contain unsupported expression types
         let groupingFieldNames = try Self.extractGroupingFields(from: targetIndex.rootExpression)
         let recordAccess = GenericRecordAccess<Record>()
@@ -722,10 +783,10 @@ public final class RecordStore<Record: Recordable>: Sendable {
             groupingValues.append(firstValue)
         }
 
-        // 4. Extract primary key from record
+        // 5. Extract primary key from record
         let primaryKeyTuple = recordAccess.extractPrimaryKey(from: record)
 
-        // 5. Delegate to dynamic rank helper for O(log n) rank calculation
+        // 6. Delegate to dynamic rank helper for O(log n) rank calculation
         let indexNameSubspace = indexSubspace.subspace(targetIndex.name)
         return try await getRankDynamic(
             recordType: Record.self,

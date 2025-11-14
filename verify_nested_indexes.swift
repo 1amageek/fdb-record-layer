@@ -4,7 +4,9 @@ import FDBRecordLayer
 // Simple test models
 @Recordable
 struct TestAddress {
-    @PrimaryKey var id: Int64
+    #PrimaryKey<TestAddress>([\.id])
+
+    var id: Int64
     var city: String
     var country: String
 }
@@ -12,8 +14,9 @@ struct TestAddress {
 @Recordable
 struct TestPerson {
     #Index<TestPerson>([\\.address.city])
+    #PrimaryKey<TestPerson>([\.personID])
 
-    @PrimaryKey var personID: Int64
+    var personID: Int64
     var name: String
     var address: TestAddress
 }

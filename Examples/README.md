@@ -48,8 +48,9 @@ swift run SimpleExample
 struct User {
     #Directory<User>("app", "users", layer: .recordStore)
     #Index<User>([\email])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -98,8 +99,9 @@ swift run MultiTypeExample
 struct User {
     #Directory<User>("app", "users")
     #Unique<User>([\email])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
 }
@@ -108,8 +110,9 @@ struct User {
 struct Order {
     #Directory<Order>("tenants", Field(\Order.accountID), "orders", layer: .partition)
     #Index<Order>([\userID])
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var accountID: String  // パーティションキー
     var userID: Int64      // 外部キー
     var total: Double
@@ -162,8 +165,9 @@ struct Message {
     )
 
     #Index<Message>([\authorID])
+    #PrimaryKey<Message>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    var messageID: Int64
     var tenantID: String   // 第1パーティションキー
     var channelID: String  // 第2パーティションキー
     var content: String
@@ -251,7 +255,7 @@ Key Features of Macro API:
   • @Recordable - No manual Protobuf files needed
   • #Directory - Type-safe directory paths
   • #Index - Declarative index definitions
-  • @PrimaryKey - Explicit primary key marking
+  • #PrimaryKey - Explicit primary key marking
   • @Default - Default value support
   • Type-safe queries with KeyPath-based filtering
   • Automatic store() method generation
@@ -280,7 +284,9 @@ Examples/
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 }
 ```
@@ -319,7 +325,8 @@ struct User {
 #Index<User>([\city, \age])
 
 // 複数のインデックス
-#Index<User>([\email], [\username])
+#Index<User>([\email])
+#Index<User>([\username])
 ```
 
 ### 4. #Uniqueマクロ
@@ -330,16 +337,15 @@ struct User {
 #Unique<User>([\email])  // emailは一意
 ```
 
-### 5. @PrimaryKeyマクロ
+### 5. #PrimaryKeyマクロ
 
 主キーフィールドを指定（必須）。
 
 ```swift
-@PrimaryKey var userID: Int64
+#PrimaryKey<User>([\.userID])
 
 // 複合主キー
-@PrimaryKey var tenantID: String
-@PrimaryKey var userID: Int64
+#PrimaryKey<Hotel>([\.tenantID, \.userID])
 ```
 
 ### 6. @Defaultマクロ

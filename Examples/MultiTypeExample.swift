@@ -19,8 +19,9 @@ struct User {
 
     #Index<User>([\email])
     #Unique<User>([\email])  // Email must be unique
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
     var city: String
@@ -36,8 +37,9 @@ struct Order {
     #Index<Order>([\userID])  // Index for querying orders by user
     #Index<Order>([\createdAt])  // Index for time-based queries
     #Index<Order>([\status])  // Index for status filtering
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var accountID: String  // Partition key
     var userID: Int64  // Foreign key to User
     var total: Double

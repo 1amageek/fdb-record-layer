@@ -13,7 +13,9 @@ import SwiftDiagnostics
 /// ```swift
 /// @Recordable
 /// struct User {
-///     @PrimaryKey var userID: Int64
+///     #PrimaryKey<User>([\.userID])
+///
+///     var userID: Int64
 ///
 ///     @Relationship(deleteRule: .cascade, inverse: \\Order.userID)
 ///     var orders: [Int64] = []
@@ -21,7 +23,9 @@ import SwiftDiagnostics
 ///
 /// @Recordable
 /// struct Order {
-///     @PrimaryKey var orderID: Int64
+///     #PrimaryKey<Order>([\.orderID])
+///
+///     var orderID: Int64
 ///
 ///     @Relationship(inverse: \\User.orders)
 ///     var userID: Int64

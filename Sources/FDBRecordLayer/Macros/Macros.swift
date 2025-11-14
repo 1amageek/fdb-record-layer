@@ -1,5 +1,31 @@
 import Foundation
 
+// MARK: - Index Type for Macro Usage
+
+/// Index type for #Index macro (mirrors IndexType from Core/Types.swift)
+///
+/// Used to specify the type of index when using #Index macro.
+/// Avoids name collision with IndexType enum in Core module.
+public enum MacroIndexType {
+    case value
+    case rank
+    case count
+    case sum
+    case min
+    case max
+}
+
+/// Index scope for #Index macro (mirrors IndexScope from Core/Index.swift)
+///
+/// Used to specify whether an index is partition-local or global.
+/// Avoids name collision with IndexScope enum in Core module.
+public enum MacroIndexScope {
+    case partition
+    case global
+}
+
+// MARK: - Record Macros
+
 /// Marks a struct as a persistable record type
 ///
 /// This macro generates all necessary protocol conformances and methods
@@ -111,54 +137,61 @@ public macro Transient() = #externalMacro(module: "FDBRecordLayerMacros", type: 
 @attached(peer)
 public macro Default(value: Any) = #externalMacro(module: "FDBRecordLayerMacros", type: "DefaultMacro")
 
-/// Defines an index on specified fields
+/// Defines an index with optional type, scope, and name parameters
 ///
-/// Indexes improve query performance for specific field combinations.
-/// Supports multiple independent indexes using variadic arguments.
-///
-/// **Usage**:
-/// ```swift
-/// @Recordable
-/// struct User {
-///     // Single field index
-///     #Index<User>([\.email])
-///
-///     // Multiple independent indexes
-///     #Index<User>([\.email], [\.username])
-///
-///     // Compound index (country + city combination)
-///     #Index<User>([\.country, \.city])
-///
-///     // Named index
-///     #Index<User>([\.country, \.city], name: "location_index")
-///
-///     @PrimaryKey var userID: Int64
-///     var email: String
-///     var username: String
-///     var country: String
-///     var city: String
-/// }
-/// ```
-@freestanding(declaration)
-public macro Index<T>(_ indices: [PartialKeyPath<T>]...) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
-
-/// Defines a named index on specified fields
-///
-/// Use this overload when you need to specify a custom index name.
+/// Use this overload when you need to specify index type (rank, count, sum, min, max)
+/// or scope (partition-local vs global).
 ///
 /// **Usage**:
 /// ```swift
 /// @Recordable
-/// struct User {
-///     #Index<User>([\.country, \.city], name: "location_index")
+/// struct Hotel {
+///     #PrimaryKey<Hotel>([\.ownerID, \.hotelID])
+///     #Directory<Hotel>(["owners", Field(\.ownerID), "hotels"], layer: .partition)
 ///
-///     @PrimaryKey var userID: Int64
-///     var country: String
+///     // Partition-local index (default)
+///     #Index<Hotel>([\.name], name: "by_name", scope: .partition)
+///
+///     // Global rank index (cross-partition)
+///     #Index<Hotel>([\.rating], type: .rank, name: "global_rating", scope: .global)
+///
+///     // Count aggregation index
+///     #Index<Hotel>([\.city], type: .count, name: "city_count")
+///
+///     var ownerID: String
+///     var hotelID: Int64
+///     var name: String
+///     var rating: Double
 ///     var city: String
 /// }
 /// ```
+///
+/// **Parameters**:
+/// - `indices`: KeyPath array for indexed fields
+/// - `type`: Index type (.value, .rank, .count, .sum, .min, .max) - defaults to .value
+/// - `scope`: Index scope (.partition, .global) - defaults to .partition
+/// - `name`: Optional custom index name
+///
+/// **Index Types**:
+/// - `.value`: Standard B-tree index for lookups and range queries
+/// - `.rank`: Rank/leaderboard index for ordering by score
+/// - `.count`: Count aggregation index (grouped by field)
+/// - `.sum`: Sum aggregation index (grouped by field)
+/// - `.min`: MIN aggregation index (grouped by field)
+/// - `.max`: MAX aggregation index (grouped by field)
+///
+/// **Index Scopes**:
+/// - `.partition`: Index is local to each partition (default)
+/// - `.global`: Index spans across all partitions
+///
+/// **Important**: Global indexes with partitions MUST include partition key in primary key.
 @freestanding(declaration)
-public macro Index<T>(_ indices: [PartialKeyPath<T>], name: String) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
+public macro Index<T>(
+    _ indices: [PartialKeyPath<T>],
+    type: MacroIndexType? = nil,
+    scope: MacroIndexScope? = nil,
+    name: String? = nil
+) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
 
 /// Defines a unique index on specified fields
 ///
@@ -187,6 +220,130 @@ public macro Index<T>(_ indices: [PartialKeyPath<T>], name: String) = #externalM
 /// ```
 @freestanding(declaration)
 public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(module: "FDBRecordLayerMacros", type: "UniqueMacro")
+
+/// Marks a Vector property for HNSW-based similarity search indexing
+///
+/// This macro generates index metadata for vector similarity search using
+/// Hierarchical Navigable Small World (HNSW) algorithm.
+///
+/// **Basic Usage**:
+/// ```swift
+/// @Recordable
+/// struct Product {
+///     #PrimaryKey<Product>([\.productID])
+///
+///     @Vector(dimensions: 768)
+///     var embedding: Vector
+///
+///     var productID: Int64
+///     var name: String
+/// }
+/// ```
+///
+/// **Advanced Usage with Custom Parameters**:
+/// ```swift
+/// @Vector(
+///     dimensions: 1536,
+///     metric: .l2,
+///     m: 32,
+///     efConstruction: 200,
+///     efSearch: 100
+/// )
+/// var embedding: Vector
+/// ```
+///
+/// **Parameters**:
+/// - `dimensions`: Required. Vector dimensions (e.g., 768 for BERT, 1536 for GPT-3)
+/// - `metric`: Distance metric (default: `.cosine` - 99% of ML use cases)
+/// - `m`: HNSW M parameter (default: 16) - connections per layer
+/// - `efConstruction`: Build-time search depth (default: 100)
+/// - `efSearch`: Query-time search depth (default: 50)
+///
+/// **Performance Characteristics**:
+/// - Build time: O(N log N * M * efConstruction)
+/// - Query time: O(log N * efSearch)
+/// - Memory: O(N * M * dimensions * 4 bytes)
+///
+/// **Important**:
+/// - Property type MUST conform to `VectorRepresentable` protocol
+/// - Dimensions must match vector data at runtime
+/// - Metric cannot be changed after index creation (affects HNSW graph structure)
+/// - HNSW parameters (m, efConstruction, efSearch) are determined by the index implementation
+@attached(peer)
+public macro Vector(
+    dimensions: Int,
+    metric: VectorMetric = .cosine
+) = #externalMacro(module: "FDBRecordLayerMacros", type: "VectorMacro")
+
+/// Marks a GeoCoordinate property for spatial indexing using Z-order curve
+///
+/// This macro generates index metadata for efficient spatial queries such as
+/// bounding box searches and radius queries.
+///
+/// **Basic Usage (2D Geographic)**:
+/// ```swift
+/// @Recordable
+/// struct Restaurant {
+///     #PrimaryKey<Restaurant>([\.restaurantID])
+///
+///     @Spatial  // Defaults to geographic coordinates
+///     var location: GeoCoordinate
+///
+///     var restaurantID: Int64
+///     var name: String
+/// }
+/// ```
+///
+/// **3D Usage (with Altitude)**:
+/// ```swift
+/// @Recordable
+/// struct Drone {
+///     #PrimaryKey<Drone>([\.droneID])
+///
+///     @Spatial(type: .geo3D)
+///     var position: GeoCoordinate
+///
+///     var droneID: Int64
+/// }
+/// ```
+///
+/// **Cartesian Coordinates**:
+/// ```swift
+/// @Recordable
+/// struct GameEntity {
+///     #PrimaryKey<GameEntity>([\.entityID])
+///
+///     @Spatial(type: .cartesian3D)
+///     var position: CartesianCoordinate
+///
+///     var entityID: Int64
+/// }
+/// ```
+///
+/// **Parameters**:
+/// - `type`: Spatial type (default: `.geo`)
+///   - `.geo`: 2D geographic coordinates (latitude, longitude)
+///   - `.geo3D`: 3D geographic coordinates (latitude, longitude, altitude)
+///   - `.cartesian`: 2D Cartesian coordinates (x, y)
+///   - `.cartesian3D`: 3D Cartesian coordinates (x, y, z)
+///
+/// **Index Structure**:
+/// - 2D: 32 bits per dimension (latitude, longitude) → ~1cm accuracy
+/// - 3D: 21 bits per dimension (lat, lon, alt) → ~50cm accuracy
+///
+/// **Query Support**:
+/// - Bounding box: `within(minLat, minLon, maxLat, maxLon)`
+/// - Circle: `withinRadius(centerLat, centerLon, radiusMeters)`
+/// - Nearest: `nearest(lat, lon, k: 10)`
+///
+/// **Important**:
+/// - Property type MUST conform to `SpatialRepresentable` protocol
+/// - For geographic coordinates: use `GeoCoordinate` (standard implementation)
+/// - For custom coordinates: implement `SpatialRepresentable` protocol
+@attached(peer)
+public macro Spatial(
+    type: SpatialType = .geo
+) = #externalMacro(module: "FDBRecordLayerMacros", type: "SpatialMacro")
 
 /// Protocol for directory path elements
 ///

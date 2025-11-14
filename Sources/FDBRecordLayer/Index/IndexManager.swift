@@ -314,6 +314,22 @@ public final class IndexManager: Sendable {
                 recordSubspace: recordSubspace
             )
             return AnyGenericIndexMaintainer(maintainer)
+
+        case .vector:
+            let maintainer = try GenericVectorIndexMaintainer<T>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
+
+        case .spatial:
+            let maintainer = try GenericSpatialIndexMaintainer<T>(
+                index: index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            )
+            return AnyGenericIndexMaintainer(maintainer)
         }
     }
 }

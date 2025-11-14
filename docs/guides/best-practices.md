@@ -24,7 +24,9 @@
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64  // Int64を使用
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64  // Int64を使用
     var name: String
 }
 ```
@@ -39,7 +41,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: String  // UUID文字列（36文字）
+    #PrimaryKey<User>([\.userID])
+
+    var userID: String  // UUID文字列（36文字）
     var name: String
 }
 ```
@@ -58,8 +62,10 @@ struct User {
 ```swift
 @Recordable
 struct OrderItem {
-    @PrimaryKey var orderID: Int64    // 1. 親エンティティ
-    @PrimaryKey var itemID: Int64     // 2. 子エンティティ
+    #PrimaryKey<OrderItem>([\.orderID, \.itemID])
+
+    var orderID: Int64    // 1. 親エンティティ
+    var itemID: Int64     // 2. 子エンティティ
     var productID: Int64
     var quantity: Int32
 }
@@ -75,8 +81,10 @@ struct OrderItem {
 ```swift
 @Recordable
 struct OrderItem {
-    @PrimaryKey var itemID: Int64     // ❌ 順序が逆
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<OrderItem>([\.itemID, \.orderID])
+
+    var itemID: Int64     // ❌ 順序が逆
+    var orderID: Int64
     var productID: Int64
     var quantity: Int32
 }
@@ -95,7 +103,9 @@ struct OrderItem {
 ```swift
 @Recordable
 struct Product {
-    @PrimaryKey var productID: Int64
+    #PrimaryKey<Product>([\.productID])
+
+    var productID: Int64
     var name: String
     var price: Double           // 浮動小数点数
     var quantity: Int32         // 整数（小さい範囲）
@@ -109,7 +119,9 @@ struct Product {
 ```swift
 @Recordable
 struct Product {
-    @PrimaryKey var productID: Int64
+    #PrimaryKey<Product>([\.productID])
+
+    var productID: Int64
     var name: String
     var price: String           // ❌ "99.99"
     var quantity: String        // ❌ "100"
@@ -132,7 +144,9 @@ struct Product {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
 
@@ -154,7 +168,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
     var phoneNumber: String  // ❌ 既存データにはない
@@ -180,7 +196,9 @@ struct User {
     #Index<User>([\email])  // メールアドレスで検索
     #Index<User>([\username])  // ユーザー名で検索
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var username: String
 }
@@ -193,7 +211,9 @@ struct Order {
     #Index<Order>([\status])  // ステータスでフィルタ
     #Index<Order>([\createdAt])  // 日付範囲検索
 
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
     var status: String  // "pending", "completed", "cancelled"
     var createdAt: Date
 }
@@ -205,7 +225,9 @@ struct Order {
 struct Post {
     #Index<Post>([\publishedAt])  // 公開日順にソート
 
-    @PrimaryKey var postID: Int64
+    #PrimaryKey<Post>([\.postID])
+
+    var postID: Int64
     var title: String
     var publishedAt: Date
 }
@@ -219,7 +241,9 @@ struct Post {
 struct User {
     #Index<User>([\lastLoginIP])  // ❌ IPアドレスはほぼ一意
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var lastLoginIP: String
 }
 ```
@@ -230,7 +254,9 @@ struct User {
 struct User {
     #Index<User>([\favoriteColor])  // ❌ 使用頻度が低い
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var favoriteColor: String
 }
 ```
@@ -251,7 +277,9 @@ struct User {
 struct User {
     #Index<User>([\city, \age])  // 都市 → 年齢
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var city: String
     var age: Int32
 }
@@ -298,7 +326,9 @@ struct User {
     #Unique<User>([\email])  // メールアドレスは一意
     #Unique<User>([\username])  // ユーザー名は一意
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var username: String
 }
@@ -311,7 +341,9 @@ struct User {
 struct Enrollment {
     #Unique<Enrollment>([\studentID, \courseID])  // 同じ生徒が同じコースに重複登録できない
 
-    @PrimaryKey var enrollmentID: Int64
+    #PrimaryKey<Enrollment>([\.enrollmentID])
+
+    var enrollmentID: Int64
     var studentID: Int64
     var courseID: Int64
 }
@@ -324,7 +356,9 @@ struct Enrollment {
 struct User {
     #Unique<User>([\city])  // ❌ 複数のユーザーが同じ都市に住める
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var city: String
 }
 ```
@@ -370,7 +404,9 @@ let recentPosts = Array(allPosts.prefix(10))  // ❌ 非効率
 struct User {
     #Index<User>([\email])
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
 }
 
@@ -387,7 +423,9 @@ let user = try await store.query(User.self)
 struct User {
     // インデックスなし
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
 }
 
@@ -624,7 +662,9 @@ struct CustomerData {
         layer: .partition
     )
 
-    @PrimaryKey var dataID: Int64
+    #PrimaryKey<CustomerData>([\.dataID])
+
+    var dataID: Int64
     var tenantID: String  // パーティションキー
     var sensitiveData: String
 }
@@ -651,7 +691,9 @@ let tenantAStore = try await CustomerData.store(
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     var encryptedSSN: Data  // 暗号化された社会保障番号
@@ -673,7 +715,9 @@ if let user: User = try await store.fetch(by: Int64(1)) {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var ssn: String  // ❌ 平文の社会保障番号
 }
@@ -694,7 +738,9 @@ struct User {
     #Index<User>([\email])
     #Index<User>([\age])  // 新しいインデックス
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var email: String
     var age: Int32
 }
@@ -779,14 +825,18 @@ fdbrestore start -r file:///backups/fdb-20250109
 // ❌ Bad: RDBMSのような正規化
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var addressID: Int64  // Addressテーブルへの外部キー
 }
 
 @Recordable
 struct Address {
-    @PrimaryKey var addressID: Int64
+    #PrimaryKey<Address>([\.addressID])
+
+    var addressID: Int64
     var street: String
     var city: String
 }
@@ -802,7 +852,9 @@ let address = try await addressStore.fetch(by: user!.addressID)
 // ✅ Good: 非正規化
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var street: String
     var city: String
@@ -820,7 +872,9 @@ let user = try await userStore.fetch(by: Int64(1))
 // ❌ Bad: 100KBを超える値
 @Recordable
 struct Document {
-    @PrimaryKey var documentID: Int64
+    #PrimaryKey<Document>([\.documentID])
+
+    var documentID: Int64
     var title: String
     var content: String  // 数MBのテキスト ← FoundationDBの制限100KB超過
 }
@@ -832,15 +886,19 @@ struct Document {
 // ✅ Good: メタデータとコンテンツを分離
 @Recordable
 struct Document {
-    @PrimaryKey var documentID: Int64
+    #PrimaryKey<Document>([\.documentID])
+
+    var documentID: Int64
     var title: String
     var summary: String
 }
 
 @Recordable
 struct DocumentChunk {
-    @PrimaryKey var documentID: Int64
-    @PrimaryKey var chunkIndex: Int32
+    #PrimaryKey<DocumentChunk>([\.documentID, \.chunkIndex])
+
+    var documentID: Int64
+    var chunkIndex: Int32
     var content: String  // 50KB以下のチャンク
 }
 ```

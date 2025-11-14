@@ -46,7 +46,9 @@ struct User {
     #Index<User>([\email])
     #Index<User>([\age])
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -101,7 +103,9 @@ struct User {
     #Index<User>([\email])
     #Unique<User>([\email])
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
 
@@ -332,9 +336,8 @@ public final class IndexManager: Sendable {
 - [PartitionExample.swift](Examples/PartitionExample.swift) - Multi-tenant with partitions
 
 ### Status & Planning
-- [STATUS.md](docs/STATUS.md) - Current project status (Phase 2a complete)
-- [REMAINING_WORK.md](docs/REMAINING_WORK.md) - Roadmap and future plans
-- [IMPLEMENTATION_ROADMAP.md](docs/IMPLEMENTATION_ROADMAP.md) - Detailed implementation plan
+- [CLAUDE.md](CLAUDE.md) - **Complete development guide** with current status, roadmap, and implementation details
+- [docs/README.md](docs/README.md) - Documentation index
 
 ### Architecture & Design
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - **Complete system architecture**
@@ -495,7 +498,7 @@ swift test
 - [ ] Extended load testing under sustained high concurrency
 - [ ] Production monitoring and metrics integration
 
-See [STATUS.md](docs/STATUS.md) for detailed implementation status.
+See [CLAUDE.md](CLAUDE.md) for detailed implementation status.
 
 ## Roadmap
 
@@ -522,7 +525,7 @@ See [STATUS.md](docs/STATUS.md) for detailed implementation status.
 - **Schema Evolution Validator**: Safe schema migration with validation
 - **SQL Support**: SQL-to-query-plan translation
 
-See [REMAINING_WORK.md](docs/REMAINING_WORK.md) for detailed roadmap.
+See [CLAUDE.md](CLAUDE.md) for detailed roadmap and implementation plan.
 
 ## Recent Improvements
 

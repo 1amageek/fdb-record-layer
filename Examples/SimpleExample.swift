@@ -28,9 +28,10 @@ struct User {
     #Index<User>([\age])
 
     // Primary key
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
 
     // Fields
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -185,7 +186,7 @@ struct SimpleExample {
         print("  • @Recordable - No manual Protobuf files needed")
         print("  • #Directory - Type-safe directory paths")
         print("  • #Index - Declarative index definitions")
-        print("  • @PrimaryKey - Explicit primary key marking")
+        print("  • #PrimaryKey - Explicit primary key marking")
         print("  • @Default - Default value support")
         print("  • Type-safe queries with KeyPath-based filtering")
         print("  • Automatic store() method generation")

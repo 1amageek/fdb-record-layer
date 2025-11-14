@@ -25,8 +25,9 @@ import SwiftDiagnostics
 /// @Recordable
 /// struct User {
 ///     #Directory<User>(["app", "users"], layer: .recordStore)
+///     #PrimaryKey<User>([\.userID])
 ///
-///     @PrimaryKey var userID: Int64
+///     var userID: Int64
 ///     var email: String
 /// }
 /// ```
@@ -39,8 +40,9 @@ import SwiftDiagnostics
 ///         ["tenants", \.accountID, "orders"],
 ///         layer: .partition
 ///     )
+///     #PrimaryKey<Order>([\.orderID])
 ///
-///     @PrimaryKey var orderID: Int64
+///     var orderID: Int64
 ///     var accountID: String  // Corresponds to \.accountID KeyPath
 /// }
 /// ```
@@ -53,8 +55,9 @@ import SwiftDiagnostics
 ///         ["tenants", \.accountID, "channels", \.channelID, "messages"],
 ///         layer: .partition
 ///     )
+///     #PrimaryKey<Message>([\.messageID])
 ///
-///     @PrimaryKey var messageID: Int64
+///     var messageID: Int64
 ///     var accountID: String  // First partition key
 ///     var channelID: String  // Second partition key
 /// }

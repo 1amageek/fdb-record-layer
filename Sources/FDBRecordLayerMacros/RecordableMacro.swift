@@ -127,8 +127,11 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Extract unique constraints from @Attribute(.unique)
         let attributeUniques = extractUniqueFromAttributes(from: members, typeName: structName)
 
-        // Merge and deduplicate (allows @Attribute(.unique) and #Unique to coexist)
-        indexInfo = deduplicateIndexes(indexInfo + attributeUniques)
+        // Extract vector/spatial indexes from @Vector/@Spatial attributes
+        let vectorSpatialIndexes = extractVectorSpatialIndexes(from: members, typeName: structName)
+
+        // Merge and deduplicate (allows @Attribute(.unique), #Unique, @Vector, @Spatial to coexist)
+        indexInfo = deduplicateIndexes(indexInfo + attributeUniques + vectorSpatialIndexes)
 
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
@@ -408,10 +411,47 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     return nil
                 }
 
+            // Extract type parameter (e.g., type: .rank)
+            let indexType: IndexInfoType
+            if let typeArg = arguments.first(where: { $0.label?.text == "type" }) {
+                let typeStr = typeArg.expression.description.trimmingCharacters(in: CharacterSet.whitespaces)
+                // Parse ".rank" -> "rank"
+                let cleanType = typeStr.replacingOccurrences(of: ".", with: "")
+                switch cleanType {
+                case "rank":
+                    indexType = .rank
+                case "count":
+                    indexType = .count
+                case "sum":
+                    indexType = .sum
+                case "min":
+                    indexType = .min
+                case "max":
+                    indexType = .max
+                default:
+                    indexType = .value
+                }
+            } else {
+                indexType = .value
+            }
+
+            // Extract scope parameter (e.g., scope: .global)
+            let scope: IndexInfoScope
+            if let scopeArg = arguments.first(where: { $0.label?.text == "scope" }) {
+                let scopeStr = scopeArg.expression.description.trimmingCharacters(in: CharacterSet.whitespaces)
+                // Parse ".global" -> "global"
+                let cleanScope = scopeStr.replacingOccurrences(of: ".", with: "")
+                scope = cleanScope == "global" ? .global : .partition
+            } else {
+                scope = .partition
+            }
+
             // Process each KeyPath array argument
             for argument in arguments {
-                // Skip named 'name:' parameter
-                if argument.label?.text == "name" {
+                // Skip named parameters (name, type, scope)
+                if argument.label?.text == "name" ||
+                   argument.label?.text == "type" ||
+                   argument.label?.text == "scope" {
                     continue
                 }
 
@@ -422,7 +462,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         fields: fields,
                         isUnique: isUnique,
                         customName: customName,
-                        typeName: typeName
+                        typeName: typeName,
+                        indexType: indexType,
+                        scope: scope
                     ))
                 }
             }
@@ -492,7 +534,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     fields: [fieldName],
                     isUnique: true,
                     customName: nil,
-                    typeName: typeName
+                    typeName: typeName,
+                    indexType: .value,
+                    scope: .partition
                 ))
             }
         }
@@ -500,33 +544,144 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return uniqueConstraints
     }
 
-    /// Deduplicate index definitions by field combination, order, and uniqueness
+    /// Extract vector and spatial indexes from @Vector and @Spatial attributes
+    ///
+    /// Scans properties for @Vector and @Spatial attributes and creates IndexInfo entries.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// @Vector(dimensions: 768, metric: .cosine)
+    /// var embedding: Vector
+    ///
+    /// @Spatial(includeAltitude: true, altitudeRange: 0.0...5000.0)
+    /// var position: GeoCoordinate
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - members: Struct members
+    ///   - typeName: Type name for index naming
+    /// - Returns: Array of IndexInfo for vector/spatial indexes
+    private static func extractVectorSpatialIndexes(
+        from members: MemberBlockItemListSyntax,
+        typeName: String
+    ) -> [IndexInfo] {
+        var indexes: [IndexInfo] = []
+
+        for member in members {
+            guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+                  let binding = varDecl.bindings.first,
+                  let identifier = binding.pattern.as(IdentifierPatternSyntax.self) else {
+                continue
+            }
+
+            let fieldName = identifier.identifier.text
+
+            // Check for @Vector attribute
+            for attr in varDecl.attributes {
+                guard let attributeSyntax = attr.as(AttributeSyntax.self),
+                      let attrName = attributeSyntax.attributeName.as(IdentifierTypeSyntax.self)?.name.text else {
+                    continue
+                }
+
+                if attrName == "Vector" {
+                    // Extract parameters from @Vector(dimensions: 768, metric: .cosine)
+                    var dimensions = 768  // Default
+                    var metric = "cosine"  // Default
+
+                    if case let .argumentList(arguments) = attributeSyntax.arguments {
+                        for argument in arguments {
+                            guard let label = argument.label?.text else { continue }
+
+                            switch label {
+                            case "dimensions":
+                                if let intExpr = argument.expression.as(IntegerLiteralExprSyntax.self),
+                                   let value = Int(intExpr.literal.text) {
+                                    dimensions = value
+                                }
+                            case "metric":
+                                if let memberAccess = argument.expression.as(MemberAccessExprSyntax.self) {
+                                    metric = memberAccess.declName.baseName.text
+                                }
+                            default:
+                                break
+                            }
+                        }
+                    }
+
+                    indexes.append(IndexInfo(
+                        fields: [fieldName],
+                        isUnique: false,
+                        customName: nil,
+                        typeName: typeName,
+                        indexType: .vector(
+                            dimensions: dimensions,
+                            metric: metric
+                        ),
+                        scope: .partition
+                    ))
+                } else if attrName == "Spatial" {
+                    // Extract parameters from @Spatial(type: .geo)
+                    var spatialType = "geo"  // Default
+
+                    if case let .argumentList(arguments) = attributeSyntax.arguments {
+                        for argument in arguments {
+                            guard let label = argument.label?.text else { continue }
+
+                            if label == "type" {
+                                if let memberAccess = argument.expression.as(MemberAccessExprSyntax.self) {
+                                    spatialType = memberAccess.declName.baseName.text
+                                }
+                            }
+                        }
+                    }
+
+                    indexes.append(IndexInfo(
+                        fields: [fieldName],
+                        isUnique: false,
+                        customName: nil,
+                        typeName: typeName,
+                        indexType: .spatial(type: spatialType),
+                        scope: .partition
+                    ))
+                }
+            }
+        }
+
+        return indexes
+    }
+
+    /// Deduplicate index definitions by field combination, order, uniqueness, and type
     ///
     /// Removes duplicate IndexInfo entries that have the exact same:
     /// - Field list (including order)
     /// - isUnique flag
     /// - Custom name (if specified)
+    /// - Index type (value, vector, spatial)
     ///
     /// **Deduplication strategy**:
-    /// - Same fields IN SAME ORDER + same isUnique + same customName → Keep first occurrence
-    /// - Different order or different uniqueness → Keep both
+    /// - Same fields IN SAME ORDER + same isUnique + same customName + same indexType → Keep first occurrence
+    /// - Different order, uniqueness, or type → Keep both
     ///
     /// **Example**:
     /// ```swift
     /// #Index<User>([\.city, \.age])     // Kept
     /// #Index<User>([\.age, \.city])     // Kept (different order)
-    /// #Index<User>([\.email])           // Kept
+    /// #Index<User>([\.email])           // Kept (B-tree index)
     /// #Unique<User>([\.email])          // Kept (different isUnique)
+    /// @Vector(dimensions: 768)
+    /// var embedding: Vector              // Kept (vector index on "embedding")
+    /// #Index<Product>([\.embedding])    // Kept (B-tree index on "embedding", different type)
     /// ```
     ///
     /// - Parameter indexes: Array of IndexInfo to deduplicate
     /// - Returns: Deduplicated array (preserving original order)
     private static func deduplicateIndexes(_ indexes: [IndexInfo]) -> [IndexInfo] {
-        // Use a comparable key that includes field order, isUnique, and customName
+        // Use a comparable key that includes field order, isUnique, customName, AND indexType
         struct IndexKey: Hashable {
             let fields: [String]         // Preserve order
             let isUnique: Bool
             let customName: String?
+            let indexType: IndexInfoType // IMPORTANT: Different index types on same field are distinct
         }
 
         var seen: Set<IndexKey> = []
@@ -536,7 +691,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             let key = IndexKey(
                 fields: index.fields,      // Array preserves order
                 isUnique: index.isUnique,
-                customName: index.customName
+                customName: index.customName,
+                indexType: index.indexType // Consider index type for deduplication
             )
             if !seen.contains(key) {
                 seen.insert(key)
@@ -666,18 +822,53 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         typeName: String,
         indexInfo: [IndexInfo]
     ) -> (indexStaticProperties: String, indexDefinitionsProperty: String) {
-        guard !indexInfo.isEmpty else {
+        let allIndexes = indexInfo
+
+        guard !allIndexes.isEmpty else {
             return ("", "")
         }
 
         // Generate static IndexDefinition properties with getter to avoid circular reference
-        let staticProperties = indexInfo.map { info in
+        let staticProperties = allIndexes.map { info in
             let varName = info.variableName()
             let indexName = info.indexName()
             // Use string-based initializer to preserve nested field paths (e.g., "address.city")
             // IndexInfo.fields already contains the correct dot-notation for nested fields
             let fieldsLiteral = info.fields.map { "\"\($0)\"" }.joined(separator: ", ")
             let unique = info.isUnique ? "true" : "false"
+
+            // Generate indexType parameter based on index type
+            let indexTypeParam: String
+            switch info.indexType {
+            case .value:
+                indexTypeParam = "indexType: .value"
+            case .rank:
+                indexTypeParam = "indexType: .rank"
+            case .count:
+                indexTypeParam = "indexType: .count"
+            case .sum:
+                indexTypeParam = "indexType: .sum"
+            case .min:
+                indexTypeParam = "indexType: .min"
+            case .max:
+                indexTypeParam = "indexType: .max"
+            case .vector(let dimensions, let metric):
+                indexTypeParam = """
+indexType: .vector(VectorIndexOptions(
+                            dimensions: \(dimensions),
+                            metric: .\(metric)
+                        ))
+"""
+            case .spatial(let type):
+                indexTypeParam = """
+indexType: .spatial(SpatialIndexOptions(type: .\(type)))
+"""
+            case .version:
+                indexTypeParam = "indexType: .version"
+            }
+
+            // Generate scope parameter
+            let scopeParam = "scope: .\(info.scope.rawValue)"
 
             return """
 
@@ -686,14 +877,16 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         name: "\(indexName)",
                         recordType: "\(typeName)",
                         fields: [\(fieldsLiteral)],
-                        unique: \(unique)
+                        unique: \(unique),
+                        \(indexTypeParam),
+                        \(scopeParam)
                     )
                 }
             """
         }.joined()
 
         // Generate indexDefinitions array property
-        let indexNames = indexInfo.map { $0.variableName() }.joined(separator: ", ")
+        let indexNames = allIndexes.map { $0.variableName() }.joined(separator: ", ")
         let indexDefinitionsProperty = """
 
             public static var indexDefinitions: [IndexDefinition] {
@@ -837,6 +1030,125 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         return methods.joined(separator: "\n")
     }
 
+    /// Generate validation methods for @Vector and @Spatial fields
+    ///
+    /// This method scans indexInfo for vector/spatial indexes and generates
+    /// validation methods that check protocol conformance and data validity.
+    ///
+    /// - Parameters:
+    ///   - indexInfo: Array of IndexInfo containing vector/spatial indexes
+    ///   - fields: Array of FieldInfo for field name lookup
+    /// - Returns: Generated validation methods as a string
+    private static func generateValidationMethods(
+        indexInfo: [IndexInfo],
+        fields: [FieldInfo]
+    ) -> String {
+        var methods: [String] = []
+
+        // Extract vector indexes
+        let vectorIndexes = indexInfo.filter {
+            if case .vector = $0.indexType { return true }
+            return false
+        }
+
+        // Extract spatial indexes
+        let spatialIndexes = indexInfo.filter {
+            if case .spatial = $0.indexType { return true }
+            return false
+        }
+
+        // Generate validateVectorFields() if there are vector indexes
+        if !vectorIndexes.isEmpty {
+            var validationCases: [String] = []
+
+            for indexDef in vectorIndexes {
+                guard let fieldName = indexDef.fields.first else { continue }
+
+                if case .vector(let dimensions, _) = indexDef.indexType {
+                    let validation = """
+// Validate field '\(fieldName)' with @Vector attribute
+                guard let vectorField = self.\(fieldName) as? any VectorRepresentable else {
+                    throw RecordLayerError.invalidArgument(
+                        "Field '\(fieldName)' with @Vector attribute must conform to VectorRepresentable protocol.\\n" +
+                        "Expected type: Vector or any custom type conforming to VectorRepresentable\\n" +
+                        "Actual type: \\(type(of: self.\(fieldName)))"
+                    )
+                }
+
+                // Validate dimensions
+                guard vectorField.dimensions == \(dimensions) else {
+                    throw RecordLayerError.invalidArgument(
+                        "Field '\(fieldName)' dimension mismatch: expected \(dimensions), got \\(vectorField.dimensions).\\n" +
+                        "Ensure that the vector data matches the dimensions specified in @Vector macro:\\n" +
+                        "  @Vector(dimensions: \(dimensions)) var \(fieldName): Vector"
+                    )
+                }
+
+                // Validate toFloatArray() can be called
+                let _ = vectorField.toFloatArray()
+"""
+                    validationCases.append(validation)
+                }
+            }
+
+            let method = """
+
+            public func validateVectorFields() throws {
+                \(validationCases.joined(separator: "\n\n                "))
+            }
+"""
+            methods.append(method)
+        }
+
+        // Generate validateSpatialFields() if there are spatial indexes
+        if !spatialIndexes.isEmpty {
+            var validationCases: [String] = []
+
+            for indexDef in spatialIndexes {
+                guard let fieldName = indexDef.fields.first else { continue }
+
+                if case .spatial(let type) = indexDef.indexType {
+                    // Determine expected dimensionality based on SpatialType
+                    let is3D = type == "geo3D" || type == "cartesian3D"
+                    let expectedDims = is3D ? 3 : 2
+                    let dimsDescription = is3D ? "[longitude, latitude, altitude]" : "[longitude, latitude]"
+
+                    let validation = """
+// Validate field '\(fieldName)' with @Spatial(type: .\(type)) attribute
+                guard let spatialField = self.\(fieldName) as? any SpatialRepresentable else {
+                    throw RecordLayerError.invalidArgument(
+                        "Field '\(fieldName)' with @Spatial attribute must conform to SpatialRepresentable protocol.\\n" +
+                        "Expected type: GeoCoordinate or any custom type conforming to SpatialRepresentable\\n" +
+                        "Actual type: \\(type(of: self.\(fieldName)))"
+                    )
+                }
+
+                // Validate dimensionality matches spatial type
+                let coords = spatialField.toNormalizedCoordinates()
+                guard coords.count == \(expectedDims) else {
+                    throw RecordLayerError.invalidArgument(
+                        "Field '\(fieldName)' with @Spatial(type: .\(type)) must provide \(expectedDims)D coordinates.\\n" +
+                        "Expected: \(dimsDescription)\\n" +
+                        "Got: \\(coords.count) dimensions"
+                    )
+                }
+"""
+                    validationCases.append(validation)
+                }
+            }
+
+            let method = """
+
+            public func validateSpatialFields() throws {
+                \(validationCases.joined(separator: "\n\n                "))
+            }
+"""
+            methods.append(method)
+        }
+
+        return methods.joined(separator: "\n")
+    }
+
     private static func generateRecordableExtension(
         typeName: String,  // Fully qualified name for extension declaration and KeyPaths
         recordName: String,
@@ -915,6 +1227,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
         // Determine if reconstruction is supported (no non-optional custom type fields)
         let supportsReconstructionValue = hasNonReconstructibleFields(fields: fields, primaryKeyFields: Set(primaryKeyFields.map { $0.name })) ? "false" : "true"
+
+        // Generate validation methods for @Vector/@Spatial fields
+        let validationMethods = generateValidationMethods(indexInfo: indexInfo, fields: fields)
 
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
@@ -1108,6 +1423,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
             \(raw: generateReconstructMethodIfSupported(typeName: typeName, fields: fields, primaryKeyFields: primaryKeyFields))
             \(raw: directoryMethods)
+            \(raw: validationMethods)
         }
         """
 
@@ -3225,12 +3541,32 @@ struct MacroExpansionErrorMessage: DiagnosticMessage {
 
 // MARK: - Index Information
 
-/// Information extracted from #Index or #Unique macro calls
+/// Index type for macro-generated indexes
+enum IndexInfoType: Hashable {
+    case value
+    case rank
+    case count
+    case sum
+    case min
+    case max
+    case vector(dimensions: Int, metric: String)
+    case spatial(type: String)
+    case version
+}
+
+enum IndexInfoScope: String, Hashable {
+    case partition
+    case global
+}
+
+/// Information extracted from #Index, #Unique, @Vector, or @Spatial macro calls
 struct IndexInfo {
-    let fields: [String]      // Field names extracted from KeyPaths
+    let fields: [String]      // Field names extracted from KeyPaths or property names
     let isUnique: Bool         // true for #Unique, false for #Index
     let customName: String?    // Custom name from 'name:' parameter
     let typeName: String       // Type name from generic parameter
+    let indexType: IndexInfoType  // Index type (.value, .vector, .spatial)
+    let scope: IndexInfoScope     // Index scope (.partition, .global)
 
     /// Generate the index name (e.g., "User_email_unique" or "location_index")
     func indexName() -> String {
@@ -3238,7 +3574,27 @@ struct IndexInfo {
             return customName
         }
         let fieldNames = fields.joined(separator: "_")
-        let suffix = isUnique ? "unique" : "index"
+        let suffix: String
+        switch indexType {
+        case .value:
+            suffix = isUnique ? "unique" : "index"
+        case .rank:
+            suffix = "rank"
+        case .count:
+            suffix = "count"
+        case .sum:
+            suffix = "sum"
+        case .min:
+            suffix = "min"
+        case .max:
+            suffix = "max"
+        case .vector:
+            suffix = "vector"
+        case .spatial:
+            suffix = "spatial"
+        case .version:
+            suffix = "version"
+        }
         return "\(typeName)_\(fieldNames)_\(suffix)"
     }
 

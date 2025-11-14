@@ -42,7 +42,9 @@ import FDBRecordLayer
 
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -57,8 +59,9 @@ struct User {
 @Recordable
 struct User {
     #Directory<User>("app", "users", layer: .recordStore)
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
 }
@@ -72,10 +75,11 @@ struct User {
 @Recordable
 struct User {
     #Directory<User>("app", "users", layer: .recordStore)
-    #Index<User>([\email])
-    #Index<User>([\age])
+    #Index<User>([\.email])
+    #Index<User>([\.age])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -146,7 +150,9 @@ let results = try await store.query(User.self)
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 }
 ```
@@ -170,32 +176,36 @@ struct User {
 
 ---
 
-### 2. @PrimaryKey
+### 2. #PrimaryKey
 
 主キーフィールドを指定します（**必須**）。
 
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64  // 単一主キー
+    #PrimaryKey<User>([\.userID])  // 単一主キー
+
+    var userID: Int64
     var name: String
 }
 ```
 
-**複合主キー**（複数フィールドに`@PrimaryKey`を付与）:
+**複合主キー**（複数のKeyPathを配列で指定）:
 
 ```swift
 @Recordable
 struct TenantUser {
-    @PrimaryKey var tenantID: String
-    @PrimaryKey var userID: Int64  // 複合主キー
+    #PrimaryKey<TenantUser>([\.tenantID, \.userID])  // 複合主キー
+
+    var tenantID: String
+    var userID: Int64
     var name: String
 }
 ```
 
 **制約**:
-- 最低1つの`@PrimaryKey`が必須
-- 主キーの順序は宣言順
+- 最低1つのKeyPathが必須
+- 主キーの順序は配列内の順序
 
 ---
 
@@ -210,7 +220,9 @@ struct TenantUser {
 struct User {
     #Directory<User>("app", "users", layer: .recordStore)
 
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 }
 ```
@@ -240,7 +252,9 @@ struct Order {
         layer: .partition
     )
 
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
     var accountID: String  // パーティションキー
     var total: Double
 }
@@ -285,7 +299,9 @@ struct Message {
         layer: .partition
     )
 
-    @PrimaryKey var messageID: Int64
+    #PrimaryKey<Message>([\.messageID])
+
+    var messageID: Int64
     var tenantID: String
     var channelID: String
     var content: String
@@ -327,23 +343,27 @@ let store = try await Message.store(
 ```swift
 @Recordable
 struct User {
-    #Index<User>([\email])
+    #Index<User>([\.email])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var email: String
 }
 ```
 
 #### 複数の独立したインデックス
 
-可変引数を使って複数のインデックスを一度に定義できます。
+複数のインデックスを個別に定義できます。
 
 ```swift
 @Recordable
 struct User {
-    #Index<User>([\email], [\username], [\age])
+    #Index<User>([\.email])
+    #Index<User>([\.username])
+    #Index<User>([\.age])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var email: String
     var username: String
     var age: Int32
@@ -357,9 +377,10 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    #Index<User>([\city, \age])  // 複合インデックス
+    #Index<User>([\.city, \.age])  // 複合インデックス
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var city: String
     var age: Int32
 }
@@ -386,13 +407,191 @@ let results = try await store.query(User.self)
 ```swift
 @Recordable
 struct User {
-    #Index<User>([\country, \city], name: "location_index")
+    #Index<User>([\.country, \.city], name: "location_index")
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var country: String
     var city: String
 }
 ```
+
+#### インデックスタイプ
+
+`#Index`マクロは`type:`パラメータで様々なインデックスタイプをサポートします。
+
+##### VALUE インデックス（デフォルト）
+
+標準的なB-treeインデックス。範囲検索や等価検索に使用。
+
+```swift
+@Recordable
+struct User {
+    #Index<User>([\.email])  // type: .value（デフォルト）
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
+    var email: String
+}
+```
+
+##### RANK インデックス
+
+ランキングやスコアベースのクエリに使用。
+
+```swift
+@Recordable
+struct Player {
+    #Index<Player>([\.score], type: .rank)
+    #PrimaryKey<Player>([\.playerID])
+
+    var playerID: Int64
+    var score: Int32
+}
+
+// 使用例: スコアでランク取得
+let rank = try await store.rank(of: player, in: Player.self, for: \.score)
+```
+
+##### COUNT インデックス
+
+グループごとのレコード数を集計。
+
+```swift
+@Recordable
+struct Order {
+    #Index<Order>([\.status], type: .count)
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
+    var status: String
+}
+
+// 使用例: ステータスごとの注文数
+let count = try await store.evaluateAggregate(.count(indexName: "Order_status_count"), groupBy: ["pending"])
+```
+
+##### SUM インデックス
+
+グループごとの数値の合計を集計。
+
+```swift
+@Recordable
+struct Transaction {
+    #Index<Transaction>([\.accountID, \.amount], type: .sum)
+    #PrimaryKey<Transaction>([\.transactionID])
+
+    var transactionID: Int64
+    var accountID: String
+    var amount: Double
+}
+
+// 使用例: アカウント残高の合計
+let total = try await store.evaluateAggregate(.sum(indexName: "Transaction_accountID_amount_sum"), groupBy: ["account-123"])
+```
+
+##### MIN/MAX インデックス
+
+グループごとの最小値・最大値を効率的に取得（O(log n)）。
+
+```swift
+@Recordable
+struct Sale {
+    #Index<Sale>([\.region, \.amount], type: .min)
+    #Index<Sale>([\.region, \.amount], type: .max)
+    #PrimaryKey<Sale>([\.saleID])
+
+    var saleID: Int64
+    var region: String
+    var amount: Double
+}
+
+// 使用例
+let minAmount = try await store.evaluateAggregate(.min(indexName: "Sale_region_amount_min"), groupBy: ["North"])
+let maxAmount = try await store.evaluateAggregate(.max(indexName: "Sale_region_amount_max"), groupBy: ["North"])
+```
+
+##### VERSION インデックス（楽観的並行性制御）
+
+レコードのバージョン管理とOCC（Optimistic Concurrency Control）に使用。
+
+```swift
+@Recordable
+struct Document {
+    #Index<Document>([\_version], type: .version)
+    #PrimaryKey<Document>([\.documentID])
+
+    var documentID: Int64
+    var title: String
+    var content: String
+}
+
+// 使用例: バージョンチェック付き更新
+let currentVersion = try await versionIndex.getCurrentVersion(primaryKey: Tuple(doc.documentID), transaction: transaction)
+// ... 更新処理 ...
+try await versionIndex.checkVersion(primaryKey: Tuple(doc.documentID), expectedVersion: currentVersion, transaction: transaction)
+```
+
+**Version Indexの特徴**:
+- FoundationDBのversionstamp機能を使用
+- 自動的に単調増加する10バイトの一意な値を生成
+- 並行更新時の競合検出に使用
+- `_version`は特別なフィールド名（実際のフィールドではない）
+
+##### VECTOR インデックス
+
+ベクトル類似度検索に使用（@Vectorマクロでも定義可能）。
+
+```swift
+@Recordable
+struct Image {
+    #Index<Image>([\.embedding], type: .vector(VectorIndexOptions(dimensions: 512, metric: "cosine")))
+    #PrimaryKey<Image>([\.imageID])
+
+    var imageID: Int64
+    var embedding: Vector
+}
+```
+
+##### SPATIAL インデックス
+
+地理空間検索に使用（@Spatialマクロでも定義可能）。
+
+```swift
+@Recordable
+struct Location {
+    #Index<Location>([\.coordinates], type: .spatial(SpatialIndexOptions(type: "geohash")))
+    #PrimaryKey<Location>([\.locationID])
+
+    var locationID: Int64
+    var coordinates: GeoCoordinate
+}
+```
+
+#### インデックススコープ
+
+`scope:`パラメータでインデックスのスコープを指定できます。
+
+```swift
+@Recordable
+struct User {
+    // パーティションローカル（デフォルト）
+    #Index<User>([\.email], scope: .partition)
+
+    // グローバル（全パーティションにまたがる）
+    #Index<User>([\.username], scope: .global)
+
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
+    var email: String
+    var username: String
+}
+```
+
+**スコープの違い**:
+- `.partition`: パーティション内でのみ検索（デフォルト、高速）
+- `.global`: 全パーティションにまたがって検索（マルチテナントで便利）
 
 ---
 
@@ -403,9 +602,10 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    #Unique<User>([\email])  // emailは一意でなければならない
+    #Unique<User>([\.email])  // emailは一意でなければならない
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var email: String
 }
 ```
@@ -415,9 +615,10 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    #Unique<User>([\email], [\username])
+    #Unique<User>([\.email], [\.username])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var email: String
     var username: String
 }
@@ -428,9 +629,10 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    #Unique<User>([\firstName, \lastName])  // 氏名の組み合わせが一意
+    #Unique<User>([\.firstName, \.lastName])  // 氏名の組み合わせが一意
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var firstName: String
     var lastName: String
 }
@@ -449,7 +651,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
     var email: String
 
@@ -472,7 +676,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Default(value: Date())
@@ -496,7 +702,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Relationship(deleteRule: .cascade, inverse: \Order.userID)
@@ -505,7 +713,9 @@ struct User {
 
 @Recordable
 struct Order {
-    @PrimaryKey var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
 
     @Relationship(inverse: \User.orders)
     var userID: Int64
@@ -529,7 +739,9 @@ struct Order {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
 
     @Attribute(originalName: "username")
     var name: String  // 以前は "username" という名前だった
@@ -550,10 +762,11 @@ struct User {
 @Recordable
 struct User {
     #Directory<User>("app", "users")
-    #Index<User>([\email])
-    #Unique<User>([\email])
+    #Index<User>([\.email])
+    #Unique<User>([\.email])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
     var age: Int32
@@ -585,9 +798,10 @@ struct TenantUser {
         layer: .partition
     )
 
-    #Index<TenantUser>([\email])
+    #Index<TenantUser>([\.email])
+    #PrimaryKey<TenantUser>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var tenantID: String  // パーティションキー
     var name: String
     var email: String
@@ -618,9 +832,10 @@ try await tenantBStore.save(userB)
 @Recordable
 struct User {
     #Directory<User>("app", "users")
-    #Index<User>([\email])
+    #Index<User>([\.email])
+    #PrimaryKey<User>([\.userID])
 
-    @PrimaryKey var userID: Int64
+    var userID: Int64
     var name: String
     var email: String
 }
@@ -628,10 +843,11 @@ struct User {
 @Recordable
 struct Order {
     #Directory<Order>("app", "orders")
-    #Index<Order>([\userID])
-    #Index<Order>([\createdAt])
+    #Index<Order>([\.userID])
+    #Index<Order>([\.createdAt])
+    #PrimaryKey<Order>([\.orderID])
 
-    @PrimaryKey var orderID: Int64
+    var orderID: Int64
     var userID: Int64  // 外部キー
     var total: Double
 
@@ -696,7 +912,7 @@ let orders = try await orderStore.query(Order.self)
 
 ---
 
-### エラー3: "No @PrimaryKey found"
+### エラー3: "No #PrimaryKey found"
 
 **原因**: 主キーが定義されていない
 
@@ -704,18 +920,20 @@ let orders = try await orderStore.query(Order.self)
 // ❌ 間違い
 @Recordable
 struct User {
-    var userID: Int64  // @PrimaryKeyがない
+    var userID: Int64  // #PrimaryKeyがない
     var name: String
 }
 ```
 
-**解決法**: `@PrimaryKey`を追加
+**解決法**: `#PrimaryKey`を追加
 
 ```swift
 // ✅ 正しい
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 }
 ```
@@ -777,13 +995,12 @@ fdbcli --exec "status"
 **A**:
 - **複合主キー**: レコードを一意に識別するフィールドの組み合わせ
   ```swift
-  @PrimaryKey var tenantID: String
-  @PrimaryKey var userID: Int64
+  #PrimaryKey<TenantUser>([\.tenantID, \.userID])
   ```
 
 - **複合インデックス**: 複数フィールドでの検索を高速化
   ```swift
-  #Index<User>([\city, \age])
+  #Index<User>([\.city, \.age])
   ```
 
 ---
@@ -816,7 +1033,9 @@ fdbcli --exec "status"
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     @Transient var isOnline: Bool = false  // DBに保存されない
@@ -834,7 +1053,7 @@ struct User {
 
 1. **適切なインデックスを作成**:
    ```swift
-   #Index<User>([\city, \age])  // 頻繁に検索するフィールド
+   #Index<User>([\.city, \.age])  // 頻繁に検索するフィールド
    ```
 
 2. **`limit()`で結果数を制限**:
@@ -874,7 +1093,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
     var name: String
 
     // 新しいフィールド（@Defaultでデフォルト値を指定）
@@ -887,7 +1108,9 @@ struct User {
 ```swift
 @Recordable
 struct User {
-    @PrimaryKey var userID: Int64
+    #PrimaryKey<User>([\.userID])
+
+    var userID: Int64
 
     @Attribute(originalName: "userName")
     var name: String  // 旧名: userName
@@ -911,6 +1134,6 @@ struct User {
 
 ---
 
-**最終更新**: 2025-01-09
+**最終更新**: 2025-01-13
 **バージョン**: 1.0.0
 **マクロAPI**: ✅ 100%完了

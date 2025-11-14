@@ -27,8 +27,9 @@ struct Message {
 
     #Index<Message>([\authorID])
     #Index<Message>([\createdAt])
+    #PrimaryKey<Message>([\.messageID])
 
-    @PrimaryKey var messageID: Int64
+    var messageID: Int64
     var tenantID: String  // First partition key
     var channelID: String  // Second partition key
     var authorID: Int64

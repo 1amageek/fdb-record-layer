@@ -5,67 +5,34 @@ import FDBRecordLayer
 // MARK: - Test Types
 
 @Recordable
-struct UserWithIndexes {#PrimaryKey<UserWithIndexes>([\.userID])
+struct UserWithIndexes {
+    #PrimaryKey<UserWithIndexes>([\.userID])
+    #Index<UserWithIndexes>([\.email])
+    #Index<UserWithIndexes>([\.city, \.state])
 
-    
     var userID: Int64
     var email: String
     var city: String
     var state: String
 }
 
-// Define indexes outside to avoid macro confusion
-extension UserWithIndexes {
-    static let emailIndex: IndexDefinition = IndexDefinition(
-        name: "UserWithIndexes_email_index",
-        recordType: "UserWithIndexes",
-        fields: ["email"],
-        unique: false
-    )
-
-    static let cityStateIndex: IndexDefinition = IndexDefinition(
-        name: "UserWithIndexes_city__state_index",
-        recordType: "UserWithIndexes",
-        fields: ["city", "state"],
-        unique: false
-    )
-
-    public static var indexDefinitions: [IndexDefinition] {
-        [emailIndex, cityStateIndex]
-    }
-}
-
 @Recordable
-struct UserWithUniqueIndex {#PrimaryKey<UserWithUniqueIndex>([\.userID])
+struct UserWithUniqueIndex {
+    #PrimaryKey<UserWithUniqueIndex>([\.userID])
+    #Unique<UserWithUniqueIndex>([\.email])
 
-    
     var userID: Int64
     var email: String
     var name: String
 }
 
-extension UserWithUniqueIndex {
-    static let emailIndex: IndexDefinition = IndexDefinition(
-        name: "UserWithUniqueIndex_email_index",
-        recordType: "UserWithUniqueIndex",
-        fields: ["email"],
-        unique: true
-    )
-
-    public static var indexDefinitions: [IndexDefinition] {
-        [emailIndex]
-    }
-}
-
 @Recordable
-struct UserWithoutIndexes {#PrimaryKey<UserWithoutIndexes>([\.userID])
+struct UserWithoutIndexes {
+    #PrimaryKey<UserWithoutIndexes>([\.userID])
 
-    
     var userID: Int64
     var name: String
 }
-
-// UserWithoutIndexes uses default [] from Recordable protocol
 
 // MARK: - Tests
 
@@ -89,7 +56,7 @@ struct IndexCollectionTests {
         // Check composite index
         let cityStateIndex = indexDefs.first { $0.fields == ["city", "state"] }
         #expect(cityStateIndex != nil, "City-state index should exist")
-        #expect(cityStateIndex?.name == "UserWithIndexes_city__state_index")
+        #expect(cityStateIndex?.name == "UserWithIndexes_city_state_index")
         #expect(cityStateIndex?.recordType == "UserWithIndexes")
         #expect(cityStateIndex?.unique == false, "City-state index should not be unique")
     }
@@ -103,7 +70,7 @@ struct IndexCollectionTests {
 
         let emailIndex = indexDefs.first
         #expect(emailIndex != nil, "Email index should exist")
-        #expect(emailIndex?.name == "UserWithUniqueIndex_email_index")
+        #expect(emailIndex?.name == "UserWithUniqueIndex_email_unique")
         #expect(emailIndex?.recordType == "UserWithUniqueIndex")
         #expect(emailIndex?.unique == true, "Email index should be unique")
     }
@@ -129,7 +96,7 @@ struct IndexCollectionTests {
         #expect(emailIndex?.type == .value)
         #expect(emailIndex?.recordTypes == Set(["UserWithIndexes"]))
 
-        let cityStateIndex = schema.indexes.first { $0.name == "UserWithIndexes_city__state_index" }
+        let cityStateIndex = schema.indexes.first { $0.name == "UserWithIndexes_city_state_index" }
         #expect(cityStateIndex != nil, "City-state index should be in schema")
         #expect(cityStateIndex?.type == .value)
         #expect(cityStateIndex?.recordTypes == Set(["UserWithIndexes"]))
@@ -143,7 +110,7 @@ struct IndexCollectionTests {
         let emailIndex = schema.index(named: "UserWithIndexes_email_index")
         #expect(emailIndex != nil, "Should find email index by name")
 
-        let cityStateIndex = schema.index(named: "UserWithIndexes_city__state_index")
+        let cityStateIndex = schema.index(named: "UserWithIndexes_city_state_index")
         #expect(cityStateIndex != nil, "Should find city-state index by name")
 
         let nonexistent = schema.index(named: "nonexistent_index")
