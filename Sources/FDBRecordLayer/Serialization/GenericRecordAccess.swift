@@ -51,16 +51,42 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
         return record.extractField(fieldName)
     }
 
-    /// Serialize a record to bytes
+    /// Extract Range boundary value
+    ///
+    /// Uses the macro-generated extractRangeBoundary() static function for type-safe,
+    /// compile-time boundary extraction. No Reflection overhead.
+    ///
+    /// - Parameters:
+    ///   - record: The record to extract from
+    ///   - fieldName: The field name containing the Range type
+    ///   - component: The boundary component to extract (lowerBound/upperBound)
+    /// - Returns: Array containing the boundary value as TupleElement (empty if nil Optional)
+    /// - Throws: RecordLayerError if field not found or not a Range type
+    public func extractRangeBoundary(
+        from record: Record,
+        fieldName: String,
+        component: RangeComponent
+    ) throws -> [any TupleElement] {
+        // Call macro-generated static function (type-safe, no Reflection)
+        return try Record.extractRangeBoundary(
+            fieldName: fieldName,
+            component: component,
+            from: record
+        )
+    }
+
+    /// Serialize a record to bytes using Protobuf wire format
     public func serialize(_ record: Record) throws -> FDB.Bytes {
-        let data = try record.toProtobuf()
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
         return FDB.Bytes(data)
     }
 
-    /// Deserialize bytes to a record
+    /// Deserialize bytes to a record from Protobuf wire format
     public func deserialize(_ bytes: FDB.Bytes) throws -> Record {
+        let decoder = ProtobufDecoder()
         let data = Data(bytes)
-        return try Record.fromProtobuf(data)
+        return try decoder.decode(Record.self, from: data)
     }
 
     /// Check if this RecordAccess supports reconstruction

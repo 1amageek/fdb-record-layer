@@ -125,4 +125,16 @@ private struct ValidationVisitor: KeyExpressionVisitor {
         // Recursively validate child expression
         try child.accept(visitor: self)
     }
+
+    func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws {
+        // Validate field name (same as visitField)
+        try visitField(fieldName)
+
+        // Validate component is valid
+        switch component {
+        case .lowerBound, .upperBound:
+            // Valid components
+            break
+        }
+    }
 }

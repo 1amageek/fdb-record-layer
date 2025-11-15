@@ -58,6 +58,28 @@ public protocol KeyExpressionVisitor {
     /// - Returns: The result of visiting the nest expression
     /// - Throws: If nest processing fails
     func visitNest(_ parentField: String, _ child: KeyExpression) throws -> Result
+
+    /// Visit a range boundary expression
+    /// - Parameters:
+    ///   - fieldName: The field name containing the Range type
+    ///   - component: The boundary component to extract (lowerBound/upperBound)
+    /// - Returns: The result of visiting the range boundary
+    /// - Throws: If range boundary extraction fails
+    func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> Result
+}
+
+// MARK: - Default Implementation
+
+extension KeyExpressionVisitor {
+    /// Default implementation of visitRangeBoundary that throws an error
+    ///
+    /// Visitors that need to support RangeKeyExpression must override this method.
+    /// The default implementation throws an unsupported error to maintain backward compatibility.
+    public func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> Result {
+        throw RecordLayerError.internalError(
+            "RangeKeyExpression not supported by this visitor. Override visitRangeBoundary() to support Range indexes."
+        )
+    }
 }
 
 // MARK: - KeyExpression Visitor Support
@@ -84,6 +106,9 @@ extension KeyExpression {
 
         case let nest as NestExpression:
             return try visitor.visitNest(nest.parentField, nest.child)
+
+        case let rangeExpr as RangeKeyExpression:
+            return try visitor.visitRangeBoundary(rangeExpr.fieldName, rangeExpr.component)
 
         default:
             // Handle all LiteralKeyExpression types generically

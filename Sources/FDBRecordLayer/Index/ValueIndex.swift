@@ -43,15 +43,17 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
     ) async throws {
         // Remove old index entry
         if let oldRecord = oldRecord {
-            let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess)
-            transaction.clear(key: oldKey)
+            if let oldKey = try buildIndexKey(record: oldRecord, recordAccess: recordAccess) {
+                transaction.clear(key: oldKey)
+            }
         }
 
         // Add new index entry
         if let newRecord = newRecord {
-            let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess)
-            let value = try buildIndexValue(record: newRecord, recordAccess: recordAccess)
-            transaction.setValue(value, for: newKey)
+            if let newKey = try buildIndexKey(record: newRecord, recordAccess: recordAccess) {
+                let value = try buildIndexValue(record: newRecord, recordAccess: recordAccess)
+                transaction.setValue(value, for: newKey)
+            }
         }
     }
 
@@ -61,9 +63,10 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
         recordAccess: any RecordAccess<Record>,
         transaction: any TransactionProtocol
     ) async throws {
-        let indexKey = try buildIndexKey(record: record, recordAccess: recordAccess)
-        let value = try buildIndexValue(record: record, recordAccess: recordAccess)
-        transaction.setValue(value, for: indexKey)
+        if let indexKey = try buildIndexKey(record: record, recordAccess: recordAccess) {
+            let value = try buildIndexValue(record: record, recordAccess: recordAccess)
+            transaction.setValue(value, for: indexKey)
+        }
     }
 
     // MARK: - Private Methods
@@ -71,12 +74,17 @@ public struct GenericValueIndexMaintainer<Record: Sendable>: GenericIndexMaintai
     private func buildIndexKey(
         record: Record,
         recordAccess: any RecordAccess<Record>
-    ) throws -> FDB.Bytes {
+    ) throws -> FDB.Bytes? {
         // Evaluate index expression to get indexed values
         let indexedValues = try recordAccess.evaluate(
             record: record,
             expression: index.rootExpression
         )
+
+        // If indexed values are empty (e.g., nil Optional Range), don't create index entry
+        guard !indexedValues.isEmpty else {
+            return nil
+        }
 
         // Extract primary key values using Recordable protocol
         let primaryKeyTuple: Tuple

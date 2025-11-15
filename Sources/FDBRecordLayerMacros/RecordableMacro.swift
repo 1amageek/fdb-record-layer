@@ -62,6 +62,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Generate static fieldName method for KeyPath resolution
         results.append(generateFieldNameMethod(typeName: typeName, fields: persistentFields))
 
+        // Note: CodingKeys generation removed due to Swift macro system restrictions
+        // Protobuf encoder will use Recordable.fieldNumber() instead
+
         return results
     }
 
@@ -130,8 +133,14 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Extract vector/spatial indexes from @Vector/@Spatial attributes
         let vectorSpatialIndexes = extractVectorSpatialIndexes(from: members, typeName: structName)
 
-        // Merge and deduplicate (allows @Attribute(.unique), #Unique, @Vector, @Spatial to coexist)
-        indexInfo = deduplicateIndexes(indexInfo + attributeUniques + vectorSpatialIndexes)
+        // Merge all indexes
+        let allIndexes = indexInfo + attributeUniques + vectorSpatialIndexes
+
+        // Expand Range type indexes (Range<T> → 2 indexes, PartialRange → 1 index)
+        let expandedIndexes = expandRangeIndexes(indexes: allIndexes, fields: fields)
+
+        // Deduplicate (allows @Attribute(.unique), #Unique, @Vector, @Spatial to coexist)
+        indexInfo = deduplicateIndexes(expandedIndexes)
 
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
@@ -466,13 +475,141 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         customName: customName,
                         typeName: typeName,
                         indexType: indexType,
-                        scope: scope
+                        scope: scope,
+                        rangeMetadata: nil
                     ))
                 }
             }
         }
 
         return indexes
+    }
+
+    /// Expand Range type indexes into multiple IndexInfo entries
+    ///
+    /// For each index that references a Range type field, generates 1-2 IndexInfo entries:
+    /// - Range/ClosedRange: 2 indexes (start + end)
+    /// - PartialRangeFrom: 1 index (start only)
+    /// - PartialRangeThrough/PartialRangeUpTo: 1 index (end only)
+    /// - UnboundedRange: compile error (cannot be indexed)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// #Index<Event>([\.period])  // period: Range<Date>
+    /// ```
+    /// Expands to:
+    /// ```swift
+    /// IndexInfo(fields: ["period"], rangeMetadata: RangeIndexMetadata(component: "lowerBound", boundaryType: "halfOpen", originalFieldName: "period"))
+    /// IndexInfo(fields: ["period"], rangeMetadata: RangeIndexMetadata(component: "upperBound", boundaryType: "halfOpen", originalFieldName: "period"))
+    /// ```
+    private static func expandRangeIndexes(
+        indexes: [IndexInfo],
+        fields: [FieldInfo]
+    ) -> [IndexInfo] {
+        var expandedIndexes: [IndexInfo] = []
+
+        for index in indexes {
+            // Only process VALUE indexes with a single field
+            guard index.indexType == .value, index.fields.count == 1 else {
+                expandedIndexes.append(index)
+                continue
+            }
+
+            let fieldName = index.fields[0]
+
+            // Find the field in FieldInfo
+            guard let fieldInfo = fields.first(where: { $0.name == fieldName }) else {
+                // Field not found - keep original index (error will be caught later)
+                expandedIndexes.append(index)
+                continue
+            }
+
+            // Normalize baseType to remove module prefixes (e.g., "Swift.Range<Date>" -> "Range<Date>")
+            let normalizedType = fieldInfo.typeInfo.baseType.split(separator: ".").last.map(String.init) ?? fieldInfo.typeInfo.baseType
+            // Detect Range type (use normalized baseType to handle Optional wrappers)
+            let rangeInfo = RangeTypeDetector.detectRangeType(normalizedType)
+
+            switch rangeInfo {
+            case .range, .closedRange:
+                // Generate 2 indexes: start + end
+                let boundaryType = rangeInfo.boundaryType
+
+                // Start index
+                expandedIndexes.append(IndexInfo(
+                    fields: [fieldName],
+                    isUnique: index.isUnique,
+                    customName: nil,  // Auto-generated name
+                    typeName: index.typeName,
+                    indexType: .value,
+                    scope: index.scope,
+                    rangeMetadata: RangeIndexMetadata(
+                        component: "lowerBound",
+                        boundaryType: boundaryType,
+                        originalFieldName: fieldName
+                    )
+                ))
+
+                // End index
+                expandedIndexes.append(IndexInfo(
+                    fields: [fieldName],
+                    isUnique: index.isUnique,
+                    customName: nil,
+                    typeName: index.typeName,
+                    indexType: .value,
+                    scope: index.scope,
+                    rangeMetadata: RangeIndexMetadata(
+                        component: "upperBound",
+                        boundaryType: boundaryType,
+                        originalFieldName: fieldName
+                    )
+                ))
+
+            case .partialRangeFrom:
+                // Generate 1 index: start only
+                expandedIndexes.append(IndexInfo(
+                    fields: [fieldName],
+                    isUnique: index.isUnique,
+                    customName: nil,
+                    typeName: index.typeName,
+                    indexType: .value,
+                    scope: index.scope,
+                    rangeMetadata: RangeIndexMetadata(
+                        component: "lowerBound",
+                        boundaryType: "closed",
+                        originalFieldName: fieldName
+                    )
+                ))
+
+            case .partialRangeThrough, .partialRangeUpTo:
+                // Generate 1 index: end only
+                let boundaryType = rangeInfo.boundaryType
+
+                expandedIndexes.append(IndexInfo(
+                    fields: [fieldName],
+                    isUnique: index.isUnique,
+                    customName: nil,
+                    typeName: index.typeName,
+                    indexType: .value,
+                    scope: index.scope,
+                    rangeMetadata: RangeIndexMetadata(
+                        component: "upperBound",
+                        boundaryType: boundaryType,
+                        originalFieldName: fieldName
+                    )
+                ))
+
+            case .unboundedRange:
+                // TODO: Emit compile error
+                // For now, skip this index (will cause runtime error)
+                continue
+
+            case .notRange:
+                // Not a Range type - keep original index
+                expandedIndexes.append(index)
+            }
+        }
+
+        return expandedIndexes
     }
 
     /// Extract unique constraints from @Attribute(.unique) properties
@@ -538,7 +675,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     customName: nil,
                     typeName: typeName,
                     indexType: .value,
-                    scope: .partition
+                    scope: .partition,
+                    rangeMetadata: nil
                 ))
             }
         }
@@ -619,7 +757,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                             dimensions: dimensions,
                             metric: metric
                         ),
-                        scope: .partition
+                        scope: .partition,
+                        rangeMetadata: nil
                     ))
                 } else if attrName == "Spatial" {
                     // Extract parameters from @Spatial(type: .geo)
@@ -643,7 +782,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         customName: nil,
                         typeName: typeName,
                         indexType: .spatial(type: spatialType),
-                        scope: .partition
+                        scope: .partition,
+                        rangeMetadata: nil
                     ))
                 }
             }
@@ -678,12 +818,13 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
     /// - Parameter indexes: Array of IndexInfo to deduplicate
     /// - Returns: Deduplicated array (preserving original order)
     private static func deduplicateIndexes(_ indexes: [IndexInfo]) -> [IndexInfo] {
-        // Use a comparable key that includes field order, isUnique, customName, AND indexType
+        // Use a comparable key that includes field order, isUnique, customName, indexType, AND rangeMetadata
         struct IndexKey: Hashable {
             let fields: [String]         // Preserve order
             let isUnique: Bool
             let customName: String?
             let indexType: IndexInfoType // IMPORTANT: Different index types on same field are distinct
+            let rangeComponent: String?  // Range boundary component (lowerBound/upperBound)
         }
 
         var seen: Set<IndexKey> = []
@@ -694,7 +835,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 fields: index.fields,      // Array preserves order
                 isUnique: index.isUnique,
                 customName: index.customName,
-                indexType: index.indexType // Consider index type for deduplication
+                indexType: index.indexType, // Consider index type for deduplication
+                rangeComponent: index.rangeMetadata?.component // Consider Range component
             )
             if !seen.contains(key) {
                 seen.insert(key)
@@ -815,6 +957,51 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         """
     }
 
+    /// Generate CodingKeys enum for Protobuf encoder/decoder
+    ///
+    /// Generates an enum with:
+    /// - String and CodingKey conformance
+    /// - Cases for each persistent field
+    /// - intValue computed property returning field index (0-based)
+    /// - init?(intValue:) initializer for decoding
+    private static func generateCodingKeys(
+        fields: [FieldInfo]
+    ) -> DeclSyntax {
+        // Generate case declarations
+        let cases = fields.map { field in
+            "case \(field.name)"
+        }.joined(separator: "\n        ")
+
+        // Generate intValue switch cases (Protobuf field numbers start from 1)
+        let intValueCases = fields.enumerated().map { index, field in
+            "case .\(field.name): return \(index + 1)"
+        }.joined(separator: "\n            ")
+
+        // Generate init?(intValue:) switch cases (Protobuf field numbers start from 1)
+        let initCases = fields.enumerated().map { index, field in
+            "case \(index + 1): self = .\(field.name)"
+        }.joined(separator: "\n            ")
+
+        return """
+        enum CodingKeys: String, CodingKey {
+            \(raw: cases)
+
+            var intValue: Int? {
+                switch self {
+                \(raw: intValueCases)
+                }
+            }
+
+            init?(intValue: Int) {
+                switch intValue {
+                \(raw: initCases)
+                default: return nil
+                }
+            }
+        }
+        """
+    }
+
     /// Generate IndexDefinition static properties and indexDefinitions array
     ///
     /// Returns a tuple of:
@@ -872,6 +1059,18 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             // Generate scope parameter
             let scopeParam = "scope: .\(info.scope.rawValue)"
 
+            // Generate Range parameters if present
+            let rangeParams: String
+            if let rangeMetadata = info.rangeMetadata {
+                rangeParams = """
+,
+                        rangeComponent: .\(rangeMetadata.component),
+                        boundaryType: .\(rangeMetadata.boundaryType)
+"""
+            } else {
+                rangeParams = ""
+            }
+
             return """
 
                 public static var \(varName): IndexDefinition {
@@ -881,7 +1080,7 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                         fields: [\(fieldsLiteral)],
                         unique: \(unique),
                         \(indexTypeParam),
-                        \(scopeParam)
+                        \(scopeParam)\(rangeParams)
                     )
                 }
             """
@@ -1170,25 +1369,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             return "case \"\(field.name)\": return \(fieldNumber)"
         }.joined(separator: "\n            ")
 
-        // Generate toProtobuf
-        let serializeFields = fields.enumerated().map { index, field in
-            let fieldNumber = index + 1
-            return generateSerializeField(field: field, fieldNumber: fieldNumber)
-        }.joined(separator: "\n        ")
-
-        // Generate fromProtobuf
-        let deserializeFields = fields.enumerated().map { index, field in
-            let fieldNumber = index + 1
-            return generateDeserializeField(field: field, fieldNumber: fieldNumber)
-        }.joined(separator: "\n            ")
-
-        // Generate required field validation
-        let requiredFieldValidation = generateRequiredFieldValidation(fields: fields)
-
-        let initFields = fields.map { field in
-            "\(field.name): \(field.name)"
-        }.joined(separator: ", ")
-
         // Generate extractField
         let extractFieldCases = fields.map { field in
             generateExtractFieldCase(field: field)
@@ -1196,6 +1376,23 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
 
         // Generate nested field handling for custom types
         let nestedFieldHandling = generateNestedFieldHandling(fields: fields)
+
+        // Generate extractRangeBoundary cases for Range-type fields
+        let extractRangeBoundaryCases = fields.compactMap { field in
+            let typeInfo = field.typeInfo
+            if case .range = typeInfo.category {
+                return generateExtractRangeBoundaryCase(field: field)
+            }
+            return nil
+        }.joined(separator: "\n            ")
+
+        // Check if there are any Range fields
+        let hasRangeFields = fields.contains { field in
+            if case .range = field.typeInfo.category {
+                return true
+            }
+            return false
+        }
 
         // Generate extractPrimaryKey
         let primaryKeyExtraction = primaryKeyFields.map { field in
@@ -1251,150 +1448,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                 }
             }
 
-            public func toProtobuf() throws -> Data {
-                var data = Data()
-
-                func encodeVarint(_ value: UInt64) -> [UInt8] {
-                    var result: [UInt8] = []
-                    var n = value
-                    while n >= 0x80 {
-                        result.append(UInt8(n & 0x7F) | 0x80)
-                        n >>= 7
-                    }
-                    result.append(UInt8(n))
-                    return result
-                }
-
-                func encodeItem(_ item: Any) throws -> Data {
-                    if let recordable = item as? any Recordable {
-                        return try recordable.toProtobuf()
-                    }
-
-                    var itemData = Data()
-
-                    // Varint types
-                    if let value = item as? Bool {
-                        itemData.append(contentsOf: encodeVarint(value ? 1 : 0))
-                    } else if let value = item as? Int32 {
-                        itemData.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(value))))
-                    } else if let value = item as? UInt32 {
-                        itemData.append(contentsOf: encodeVarint(UInt64(value)))
-                    } else if let value = item as? Int64 {
-                        itemData.append(contentsOf: encodeVarint(UInt64(bitPattern: value)))
-                    } else if let value = item as? UInt64 {
-                        itemData.append(contentsOf: encodeVarint(value))
-                    }
-                    // Fixed 32-bit
-                    else if let value = item as? Float {
-                        let bits = value.bitPattern
-                        itemData.append(UInt8(truncatingIfNeeded: bits))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                    }
-                    // Fixed 64-bit
-                    else if let value = item as? Double {
-                        let bits = value.bitPattern
-                        itemData.append(UInt8(truncatingIfNeeded: bits))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 32))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 40))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 48))
-                        itemData.append(UInt8(truncatingIfNeeded: bits >> 56))
-                    }
-                    // Length-delimited
-                    else if let value = item as? String {
-                        itemData.append(value.data(using: .utf8) ?? Data())
-                    } else if let value = item as? Data {
-                        itemData.append(value)
-                    } else {
-                        // Unknown type - throw error for safety
-                        throw RecordLayerError.serializationFailed("Unknown type in encodeItem: \\(type(of: item))")
-                    }
-
-                    return itemData
-                }
-
-                func encodeValue(_ value: Any) throws -> Data {
-                    return try encodeItem(value)
-                }
-
-                \(raw: serializeFields)
-                return data
-            }
-
-            public static func fromProtobuf(_ data: Data) throws -> \(raw: typeName) {
-                var offset = 0
-                \(raw: deserializeFields)
-
-                func decodeVarint(_ data: Data, offset: inout Int) throws -> UInt64 {
-                    var result: UInt64 = 0
-                    var shift: UInt64 = 0
-                    while offset < data.count {
-                        let byte = data[offset]
-                        offset += 1
-                        result |= UInt64(byte & 0x7F) << shift
-                        if byte & 0x80 == 0 {
-                            return result
-                        }
-                        shift += 7
-                        if shift >= 64 {
-                            throw RecordLayerError.serializationFailed("Varint too long")
-                        }
-                    }
-                    throw RecordLayerError.serializationFailed("Unexpected end of data")
-                }
-
-                // Parse protobuf data
-                while offset < data.count {
-                    let tag = try decodeVarint(data, offset: &offset)
-                    let fieldNumber = Int(tag >> 3)
-                    let wireType = Int(tag & 0x7)
-
-                    switch fieldNumber {
-                    \(raw: generateDecodeSwitch(fields: fields))
-                    default:
-                        // Skip unknown field
-                        try skipField(data: data, offset: &offset, wireType: wireType)
-                    }
-                }
-
-                func skipField(data: Data, offset: inout Int, wireType: Int) throws {
-                    switch wireType {
-                    case 0: // Varint
-                        _ = try decodeVarint(data, offset: &offset)
-                    case 1: // 64-bit
-                        let endOffset = offset + 8
-                        guard endOffset <= data.count else {
-                            throw RecordLayerError.serializationFailed("Invalid 64-bit field: offset=\\(offset), dataSize=\\(data.count)")
-                        }
-                        offset = endOffset
-                    case 2: // Length-delimited
-                        let length = try decodeVarint(data, offset: &offset)
-                        let endOffset = offset + Int(length)
-                        guard endOffset <= data.count else {
-                            throw RecordLayerError.serializationFailed("Invalid length-delimited field: length=\\(length), remaining=\\(data.count - offset)")
-                        }
-                        offset = endOffset
-                    case 5: // 32-bit
-                        let endOffset = offset + 4
-                        guard endOffset <= data.count else {
-                            throw RecordLayerError.serializationFailed("Invalid 32-bit field: offset=\\(offset), dataSize=\\(data.count)")
-                        }
-                        offset = endOffset
-                    default:
-                        throw RecordLayerError.serializationFailed("Unknown wire type: \\(wireType)")
-                    }
-                }
-
-                // Validate required fields
-                \(raw: requiredFieldValidation)
-
-                return \(raw: typeName)(\(raw: initFields))
-            }
-
             public func extractField(_ fieldName: String) -> [any TupleElement] {
                 // Handle nested field paths (e.g., "address.city")
                 if fieldName.contains(".") {
@@ -1419,6 +1472,29 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                 }
             }
 
+            public static func extractRangeBoundary(
+                fieldName: String,
+                component: RangeComponent,
+                from record: any Recordable
+            ) throws -> [any TupleElement] {
+                \(raw: hasRangeFields ? """
+                // Cast to concrete type for field access
+                guard let typedRecord = record as? \(typeName) else {
+                    throw RecordLayerError.internalError("Expected \(typeName), got \\(type(of: record))")
+                }
+
+                switch (fieldName, component) {
+                \(extractRangeBoundaryCases)
+                default:
+                    throw RecordLayerError.fieldNotFound(fieldName)
+                }
+                """ : """
+                // No Range fields in this type
+                _ = record  // Suppress unused warning
+                throw RecordLayerError.fieldNotFound(fieldName)
+                """)
+            }
+
             public func extractPrimaryKey() -> Tuple {
                 return Tuple([\(raw: primaryKeyExtraction)])
             }
@@ -1441,683 +1517,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         return ext
     }
 
-    private static func generateSerializeField(field: FieldInfo, fieldNumber: Int) -> String {
-        let wireType = getWireType(for: field.type)
-        let tag = (fieldNumber << 3) | wireType
-
-        switch field.type {
-        case "Int32":
-            return """
-            // Field \(fieldNumber): \(field.name) (Int32)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(truncatingIfNeeded: UInt32(bitPattern: self.\(field.name)))))
-            """
-
-        case "Int":
-            return """
-            // Field \(fieldNumber): \(field.name) (Int)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(self.\(field.name)))))
-            """
-
-        case "Int64":
-            return """
-            // Field \(fieldNumber): \(field.name) (Int64)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(bitPattern: self.\(field.name))))
-            """
-
-        case "UInt32":
-            return """
-            // Field \(fieldNumber): \(field.name) (UInt32)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(self.\(field.name))))
-            """
-
-        case "UInt":
-            return """
-            // Field \(fieldNumber): \(field.name) (UInt)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(self.\(field.name))))
-            """
-
-        case "UInt64":
-            return """
-            // Field \(fieldNumber): \(field.name) (UInt64)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(self.\(field.name)))
-            """
-
-        case "Bool":
-            return """
-            // Field \(fieldNumber): \(field.name) (Bool)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(self.\(field.name) ? 1 : 0))
-            """
-
-        case "String":
-            return """
-            // Field \(fieldNumber): \(field.name) (String)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            let \(field.name)Data = self.\(field.name).data(using: .utf8)!
-            data.append(contentsOf: encodeVarint(UInt64(\(field.name)Data.count)))
-            data.append(\(field.name)Data)
-            """
-
-        case "Data":
-            return """
-            // Field \(fieldNumber): \(field.name) (Data)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            data.append(contentsOf: encodeVarint(UInt64(self.\(field.name).count)))
-            data.append(self.\(field.name))
-            """
-
-        case "Double":
-            return """
-            // Field \(fieldNumber): \(field.name) (Double)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            let \(field.name)Bits = self.\(field.name).bitPattern
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 8))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 16))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 24))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 32))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 40))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 48))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 56))
-            """
-
-        case "Float":
-            return """
-            // Field \(fieldNumber): \(field.name) (Float)
-            data.append(contentsOf: encodeVarint(\(tag)))
-            let \(field.name)Bits = self.\(field.name).bitPattern
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 8))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 16))
-            data.append(UInt8(truncatingIfNeeded: \(field.name)Bits >> 24))
-            """
-
-        default:
-            // Use typeInfo for accurate type detection
-            // Check for Optional<Array<T>> first (both isArray and isOptional are true)
-            if field.typeInfo.isOptional && field.typeInfo.isArray {
-                return generateOptionalArraySerialize(field: field, fieldNumber: fieldNumber)
-            } else if field.typeInfo.isArray {
-                return generateArraySerialize(field: field, fieldNumber: fieldNumber)
-            } else if field.typeInfo.isOptional {
-                return generateOptionalSerialize(field: field, fieldNumber: fieldNumber)
-            } else {
-                // Assume nested message
-                return """
-                // Field \(fieldNumber): \(field.name) (\(field.type))
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let nested = try self.\(field.name).toProtobuf()
-                data.append(contentsOf: encodeVarint(UInt64(nested.count)))
-                data.append(nested)
-                """
-            }
-        }
-    }
-
-    private static func generateDeserializeField(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        // Optional<Array<T>>: initialize to nil
-        if typeInfo.isOptional && typeInfo.isArray {
-            return "var \(field.name): \(field.type) = nil"
-        }
-
-        // Arrays are always initialized to empty array
-        if typeInfo.isArray {
-            return "var \(field.name): \(field.type) = []"
-        }
-
-        // Optional types are always initialized to nil
-        if typeInfo.isOptional {
-            return "var \(field.name): \(field.type) = nil"
-        }
-
-        // Primitive types have appropriate defaults
-        if case .primitive(let primitiveType) = typeInfo.category {
-            let defaultValue = getPrimitiveDefaultValue(primitiveType)
-            return "var \(field.name): \(typeInfo.baseType) = \(defaultValue)"
-        }
-
-        // Custom types (non-optional) are initialized to nil temporarily
-        // They will be checked for presence after parsing
-        return "var \(field.name): \(typeInfo.baseType)? = nil"
-    }
-
-    private static func getPrimitiveDefaultValue(_ primitiveType: PrimitiveType) -> String {
-        switch primitiveType {
-        case .int32, .int64, .uint32, .uint64:
-            return "0"
-        case .bool:
-            return "false"
-        case .string:
-            return "\"\""
-        case .data:
-            return "Data()"
-        case .double, .float:
-            return "0.0"
-        }
-    }
-
-    private static func generateOptionalArraySerialize(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        // Get element type from the array
-        guard let elementTypeBox = typeInfo.arrayElementType else {
-            // Fallback: should not happen
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Array>) - fallback
-            if let array = self.\(field.name) {
-                for item in array {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    let itemData = try encodeItem(item)
-                    data.append(contentsOf: encodeVarint(UInt64(itemData.count)))
-                    data.append(itemData)
-                }
-            }
-            """
-        }
-
-        let elementType = elementTypeBox.value
-
-        // Check if element type is primitive
-        guard case .primitive(let primitiveType) = elementType.category else {
-            // Custom types: unpacked repeated
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[\(elementType.baseType)]>)
-            if let array = self.\(field.name) {
-                for item in array {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    let nested = try item.toProtobuf()
-                    data.append(contentsOf: encodeVarint(UInt64(nested.count)))
-                    data.append(nested)
-                }
-            }
-            """
-        }
-
-        // Primitive types: use packed repeated for numeric types
-        switch primitiveType {
-        // Varint types - packed
-        case .int32:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Int32]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    packedData.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(item))))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .int64:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Int64]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    packedData.append(contentsOf: encodeVarint(UInt64(bitPattern: item)))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .uint32:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[UInt32]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    packedData.append(contentsOf: encodeVarint(UInt64(item)))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .uint64:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[UInt64]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    packedData.append(contentsOf: encodeVarint(item))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .bool:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Bool]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    packedData.append(contentsOf: encodeVarint(item ? 1 : 0))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .double:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Double]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    let bits = item.bitPattern
-                    packedData.append(UInt8(truncatingIfNeeded: bits))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 32))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 40))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 48))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 56))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .float:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Float]>) - packed
-            if let array = self.\(field.name), !array.isEmpty {
-                var packedData = Data()
-                for item in array {
-                    let bits = item.bitPattern
-                    packedData.append(UInt8(truncatingIfNeeded: bits))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        // Length-delimited types - unpacked
-        case .string:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[String]>) - unpacked
-            if let array = self.\(field.name) {
-                for item in array {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    let stringData = item.data(using: .utf8)!
-                    data.append(contentsOf: encodeVarint(UInt64(stringData.count)))
-                    data.append(stringData)
-                }
-            }
-            """
-        case .data:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<[Data]>) - unpacked
-            if let array = self.\(field.name) {
-                for item in array {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    data.append(contentsOf: encodeVarint(UInt64(item.count)))
-                    data.append(item)
-                }
-            }
-            """
-        }
-    }
-
-    private static func generateArraySerialize(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        // Arrays must have element type info
-        guard let elementTypeBox = typeInfo.arrayElementType else {
-            // Fallback: should not happen if type analysis is correct
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Array) - fallback
-            for item in self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let itemData = try encodeItem(item)
-                data.append(contentsOf: encodeVarint(UInt64(itemData.count)))
-                data.append(itemData)
-            }
-            """
-        }
-
-        let elementType = elementTypeBox.value
-
-        // Check if element type is primitive
-        guard case .primitive(let primitiveType) = elementType.category else {
-            // Custom types: unpacked repeated (each element has tag + length + data)
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([\(elementType.baseType)])
-            for item in self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let nested = try item.toProtobuf()
-                data.append(contentsOf: encodeVarint(UInt64(nested.count)))
-                data.append(nested)
-            }
-            """
-        }
-
-        // Primitive types: use packed repeated (Proto3 default)
-        switch primitiveType {
-        // Varint types - packed
-        case .int32:
-            let tag = (fieldNumber << 3) | 2  // Length-delimited for packed
-            return """
-            // Field \(fieldNumber): \(field.name) ([Int32]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    packedData.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(item))))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .int64:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([Int64]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    packedData.append(contentsOf: encodeVarint(UInt64(bitPattern: item)))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .uint32:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([UInt32]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    packedData.append(contentsOf: encodeVarint(UInt64(item)))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .uint64:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([UInt64]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    packedData.append(contentsOf: encodeVarint(item))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-        case .bool:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([Bool]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    packedData.append(contentsOf: encodeVarint(item ? 1 : 0))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-
-        // Fixed 64-bit - packed
-        case .double:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([Double]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    let bits = item.bitPattern
-                    packedData.append(UInt8(truncatingIfNeeded: bits))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 32))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 40))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 48))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 56))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-
-        // Fixed 32-bit - packed
-        case .float:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([Float]) - packed
-            if !self.\(field.name).isEmpty {
-                var packedData = Data()
-                for item in self.\(field.name) {
-                    let bits = item.bitPattern
-                    packedData.append(UInt8(truncatingIfNeeded: bits))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 8))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 16))
-                    packedData.append(UInt8(truncatingIfNeeded: bits >> 24))
-                }
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(packedData.count)))
-                data.append(packedData)
-            }
-            """
-
-        // Length-delimited types - unpacked (each element has tag + length + data)
-        case .string:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([String]) - unpacked
-            for item in self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let stringData = item.data(using: .utf8)!
-                data.append(contentsOf: encodeVarint(UInt64(stringData.count)))
-                data.append(stringData)
-            }
-            """
-        case .data:
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) ([Data]) - unpacked
-            for item in self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(item.count)))
-                data.append(item)
-            }
-            """
-        }
-    }
-
-    private static func generateOptionalSerialize(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        // Get the wire type for the wrapped type
-        guard case .primitive(let primitiveType) = typeInfo.category else {
-            // Custom types: use length-delimited (wire type 2)
-            let tag = (fieldNumber << 3) | 2
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<\(typeInfo.baseType)>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let nested = try value.toProtobuf()
-                data.append(contentsOf: encodeVarint(UInt64(nested.count)))
-                data.append(nested)
-            }
-            """
-        }
-
-        // Primitive types: use correct wire type
-        switch primitiveType {
-        case .int32:
-            let tag = (fieldNumber << 3) | 0  // Varint
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Int32>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(value))))
-            }
-            """
-        case .int64:
-            let tag = (fieldNumber << 3) | 0  // Varint
-            // Handle both Int64 and Int (which is stored as Int64 in Protobuf)
-            let needsConversion = (typeInfo.baseType == "Int")
-            if needsConversion {
-                return """
-                // Field \(fieldNumber): \(field.name) (Optional<Int>)
-                if let value = self.\(field.name) {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    data.append(contentsOf: encodeVarint(UInt64(bitPattern: Int64(value))))
-                }
-                """
-            } else {
-                return """
-                // Field \(fieldNumber): \(field.name) (Optional<Int64>)
-                if let value = self.\(field.name) {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    data.append(contentsOf: encodeVarint(UInt64(bitPattern: value)))
-                }
-                """
-            }
-        case .uint32:
-            let tag = (fieldNumber << 3) | 0  // Varint
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<UInt32>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(value)))
-            }
-            """
-        case .uint64:
-            let tag = (fieldNumber << 3) | 0  // Varint
-            // Handle both UInt64 and UInt (which is stored as UInt64 in Protobuf)
-            let needsConversion = (typeInfo.baseType == "UInt")
-            if needsConversion {
-                return """
-                // Field \(fieldNumber): \(field.name) (Optional<UInt>)
-                if let value = self.\(field.name) {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    data.append(contentsOf: encodeVarint(UInt64(value)))
-                }
-                """
-            } else {
-                return """
-                // Field \(fieldNumber): \(field.name) (Optional<UInt64>)
-                if let value = self.\(field.name) {
-                    data.append(contentsOf: encodeVarint(\(tag)))
-                    data.append(contentsOf: encodeVarint(value))
-                }
-                """
-            }
-        case .bool:
-            let tag = (fieldNumber << 3) | 0  // Varint
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Bool>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(value ? 1 : 0))
-            }
-            """
-        case .string:
-            let tag = (fieldNumber << 3) | 2  // Length-delimited
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<String>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let stringData = value.data(using: .utf8)!
-                data.append(contentsOf: encodeVarint(UInt64(stringData.count)))
-                data.append(stringData)
-            }
-            """
-        case .data:
-            let tag = (fieldNumber << 3) | 2  // Length-delimited
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Data>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                data.append(contentsOf: encodeVarint(UInt64(value.count)))
-                data.append(value)
-            }
-            """
-        case .double:
-            let tag = (fieldNumber << 3) | 1  // 64-bit fixed
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Double>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let bits = value.bitPattern
-                data.append(UInt8(truncatingIfNeeded: bits))
-                data.append(UInt8(truncatingIfNeeded: bits >> 8))
-                data.append(UInt8(truncatingIfNeeded: bits >> 16))
-                data.append(UInt8(truncatingIfNeeded: bits >> 24))
-                data.append(UInt8(truncatingIfNeeded: bits >> 32))
-                data.append(UInt8(truncatingIfNeeded: bits >> 40))
-                data.append(UInt8(truncatingIfNeeded: bits >> 48))
-                data.append(UInt8(truncatingIfNeeded: bits >> 56))
-            }
-            """
-        case .float:
-            let tag = (fieldNumber << 3) | 5  // 32-bit fixed
-            return """
-            // Field \(fieldNumber): \(field.name) (Optional<Float>)
-            if let value = self.\(field.name) {
-                data.append(contentsOf: encodeVarint(\(tag)))
-                let bits = value.bitPattern
-                data.append(UInt8(truncatingIfNeeded: bits))
-                data.append(UInt8(truncatingIfNeeded: bits >> 8))
-                data.append(UInt8(truncatingIfNeeded: bits >> 16))
-                data.append(UInt8(truncatingIfNeeded: bits >> 24))
-            }
-            """
-        }
-    }
-
-    private static func getWireType(for type: String) -> Int {
-        switch type {
-        case "Int32", "Int64", "UInt32", "UInt64", "Bool":
-            return 0 // Varint
-        case "Double":
-            return 1 // 64-bit
-        case "Float":
-            return 5 // 32-bit
-        default:
-            return 2 // Length-delimited
-        }
-    }
 
     private static func generateExtractFieldCase(field: FieldInfo) -> String {
         let typeInfo = field.typeInfo
@@ -2203,6 +1602,130 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         }.joined(separator: "\n                ")
     }
 
+    /// Generate switch cases for Range boundary extraction
+    ///
+    /// For each Range-type field, generate cases for lowerBound and upperBound extraction.
+    /// Handles Optional unwrapping and TupleElement conversion at compile time.
+    private static func generateExtractRangeBoundaryCase(field: FieldInfo) -> String {
+        let typeInfo = field.typeInfo
+        // Normalize baseType to remove module prefixes (e.g., "Swift.Range<Date>" -> "Range<Date>")
+        let normalizedType = typeInfo.baseType.split(separator: ".").last.map(String.init) ?? typeInfo.baseType
+        // Use normalized baseType to handle Optional wrappers correctly
+        let rangeInfo = RangeTypeDetector.detectRangeType(normalizedType)
+
+        // Verify that the Range type was correctly detected
+        guard rangeInfo.boundType != nil else {
+            // This should never happen if category = .range, but handle it gracefully
+            return """
+            // WARNING: Could not extract bound type for Range field '\(field.name)'
+            case ("\(field.name)", _):
+                throw RecordLayerError.internalError("Could not extract bound type for Range field '\(field.name)'")
+            """
+        }
+
+        // Generate extraction logic based on Range type and Optional status
+        if typeInfo.isOptional {
+            // Optional Range types: unwrap then extract boundary
+            switch rangeInfo {
+            case .range:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.lowerBound]
+                case ("\(field.name)", .upperBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.upperBound]
+                """
+
+            case .closedRange:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.lowerBound]
+                case ("\(field.name)", .upperBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.upperBound]
+                """
+
+            case .partialRangeFrom:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.lowerBound]
+                case ("\(field.name)", .upperBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "upperBound", availableComponent: "lowerBound")
+                """
+
+            case .partialRangeThrough:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
+                case ("\(field.name)", .upperBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.upperBound]
+                """
+
+            case .partialRangeUpTo:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
+                case ("\(field.name)", .upperBound):
+                    guard let range = typedRecord.\(field.name) else { return [] }
+                    return [range.upperBound]
+                """
+
+            case .unboundedRange, .notRange:
+                return ""  // Should not happen, but handle gracefully
+            }
+        } else {
+            // Non-optional Range types: direct extraction
+            switch rangeInfo {
+            case .range:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    return [typedRecord.\(field.name).lowerBound]
+                case ("\(field.name)", .upperBound):
+                    return [typedRecord.\(field.name).upperBound]
+                """
+
+            case .closedRange:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    return [typedRecord.\(field.name).lowerBound]
+                case ("\(field.name)", .upperBound):
+                    return [typedRecord.\(field.name).upperBound]
+                """
+
+            case .partialRangeFrom:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    return [typedRecord.\(field.name).lowerBound]
+                case ("\(field.name)", .upperBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "upperBound", availableComponent: "lowerBound")
+                """
+
+            case .partialRangeThrough:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
+                case ("\(field.name)", .upperBound):
+                    return [typedRecord.\(field.name).upperBound]
+                """
+
+            case .partialRangeUpTo:
+                return """
+                case ("\(field.name)", .lowerBound):
+                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
+                case ("\(field.name)", .upperBound):
+                    return [typedRecord.\(field.name).upperBound]
+                """
+
+            case .unboundedRange, .notRange:
+                return ""  // Should not happen, but handle gracefully
+            }
+        }
+    }
+
     // MARK: - Type Analysis
 
     /// Analyze a type string and return detailed type information
@@ -2254,10 +1777,20 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         )
     }
 
-    /// Classify a type as primitive or custom
+    /// Classify a type as primitive, range, or custom
     private static func classifyType(_ type: String) -> TypeCategory {
         // Normalize type by removing module prefixes (e.g., "Swift.Int64" -> "Int64", "Foundation.Data" -> "Data")
         let normalizedType = type.split(separator: ".").last.map(String.init) ?? type
+
+        // Check for Range types
+        if normalizedType.hasPrefix("Range<") ||
+           normalizedType.hasPrefix("ClosedRange<") ||
+           normalizedType.hasPrefix("PartialRangeFrom<") ||
+           normalizedType.hasPrefix("PartialRangeThrough<") ||
+           normalizedType.hasPrefix("PartialRangeUpTo<") ||
+           normalizedType == "UnboundedRange" {
+            return .range
+        }
 
         switch normalizedType {
         case "Int32": return .primitive(.int32)
@@ -2273,751 +1806,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         }
     }
 
-    private static func generateDecodeSwitch(fields: [FieldInfo]) -> String {
-        return fields.enumerated().map { index, field in
-            let fieldNumber = index + 1
-            return generateDecodeCase(field: field, fieldNumber: fieldNumber)
-        }.joined(separator: "\n                    ")
-    }
-
-    /// Generate validation code for required (non-optional custom type) fields
-    private static func generateRequiredFieldValidation(fields: [FieldInfo]) -> String {
-        // Filter for required custom type fields
-        let requiredCustomFields = fields.filter { field in
-            let typeInfo = field.typeInfo
-            // Required if: custom type AND not optional AND not array
-            if case .custom = typeInfo.category {
-                return !typeInfo.isOptional && !typeInfo.isArray
-            }
-            return false
-        }
-
-        if requiredCustomFields.isEmpty {
-            return ""
-        }
-
-        // Generate guard let statements for each required field
-        return requiredCustomFields.map { field in
-            """
-            guard let \(field.name) = \(field.name) else {
-                    throw RecordLayerError.serializationFailed("Required field '\(field.name)' is missing")
-                }
-            """
-        }.joined(separator: "\n                ")
-    }
-
-    // MARK: - Deserialization Helpers
-
-    private static func generatePrimitiveDecode(field: FieldInfo, fieldNumber: Int, primitiveType: PrimitiveType) -> String {
-        let typeInfo = field.typeInfo
-        let isOptional = typeInfo.isOptional
-
-        switch primitiveType {
-        case .int32:
-            if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (Int32?)
-                    \(field.name) = Int32(bitPattern: UInt32(truncatingIfNeeded: try decodeVarint(data, offset: &offset)))
-                """
-            } else {
-                return """
-                case \(fieldNumber): // \(field.name) (Int32)
-                    \(field.name) = Int32(bitPattern: UInt32(truncatingIfNeeded: try decodeVarint(data, offset: &offset)))
-                """
-            }
-        case .int64:
-            // Handle both Int64 and Int (which is stored as Int64 in Protobuf)
-            let needsConversion = (typeInfo.baseType == "Int")
-            if isOptional {
-                if needsConversion {
-                    return """
-                    case \(fieldNumber): // \(field.name) (Int?)
-                        \(field.name) = Int(Int64(bitPattern: try decodeVarint(data, offset: &offset)))
-                    """
-                } else {
-                    return """
-                    case \(fieldNumber): // \(field.name) (Int64?)
-                        \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
-                    """
-                }
-            } else {
-                if needsConversion {
-                    return """
-                    case \(fieldNumber): // \(field.name) (Int)
-                        \(field.name) = Int(Int64(bitPattern: try decodeVarint(data, offset: &offset)))
-                    """
-                } else {
-                    return """
-                    case \(fieldNumber): // \(field.name) (Int64)
-                        \(field.name) = Int64(bitPattern: try decodeVarint(data, offset: &offset))
-                    """
-                }
-            }
-        case .uint32:
-            if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (UInt32?)
-                    \(field.name) = UInt32(truncatingIfNeeded: try decodeVarint(data, offset: &offset))
-                """
-            } else {
-                return """
-                case \(fieldNumber): // \(field.name) (UInt32)
-                    \(field.name) = UInt32(truncatingIfNeeded: try decodeVarint(data, offset: &offset))
-                """
-            }
-        case .uint64:
-            // Handle both UInt64 and UInt (which is stored as UInt64 in Protobuf)
-            let needsConversion = (typeInfo.baseType == "UInt")
-            if isOptional {
-                if needsConversion {
-                    return """
-                    case \(fieldNumber): // \(field.name) (UInt?)
-                        \(field.name) = UInt(try decodeVarint(data, offset: &offset))
-                    """
-                } else {
-                    return """
-                    case \(fieldNumber): // \(field.name) (UInt64?)
-                        \(field.name) = try decodeVarint(data, offset: &offset)
-                    """
-                }
-            } else {
-                if needsConversion {
-                    return """
-                    case \(fieldNumber): // \(field.name) (UInt)
-                        \(field.name) = UInt(try decodeVarint(data, offset: &offset))
-                    """
-                } else {
-                    return """
-                    case \(fieldNumber): // \(field.name) (UInt64)
-                        \(field.name) = try decodeVarint(data, offset: &offset)
-                    """
-                }
-            }
-        case .bool:
-            if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (Bool?)
-                    \(field.name) = try decodeVarint(data, offset: &offset) != 0
-                """
-            } else {
-                return """
-                case \(fieldNumber): // \(field.name) (Bool)
-                    \(field.name) = try decodeVarint(data, offset: &offset) != 0
-                """
-            }
-        case .string:
-            return """
-            case \(fieldNumber): // \(field.name) (String)
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("String length exceeds data bounds")
-                }
-                \(field.name) = String(data: Data(data[offset..<endOffset]), encoding: .utf8) ?? ""
-                offset = endOffset
-            """
-        case .data:
-            return """
-            case \(fieldNumber): // \(field.name) (Data)
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("Data length exceeds data bounds")
-                }
-                \(field.name) = Data(data[offset..<endOffset])
-                offset = endOffset
-            """
-        case .double:
-            if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (Double?)
-                    guard offset + 8 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Double")
-                    }
-                    let byte0 = UInt64(data[offset])
-                    let byte1 = UInt64(data[offset + 1])
-                    let byte2 = UInt64(data[offset + 2])
-                    let byte3 = UInt64(data[offset + 3])
-                    let byte4 = UInt64(data[offset + 4])
-                    let byte5 = UInt64(data[offset + 5])
-                    let byte6 = UInt64(data[offset + 6])
-                    let byte7 = UInt64(data[offset + 7])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                    \(field.name) = Double(bitPattern: bits)
-                    offset += 8
-                """
-            } else {
-                return """
-                case \(fieldNumber): // \(field.name) (Double)
-                    guard offset + 8 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Double")
-                    }
-                    let byte0 = UInt64(data[offset])
-                    let byte1 = UInt64(data[offset + 1])
-                    let byte2 = UInt64(data[offset + 2])
-                    let byte3 = UInt64(data[offset + 3])
-                    let byte4 = UInt64(data[offset + 4])
-                    let byte5 = UInt64(data[offset + 5])
-                    let byte6 = UInt64(data[offset + 6])
-                    let byte7 = UInt64(data[offset + 7])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                    \(field.name) = Double(bitPattern: bits)
-                    offset += 8
-                """
-            }
-        case .float:
-            if isOptional {
-                return """
-                case \(fieldNumber): // \(field.name) (Float?)
-                    guard offset + 4 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Float")
-                    }
-                    let byte0 = UInt32(data[offset])
-                    let byte1 = UInt32(data[offset + 1])
-                    let byte2 = UInt32(data[offset + 2])
-                    let byte3 = UInt32(data[offset + 3])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                    \(field.name) = Float(bitPattern: bits)
-                    offset += 4
-                """
-            } else {
-                return """
-                case \(fieldNumber): // \(field.name) (Float)
-                    guard offset + 4 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Float")
-                    }
-                    let byte0 = UInt32(data[offset])
-                    let byte1 = UInt32(data[offset + 1])
-                    let byte2 = UInt32(data[offset + 2])
-                    let byte3 = UInt32(data[offset + 3])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                    \(field.name) = Float(bitPattern: bits)
-                    offset += 4
-                """
-            }
-        }
-    }
-
-    private static func generatePrimitiveArrayDecode(field: FieldInfo, fieldNumber: Int, primitiveType: PrimitiveType) -> String {
-        // Support both packed (wire type 2) and unpacked (original wire type) for backward compatibility
-        switch primitiveType {
-        // Varint types
-        case .int32:
-            return """
-            case \(fieldNumber): // \(field.name) ([Int32])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name).append(Int32(bitPattern: UInt32(truncatingIfNeeded: value)))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name).append(Int32(bitPattern: UInt32(truncatingIfNeeded: value)))
-                }
-            """
-        case .int64:
-            return """
-            case \(fieldNumber): // \(field.name) ([Int64])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name).append(Int64(bitPattern: value))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name).append(Int64(bitPattern: value))
-                }
-            """
-        case .uint32:
-            return """
-            case \(fieldNumber): // \(field.name) ([UInt32])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name).append(UInt32(truncatingIfNeeded: value))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name).append(UInt32(truncatingIfNeeded: value))
-                }
-            """
-        case .uint64:
-            return """
-            case \(fieldNumber): // \(field.name) ([UInt64])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name).append(value)
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name).append(value)
-                }
-            """
-        case .bool:
-            return """
-            case \(fieldNumber): // \(field.name) ([Bool])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name).append(value != 0)
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name).append(value != 0)
-                }
-            """
-
-        // Fixed 64-bit types
-        case .double:
-            return """
-            case \(fieldNumber): // \(field.name) ([Double])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        guard offset + 8 <= endOffset else {
-                            throw RecordLayerError.serializationFailed("Not enough data for Double array element")
-                        }
-                        let byte0 = UInt64(data[offset])
-                        let byte1 = UInt64(data[offset + 1])
-                        let byte2 = UInt64(data[offset + 2])
-                        let byte3 = UInt64(data[offset + 3])
-                        let byte4 = UInt64(data[offset + 4])
-                        let byte5 = UInt64(data[offset + 5])
-                        let byte6 = UInt64(data[offset + 6])
-                        let byte7 = UInt64(data[offset + 7])
-                        let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                        \(field.name).append(Double(bitPattern: bits))
-                        offset += 8
-                    }
-                } else if wireType == 1 {
-                    // Unpacked (backward compatibility)
-                    guard offset + 8 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Double array element")
-                    }
-                    let byte0 = UInt64(data[offset])
-                    let byte1 = UInt64(data[offset + 1])
-                    let byte2 = UInt64(data[offset + 2])
-                    let byte3 = UInt64(data[offset + 3])
-                    let byte4 = UInt64(data[offset + 4])
-                    let byte5 = UInt64(data[offset + 5])
-                    let byte6 = UInt64(data[offset + 6])
-                    let byte7 = UInt64(data[offset + 7])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                    \(field.name).append(Double(bitPattern: bits))
-                    offset += 8
-                }
-            """
-
-        // Fixed 32-bit types
-        case .float:
-            return """
-            case \(fieldNumber): // \(field.name) ([Float])
-                if wireType == 2 {
-                    // Packed repeated
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        guard offset + 4 <= endOffset else {
-                            throw RecordLayerError.serializationFailed("Not enough data for Float array element")
-                        }
-                        let byte0 = UInt32(data[offset])
-                        let byte1 = UInt32(data[offset + 1])
-                        let byte2 = UInt32(data[offset + 2])
-                        let byte3 = UInt32(data[offset + 3])
-                        let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                        \(field.name).append(Float(bitPattern: bits))
-                        offset += 4
-                    }
-                } else if wireType == 5 {
-                    // Unpacked (backward compatibility)
-                    guard offset + 4 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Float array element")
-                    }
-                    let byte0 = UInt32(data[offset])
-                    let byte1 = UInt32(data[offset + 1])
-                    let byte2 = UInt32(data[offset + 2])
-                    let byte3 = UInt32(data[offset + 3])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                    \(field.name).append(Float(bitPattern: bits))
-                    offset += 4
-                }
-            """
-
-        // Length-delimited types (always unpacked)
-        case .string:
-            return """
-            case \(fieldNumber): // \(field.name) ([String])
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("Array element length exceeds data bounds")
-                }
-                let itemData = Data(data[offset..<endOffset])
-                let item = String(data: itemData, encoding: .utf8) ?? ""
-                \(field.name).append(item)
-                offset = endOffset
-            """
-        case .data:
-            return """
-            case \(fieldNumber): // \(field.name) ([Data])
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("Array element length exceeds data bounds")
-                }
-                let itemData = Data(data[offset..<endOffset])
-                \(field.name).append(itemData)
-                offset = endOffset
-            """
-        }
-    }
-
-    private static func generateCustomDecode(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        return """
-        case \(fieldNumber): // \(field.name) (\(typeInfo.baseType))
-            let length = try decodeVarint(data, offset: &offset)
-            let endOffset = offset + Int(length)
-            guard endOffset <= data.count else {
-                throw RecordLayerError.serializationFailed("Custom type field length exceeds data bounds")
-            }
-            let fieldData = Data(data[offset..<endOffset])
-            \(field.name) = try \(typeInfo.baseType).fromProtobuf(fieldData)
-            offset = endOffset
-        """
-    }
-
-    private static func generateCustomArrayDecode(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-        let elementType = typeInfo.arrayElementType?.value.baseType ?? typeInfo.baseType
-
-        return """
-        case \(fieldNumber): // \(field.name) ([\(elementType)])
-            let length = try decodeVarint(data, offset: &offset)
-            let endOffset = offset + Int(length)
-            guard endOffset <= data.count else {
-                throw RecordLayerError.serializationFailed("Custom array element length exceeds data bounds")
-            }
-            let itemData = Data(data[offset..<endOffset])
-            let item = try \(elementType).fromProtobuf(itemData)
-            \(field.name).append(item)
-            offset = endOffset
-        """
-    }
-
-    private static func generateOptionalArrayDecode(field: FieldInfo, fieldNumber: Int, primitiveType: PrimitiveType) -> String {
-        // For optional arrays [T]?, we need to initialize the array if it's nil before appending
-        // Support both packed (wire type 2) and unpacked (original wire type) for backward compatibility
-        let initCheck = """
-        if \(field.name) == nil {
-                    \(field.name) = []
-                }
-        """
-
-        switch primitiveType {
-        // Varint types
-        case .int32:
-            return """
-            case \(fieldNumber): // \(field.name) ([Int32]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name)!.append(Int32(bitPattern: UInt32(truncatingIfNeeded: value)))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name)!.append(Int32(bitPattern: UInt32(truncatingIfNeeded: value)))
-                }
-            """
-        case .int64:
-            return """
-            case \(fieldNumber): // \(field.name) ([Int64]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name)!.append(Int64(bitPattern: value))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name)!.append(Int64(bitPattern: value))
-                }
-            """
-        case .uint32:
-            return """
-            case \(fieldNumber): // \(field.name) ([UInt32]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name)!.append(UInt32(truncatingIfNeeded: value))
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name)!.append(UInt32(truncatingIfNeeded: value))
-                }
-            """
-        case .uint64:
-            return """
-            case \(fieldNumber): // \(field.name) ([UInt64]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name)!.append(value)
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name)!.append(value)
-                }
-            """
-        case .bool:
-            return """
-            case \(fieldNumber): // \(field.name) ([Bool]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        let value = try decodeVarint(data, offset: &offset)
-                        \(field.name)!.append(value != 0)
-                    }
-                } else if wireType == 0 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    let value = try decodeVarint(data, offset: &offset)
-                    \(field.name)!.append(value != 0)
-                }
-            """
-
-        // Fixed 64-bit types
-        case .double:
-            return """
-            case \(fieldNumber): // \(field.name) ([Double]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        guard offset + 8 <= endOffset else {
-                            throw RecordLayerError.serializationFailed("Not enough data for Double array element")
-                        }
-                        let byte0 = UInt64(data[offset])
-                        let byte1 = UInt64(data[offset + 1])
-                        let byte2 = UInt64(data[offset + 2])
-                        let byte3 = UInt64(data[offset + 3])
-                        let byte4 = UInt64(data[offset + 4])
-                        let byte5 = UInt64(data[offset + 5])
-                        let byte6 = UInt64(data[offset + 6])
-                        let byte7 = UInt64(data[offset + 7])
-                        let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                        \(field.name)!.append(Double(bitPattern: bits))
-                        offset += 8
-                    }
-                } else if wireType == 1 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    guard offset + 8 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Double array element")
-                    }
-                    let byte0 = UInt64(data[offset])
-                    let byte1 = UInt64(data[offset + 1])
-                    let byte2 = UInt64(data[offset + 2])
-                    let byte3 = UInt64(data[offset + 3])
-                    let byte4 = UInt64(data[offset + 4])
-                    let byte5 = UInt64(data[offset + 5])
-                    let byte6 = UInt64(data[offset + 6])
-                    let byte7 = UInt64(data[offset + 7])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24) | (byte4 << 32) | (byte5 << 40) | (byte6 << 48) | (byte7 << 56)
-                    \(field.name)!.append(Double(bitPattern: bits))
-                    offset += 8
-                }
-            """
-
-        // Fixed 32-bit types
-        case .float:
-            return """
-            case \(fieldNumber): // \(field.name) ([Float]?)
-                if wireType == 2 {
-                    // Packed repeated
-                    \(initCheck)
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    while offset < endOffset {
-                        guard offset + 4 <= endOffset else {
-                            throw RecordLayerError.serializationFailed("Not enough data for Float array element")
-                        }
-                        let byte0 = UInt32(data[offset])
-                        let byte1 = UInt32(data[offset + 1])
-                        let byte2 = UInt32(data[offset + 2])
-                        let byte3 = UInt32(data[offset + 3])
-                        let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                        \(field.name)!.append(Float(bitPattern: bits))
-                        offset += 4
-                    }
-                } else if wireType == 5 {
-                    // Unpacked (backward compatibility)
-                    \(initCheck)
-                    guard offset + 4 <= data.count else {
-                        throw RecordLayerError.serializationFailed("Not enough data for Float array element")
-                    }
-                    let byte0 = UInt32(data[offset])
-                    let byte1 = UInt32(data[offset + 1])
-                    let byte2 = UInt32(data[offset + 2])
-                    let byte3 = UInt32(data[offset + 3])
-                    let bits = byte0 | (byte1 << 8) | (byte2 << 16) | (byte3 << 24)
-                    \(field.name)!.append(Float(bitPattern: bits))
-                    offset += 4
-                }
-            """
-
-        // Length-delimited types (always unpacked)
-        case .string:
-            return """
-            case \(fieldNumber): // \(field.name) ([String]?)
-                \(initCheck)
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("Array element length exceeds data bounds")
-                }
-                let itemData = Data(data[offset..<endOffset])
-                let item = String(data: itemData, encoding: .utf8) ?? ""
-                \(field.name)!.append(item)
-                offset = endOffset
-            """
-        case .data:
-            return """
-            case \(fieldNumber): // \(field.name) ([Data]?)
-                \(initCheck)
-                let length = try decodeVarint(data, offset: &offset)
-                let endOffset = offset + Int(length)
-                guard endOffset <= data.count else {
-                    throw RecordLayerError.serializationFailed("Array element length exceeds data bounds")
-                }
-                let itemData = Data(data[offset..<endOffset])
-                \(field.name)!.append(itemData)
-                offset = endOffset
-            """
-        }
-    }
-
-    private static func generateDecodeCase(field: FieldInfo, fieldNumber: Int) -> String {
-        let typeInfo = field.typeInfo
-
-        // Check for optional arrays first ([T]?)
-        if typeInfo.isOptional && typeInfo.isArray {
-            if case .primitive(let primitiveType) = typeInfo.category {
-                return generateOptionalArrayDecode(field: field, fieldNumber: fieldNumber, primitiveType: primitiveType)
-            } else {
-                // Custom type optional array - similar to regular array but with initialization
-                let elementType = typeInfo.arrayElementType?.value.baseType ?? typeInfo.baseType
-                return """
-                case \(fieldNumber): // \(field.name) ([\(elementType)]?)
-                    if \(field.name) == nil {
-                        \(field.name) = []
-                    }
-                    let length = try decodeVarint(data, offset: &offset)
-                    let endOffset = offset + Int(length)
-                    guard endOffset <= data.count else {
-                        throw RecordLayerError.serializationFailed("Custom array element length exceeds data bounds")
-                    }
-                    let itemData = Data(data[offset..<endOffset])
-                    let item = try \(elementType).fromProtobuf(itemData)
-                    \(field.name)!.append(item)
-                    offset = endOffset
-                """
-            }
-        }
-
-        // Dispatch based on type category and modifiers
-        if case .primitive(let primitiveType) = typeInfo.category {
-            if typeInfo.isArray {
-                return generatePrimitiveArrayDecode(field: field, fieldNumber: fieldNumber, primitiveType: primitiveType)
-            } else {
-                return generatePrimitiveDecode(field: field, fieldNumber: fieldNumber, primitiveType: primitiveType)
-            }
-        } else {
-            // Custom type
-            if typeInfo.isArray {
-                return generateCustomArrayDecode(field: field, fieldNumber: fieldNumber)
-            } else {
-                return generateCustomDecode(field: field, fieldNumber: fieldNumber)
-            }
-        }
-    }
-
-    /// Generate enumMetadata(for:) method
-    ///
-    /// This method generates runtime enum detection code using CaseIterable protocol.
-    /// For each field with potential enum type, it attempts to cast to CaseIterable
-    /// and extract case names.
-    ///
-    /// **Generated Code Example**:
-    /// ```swift
-    /// public static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
-    ///     switch fieldName {
-    ///     case "status":
-    ///         if let enumType = ProductStatus.self as? any CaseIterable.Type {
-    ///             let cases = enumType.allCases.map { "\($0)" }
-    ///             return Schema.EnumMetadata(
-    ///                 typeName: "ProductStatus",
-    ///                 cases: cases
-    ///             )
-    ///         }
-    ///         return nil
-    ///     default:
-    ///         return nil
-    ///     }
-    /// }
-    /// ```
     private static func generateEnumMetadataMethod(typeName: String, fields: [FieldInfo]) -> String {
         // Filter fields with potential enum types
         let enumCandidateFields = fields.filter { $0.enumTypeName != nil }
@@ -3281,8 +2069,8 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
 
     /// Generate extraction code for non-primary key fields
     private static func generateNonPKFieldExtractions(fields: [FieldInfo], primaryKeyFields: Set<String>) -> String {
-        // Filter out transient, PK, array, and custom type fields
-        // (arrays and custom types can't be directly indexed or covered)
+        // Filter out transient, PK, array, custom type, and Range type fields
+        // (arrays, custom types, and Range types can't be directly indexed or covered as single TupleElements)
         let nonPKFields = fields.filter { field in
             if field.isTransient || primaryKeyFields.contains(field.name) || field.typeInfo.isArray {
                 return false
@@ -3292,8 +2080,21 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             case .custom:
                 return false
             default:
-                return true
+                break
             }
+            // Filter out Range types (Range<T>, ClosedRange<T>, PartialRange*)
+            // Range fields are split into start/end indexes and cannot be extracted as single TupleElements
+            let normalizedType = field.typeInfo.baseType
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "?", with: "")
+            if normalizedType.hasPrefix("Range<") ||
+               normalizedType.hasPrefix("ClosedRange<") ||
+               normalizedType.hasPrefix("PartialRangeFrom<") ||
+               normalizedType.hasPrefix("PartialRangeThrough<") ||
+               normalizedType.hasPrefix("PartialRangeUpTo<") {
+                return false
+            }
+            return true
         }
 
         return nonPKFields.map { field in
@@ -3419,6 +2220,7 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
     ///
     /// A field is non-reconstructible if:
     /// - It's a non-optional custom type (nested Recordable)
+    /// - It's a non-optional Range type (Range<T>, ClosedRange<T>)
     /// - (Non-optional arrays are OK because they default to [])
     ///
     /// - Parameters:
@@ -3439,17 +2241,32 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                     return true
                 }
             }
+
+            // Check for non-optional Range type (including PartialRange*)
+            let normalizedType = field.typeInfo.baseType
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "?", with: "")
+            if normalizedType.hasPrefix("Range<") ||
+               normalizedType.hasPrefix("ClosedRange<") ||
+               normalizedType.hasPrefix("PartialRangeFrom<") ||
+               normalizedType.hasPrefix("PartialRangeThrough<") ||
+               normalizedType.hasPrefix("PartialRangeUpTo<") {
+                if !field.typeInfo.isOptional {
+                    // Non-optional Range type cannot be reconstructed from index
+                    return true
+                }
+            }
         }
         return false
     }
 
-    /// Generate default values for array and custom type fields
+    /// Generate default values for array, custom type, and Range type fields
     private static func generateArrayAndCustomTypeDefaults(fields: [FieldInfo], primaryKeyFields: Set<String>) -> String {
-        let arrayAndCustomFields = fields.filter { field in
+        let nonIndexableFields = fields.filter { field in
             if field.isTransient || primaryKeyFields.contains(field.name) {
                 return false
             }
-            // Check for array or custom type
+            // Check for array, custom type, or Range type
             if field.typeInfo.isArray {
                 return true
             }
@@ -3457,16 +2274,54 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             case .custom:
                 return true
             default:
-                return false
+                break
             }
+            // Check for Range types (including PartialRange*)
+            let normalizedType = field.typeInfo.baseType
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "?", with: "")
+            if normalizedType.hasPrefix("Range<") ||
+               normalizedType.hasPrefix("ClosedRange<") ||
+               normalizedType.hasPrefix("PartialRangeFrom<") ||
+               normalizedType.hasPrefix("PartialRangeThrough<") ||
+               normalizedType.hasPrefix("PartialRangeUpTo<") {
+                return true
+            }
+            return false
         }
 
-        return arrayAndCustomFields.map { field in
+        return nonIndexableFields.map { field in
+            // Determine if this is a Range type (including PartialRange*)
+            let normalizedType = field.typeInfo.baseType
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "?", with: "")
+            let isRangeType = normalizedType.hasPrefix("Range<") ||
+                             normalizedType.hasPrefix("ClosedRange<") ||
+                             normalizedType.hasPrefix("PartialRangeFrom<") ||
+                             normalizedType.hasPrefix("PartialRangeThrough<") ||
+                             normalizedType.hasPrefix("PartialRangeUpTo<")
+
             if field.typeInfo.isArray {
                 if field.typeInfo.isOptional {
                     return "let \(field.name): \(field.type) = nil"
                 } else {
                     return "let \(field.name): \(field.type) = []"
+                }
+            } else if isRangeType {
+                // Range types cannot be reconstructed from indexes
+                if field.typeInfo.isOptional {
+                    return "let \(field.name): \(field.type) = nil  // Range type - cannot reconstruct from index"
+                } else {
+                    // Required Range type - throw error instead of crashing
+                    // Note: This should not be reached if supportsReconstruction = false is respected
+                    let baseTypeName = field.typeInfo.baseType
+                    return """
+                    // Required Range type - cannot reconstruct from index
+                    throw RecordLayerError.reconstructionFailed(
+                        recordType: "\\(Self.recordName)",
+                        reason: "Field '\(field.name)' is a required Range type (\(baseTypeName)) and cannot be reconstructed from index. This record does not support covering index reconstruction."
+                    )
+                    """
                 }
             } else {  // custom type
                 if field.typeInfo.isOptional {
@@ -3520,6 +2375,7 @@ enum TypeCategory {
     case primitive(PrimitiveType)
     case custom                // Recordable-conforming custom type
     case enumType(String)      // Enum type (type name stored for metadata)
+    case range                 // Range types (Range, ClosedRange, PartialRange*)
 }
 
 enum PrimitiveType {
@@ -3561,6 +2417,13 @@ enum IndexInfoScope: String, Hashable {
     case global
 }
 
+/// Range index metadata for Range-generated indexes
+struct RangeIndexMetadata {
+    let component: String          // "lowerBound" or "upperBound"
+    let boundaryType: String       // "halfOpen" or "closed"
+    let originalFieldName: String  // Original Range field name
+}
+
 /// Information extracted from #Index, #Unique, @Vector, or @Spatial macro calls
 struct IndexInfo {
     let fields: [String]      // Field names extracted from KeyPaths or property names
@@ -3569,12 +2432,20 @@ struct IndexInfo {
     let typeName: String       // Type name from generic parameter
     let indexType: IndexInfoType  // Index type (.value, .vector, .spatial)
     let scope: IndexInfoScope     // Index scope (.partition, .global)
+    let rangeMetadata: RangeIndexMetadata?  // nil for non-Range indexes
 
     /// Generate the index name (e.g., "User_email_unique" or "location_index")
     func indexName() -> String {
         if let customName = customName {
             return customName
         }
+
+        // For Range-generated indexes, use pattern: "TypeName_fieldName_start_index" or "TypeName_fieldName_end_index"
+        if let rangeMetadata = rangeMetadata {
+            let componentSuffix = rangeMetadata.component == "lowerBound" ? "start" : "end"
+            return "\(typeName)_\(rangeMetadata.originalFieldName)_\(componentSuffix)_index"
+        }
+
         let fieldNames = fields.joined(separator: "_")
         let suffix: String
         switch indexType {

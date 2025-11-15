@@ -36,11 +36,11 @@ struct DirectoryIntegrationTests {
         let record = StaticDirRecord(id: 123, value: "test")
 
         // Serialize
-        let data = try record.toProtobuf()
+        let data = try ProtobufEncoder().encode(record)
         #expect(!data.isEmpty)
 
         // Deserialize
-        let decoded = try StaticDirRecord.fromProtobuf(data)
+        let decoded = try ProtobufDecoder().decode(StaticDirRecord.self, from: data)
         #expect(decoded.id == 123)
         #expect(decoded.value == "test")
     }

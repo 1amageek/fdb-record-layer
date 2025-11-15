@@ -25,13 +25,13 @@ final class TypedFilterPlanIntegrationTests: XCTestCase {
         }
 
         func serialize(_ record: TestRecord) throws -> FDB.Bytes {
-            let data = try JSONEncoder().encode(record)
+            let data = try ProtobufEncoder().encode(record)
             return FDB.Bytes(data)
         }
 
         func deserialize(_ bytes: FDB.Bytes) throws -> TestRecord {
             let data = Data(bytes)
-            return try JSONDecoder().decode(TestRecord.self, from: data)
+            return try ProtobufDecoder().decode(TestRecord.self, from: data)
         }
 
         func extractField(from record: TestRecord, fieldName: String) throws -> [any TupleElement] {

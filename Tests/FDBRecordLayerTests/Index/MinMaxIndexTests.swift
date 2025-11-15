@@ -55,14 +55,6 @@ struct MinMaxIndexTests {
             }
         }
 
-        func toProtobuf() throws -> Data {
-            return try JSONEncoder().encode(self)
-        }
-
-        static func fromProtobuf(_ data: Data) throws -> SalesRecord {
-            return try JSONDecoder().decode(SalesRecord.self, from: data)
-        }
-
         func extractField(_ fieldName: String) -> [any TupleElement] {
             switch fieldName {
             case "saleID": return [saleID]
@@ -84,13 +76,13 @@ struct MinMaxIndexTests {
         typealias Record = SalesRecord
 
         func serialize(_ record: SalesRecord) throws -> FDB.Bytes {
-            let data = try JSONEncoder().encode(record)
+            let data = try ProtobufEncoder().encode(record)
             return Array(data)
         }
 
         func deserialize(_ bytes: FDB.Bytes) throws -> SalesRecord {
             let data = Data(bytes)
-            return try JSONDecoder().decode(SalesRecord.self, from: data)
+            return try ProtobufDecoder().decode(SalesRecord.self, from: data)
         }
 
         func extractField(from record: SalesRecord, fieldName: String) throws -> [any TupleElement] {

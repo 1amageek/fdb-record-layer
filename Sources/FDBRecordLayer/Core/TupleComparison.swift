@@ -73,6 +73,11 @@ public enum TupleComparison {
             return lhsFloat == rhsFloat
         }
 
+        // Date comparison (using timeIntervalSince1970)
+        if let lhsDate = lhs as? Date, let rhsDate = rhs as? Date {
+            return lhsDate.timeIntervalSince1970 == rhsDate.timeIntervalSince1970
+        }
+
         return false
     }
 
@@ -130,6 +135,11 @@ public enum TupleComparison {
         // Float comparison
         if let lhsFloat = lhs as? Float, let rhsFloat = rhs as? Float {
             return lhsFloat < rhsFloat
+        }
+
+        // Date comparison (using timeIntervalSince1970)
+        if let lhsDate = lhs as? Date, let rhsDate = rhs as? Date {
+            return lhsDate.timeIntervalSince1970 < rhsDate.timeIntervalSince1970
         }
 
         return false

@@ -174,6 +174,140 @@ extension TypedFieldQueryComponent {
     }
 }
 
+// MARK: - KeyExpression Evaluator
+
+/// Private evaluator for KeyExpression evaluation in query components
+fileprivate struct KeyExpressionEvaluator<Record: Sendable>: KeyExpressionVisitor {
+    typealias Result = [any TupleElement]
+    let record: Record
+    let recordAccess: any RecordAccess<Record>
+
+    func visitField(_ fieldName: String) throws -> [any TupleElement] {
+        return try recordAccess.extractField(from: record, fieldName: fieldName)
+    }
+
+    func visitConcatenate(_ expressions: [KeyExpression]) throws -> [any TupleElement] {
+        var result: [any TupleElement] = []
+        for expression in expressions {
+            let values = try expression.accept(visitor: self)
+            result.append(contentsOf: values)
+        }
+        return result
+    }
+
+    func visitLiteral(_ value: any TupleElement) throws -> [any TupleElement] {
+        return [value]
+    }
+
+    func visitEmpty() throws -> [any TupleElement] {
+        return []
+    }
+
+    func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {
+        // Extract nested record
+        let parentValues = try recordAccess.extractField(from: record, fieldName: parentField)
+        guard !parentValues.isEmpty else {
+            return []
+        }
+
+        // For simplicity, evaluate on first nested record
+        // In future, could support arrays of nested records
+        _ = parentValues[0]
+
+        // Create nested evaluator (would need RecordAccess for nested type)
+        // For now, throw error - nested records not fully supported yet
+        throw RecordLayerError.internalError(
+            "Nested KeyExpression evaluation not yet supported in TypedKeyExpressionQueryComponent"
+        )
+    }
+
+    func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> [any TupleElement] {
+        return try recordAccess.extractRangeBoundary(
+            from: record,
+            fieldName: fieldName,
+            component: component
+        )
+    }
+}
+
+// MARK: - KeyExpression Query Component
+
+/// KeyExpression-based query component
+///
+/// This component evaluates a KeyExpression using the Visitor pattern,
+/// enabling support for complex expressions like RangeKeyExpression.
+///
+/// **Usage**:
+/// ```swift
+/// // Range boundary comparison: period.lowerBound < queryEnd
+/// let filter = TypedKeyExpressionQueryComponent<Event>(
+///     keyExpression: RangeKeyExpression(
+///         fieldName: "period",
+///         component: .lowerBound,
+///         boundaryType: .halfOpen
+///     ),
+///     comparison: .lessThan,
+///     value: queryEnd
+/// )
+/// ```
+public struct TypedKeyExpressionQueryComponent<Record: Sendable>: TypedQueryComponent {
+    public let keyExpression: any KeyExpression
+    public let comparison: TypedFieldQueryComponent<Record>.Comparison
+    public let value: any TupleElement
+
+    public init(
+        keyExpression: any KeyExpression,
+        comparison: TypedFieldQueryComponent<Record>.Comparison,
+        value: any TupleElement
+    ) {
+        self.keyExpression = keyExpression
+        self.comparison = comparison
+        self.value = value
+    }
+
+    public func matches(
+        record: Record,
+        recordAccess: any RecordAccess<Record>
+    ) throws -> Bool {
+        // Evaluate KeyExpression using Visitor pattern
+        let evaluator = KeyExpressionEvaluator(record: record, recordAccess: recordAccess)
+        let fieldValues = try keyExpression.accept(visitor: evaluator)
+
+        guard !fieldValues.isEmpty else {
+            return false
+        }
+
+        // Use ANY semantics: return true if ANY element matches
+        for fieldValue in fieldValues {
+            let matches: Bool
+            switch comparison {
+            case .equals:
+                matches = TupleComparison.areEqual(fieldValue, value)
+            case .notEquals:
+                matches = !TupleComparison.areEqual(fieldValue, value)
+            case .lessThan:
+                matches = TupleComparison.isLessThan(fieldValue, value)
+            case .lessThanOrEquals:
+                matches = TupleComparison.isLessThan(fieldValue, value) || TupleComparison.areEqual(fieldValue, value)
+            case .greaterThan:
+                matches = !TupleComparison.isLessThan(fieldValue, value) && !TupleComparison.areEqual(fieldValue, value)
+            case .greaterThanOrEquals:
+                matches = !TupleComparison.isLessThan(fieldValue, value)
+            case .startsWith:
+                matches = TupleComparison.startsWith(fieldValue, value)
+            case .contains:
+                matches = TupleComparison.contains(fieldValue, value)
+            }
+
+            if matches {
+                return true
+            }
+        }
+
+        return false
+    }
+}
+
 // MARK: - IN Component
 
 /// IN component (field value in set)

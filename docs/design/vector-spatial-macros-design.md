@@ -461,11 +461,11 @@ public final class RecordStore<Record: Recordable> {
     private func saveInternal(_ record: Record) async throws {
         // Existing save logic...
         let primaryKey = recordAccess.extractPrimaryKey(from: record)
-        let protobufData = try record.toProtobuf()
+        let recordData = try JSONEncoder().encode(record)
 
         try await database.withTransaction { transaction in
             let recordKey = recordSubspace.subspace(Record.recordName).subspace(primaryKey).pack(Tuple())
-            transaction.setValue(protobufData, for: recordKey)
+            transaction.setValue(recordData, for: recordKey)
 
             // Update indexes (IndexMaintainer will handle @Vector/@Spatial encoding)
             for index in indexes {

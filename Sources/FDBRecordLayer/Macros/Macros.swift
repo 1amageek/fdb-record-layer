@@ -53,11 +53,10 @@ public enum MacroIndexScope {
 ///
 /// **Generated Code**:
 /// - `Recordable` protocol conformance
-/// - Protobuf serialization methods
 /// - Field extraction methods
 /// - Primary key extraction
-@attached(member, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName))
-@attached(extension, conformances: Recordable, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(toProtobuf), named(fromProtobuf), named(extractField), named(extractPrimaryKey), named(fieldName), named(store), named(indexDefinitions), arbitrary)
+@attached(member, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(extractField), named(extractPrimaryKey), named(fieldName))
+@attached(extension, conformances: Recordable, names: named(recordName), named(primaryKeyFields), named(allFields), named(fieldNumber), named(extractField), named(extractPrimaryKey), named(fieldName), named(store), named(indexDefinitions), arbitrary)
 public macro Recordable(recordName: String? = nil) = #externalMacro(module: "FDBRecordLayerMacros", type: "RecordableMacro")
 
 /// Defines the primary key fields for a record type

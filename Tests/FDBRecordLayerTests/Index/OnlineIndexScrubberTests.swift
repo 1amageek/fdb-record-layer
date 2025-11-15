@@ -55,15 +55,6 @@ struct OnlineIndexScrubberTests {
             }
         }
 
-        func toProtobuf() throws -> Data {
-            // Simple JSON encoding for test purposes
-            return try JSONEncoder().encode(self)
-        }
-
-        static func fromProtobuf(_ data: Data) throws -> TestUser {
-            return try JSONDecoder().decode(TestUser.self, from: data)
-        }
-
         func extractField(_ fieldName: String) -> [any TupleElement] {
             switch fieldName {
             case "id": return [id]
@@ -85,13 +76,13 @@ struct OnlineIndexScrubberTests {
         typealias Record = TestUser
 
         func serialize(_ record: TestUser) throws -> FDB.Bytes {
-            let data = try JSONEncoder().encode(record)
+            let data = try ProtobufEncoder().encode(record)
             return Array(data)
         }
 
         func deserialize(_ bytes: FDB.Bytes) throws -> TestUser {
             let data = Data(bytes)
-            return try JSONDecoder().decode(TestUser.self, from: data)
+            return try ProtobufDecoder().decode(TestUser.self, from: data)
         }
 
         func extractField(from record: TestUser, fieldName: String) throws -> [any TupleElement] {

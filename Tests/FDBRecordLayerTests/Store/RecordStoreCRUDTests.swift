@@ -52,14 +52,6 @@ struct RecordStoreCRUDTests {
             }
         }
 
-        func toProtobuf() throws -> Data {
-            return try JSONEncoder().encode(self)
-        }
-
-        static func fromProtobuf(_ data: Data) throws -> Product {
-            return try JSONDecoder().decode(Product.self, from: data)
-        }
-
         func extractField(_ fieldName: String) -> [any TupleElement] {
             switch fieldName {
             case "productID": return [productID]

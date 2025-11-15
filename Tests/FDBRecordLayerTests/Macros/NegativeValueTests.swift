@@ -41,11 +41,11 @@ struct NegativeValueTests {
         )
 
         // Serialize
-        let data = try record.toProtobuf()
+        let data = try ProtobufEncoder().encode(record)
         #expect(!data.isEmpty)
 
         // Deserialize
-        let decoded = try TestIntegerTypes.fromProtobuf(data)
+        let decoded = try ProtobufDecoder().decode(TestIntegerTypes.self, from: data)
         #expect(decoded.int32Value == -1, "Int32(-1) should be preserved")
     }
 
@@ -61,11 +61,11 @@ struct NegativeValueTests {
         )
 
         // Serialize
-        let data = try record.toProtobuf()
+        let data = try ProtobufEncoder().encode(record)
         #expect(!data.isEmpty)
 
         // Deserialize
-        let decoded = try TestIntegerTypes.fromProtobuf(data)
+        let decoded = try ProtobufDecoder().decode(TestIntegerTypes.self, from: data)
         #expect(decoded.id == -12345678901234, "Int64 primary key should be preserved")
         #expect(decoded.int64Value == -9876543210, "Int64(-9876543210) should be preserved")
     }
@@ -81,8 +81,8 @@ struct NegativeValueTests {
             uint64Value: 0
         )
 
-        let data = try record.toProtobuf()
-        let decoded = try TestIntegerTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(record)
+        let decoded = try ProtobufDecoder().decode(TestIntegerTypes.self, from: data)
 
         #expect(decoded.int32Value == Int32.min, "Int32.min should be preserved")
         #expect(decoded.int64Value == Int64(Int32.max), "Int32.max should be preserved")
@@ -99,8 +99,8 @@ struct NegativeValueTests {
             uint64Value: 0
         )
 
-        let data = try record.toProtobuf()
-        let decoded = try TestIntegerTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(record)
+        let decoded = try ProtobufDecoder().decode(TestIntegerTypes.self, from: data)
 
         #expect(decoded.id == Int64.min, "Int64.min should be preserved")
         #expect(decoded.int64Value == Int64.max, "Int64.max should be preserved")
@@ -115,8 +115,8 @@ struct NegativeValueTests {
             floatValue: -78.9
         )
 
-        let data = try record.toProtobuf()
-        let decoded = try TestFloatingPointTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(record)
+        let decoded = try ProtobufDecoder().decode(TestFloatingPointTypes.self, from: data)
 
         // Use approximate equality for floating point
         #expect(abs(decoded.doubleValue - (-123.456)) < 0.0001, "Negative Double should be preserved")
@@ -132,8 +132,8 @@ struct NegativeValueTests {
             floatValue: -0.0
         )
 
-        let data = try record.toProtobuf()
-        let decoded = try TestFloatingPointTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(record)
+        let decoded = try ProtobufDecoder().decode(TestFloatingPointTypes.self, from: data)
 
         #expect(decoded.doubleValue == -Double.infinity, "-Infinity should be preserved")
         #expect(decoded.floatValue.sign == .minus && decoded.floatValue == 0.0, "-0.0 should be preserved")
@@ -150,8 +150,8 @@ struct NegativeValueTests {
             uint64Value: 18446744073709551615 // UInt64.max
         )
 
-        let data = try record.toProtobuf()
-        let decoded = try TestIntegerTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(record)
+        let decoded = try ProtobufDecoder().decode(TestIntegerTypes.self, from: data)
 
         #expect(decoded.id == -999)
         #expect(decoded.int32Value == -42)

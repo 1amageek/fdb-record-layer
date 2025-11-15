@@ -31,14 +31,6 @@ struct IndexScanDebugTests {
             }
         }
 
-        func toProtobuf() throws -> Data {
-            return try JSONEncoder().encode(self)
-        }
-
-        static func fromProtobuf(_ data: Data) throws -> SimpleRecord {
-            return try JSONDecoder().decode(SimpleRecord.self, from: data)
-        }
-
         func extractField(_ fieldName: String) -> [any TupleElement] {
             switch fieldName {
             case "id": return [id]

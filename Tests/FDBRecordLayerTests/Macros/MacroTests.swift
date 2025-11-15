@@ -222,10 +222,10 @@ struct MacroTests {
 
         // Test serialization and deserialization
         let user = TestUser(userID: 123, name: "Alice", email: "alice@example.com", age: 30)
-        let data = try user.toProtobuf()
+        let data = try ProtobufEncoder().encode(user)
         #expect(!data.isEmpty)
 
-        let decoded = try TestUser.fromProtobuf(data)
+        let decoded = try ProtobufDecoder().decode(TestUser.self, from: data)
         #expect(decoded.userID == 123)
         #expect(decoded.name == "Alice")
         #expect(decoded.email == "alice@example.com")
@@ -294,11 +294,11 @@ struct MacroTests {
         )
 
         // Serialize
-        let data = try original.toProtobuf()
+        let data = try ProtobufEncoder().encode(original)
         #expect(!data.isEmpty)
 
         // Deserialize
-        let decoded = try TestAllTypes.fromProtobuf(data)
+        let decoded = try ProtobufDecoder().decode(TestAllTypes.self, from: data)
 
         // Verify all fields
         #expect(decoded.id == original.id)
@@ -326,8 +326,8 @@ struct MacroTests {
             optDouble: 4.56
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestOptionalFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestOptionalFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.optInt32 == 42)
@@ -351,8 +351,8 @@ struct MacroTests {
             optDouble: nil
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestOptionalFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestOptionalFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.optInt32 == nil)
@@ -377,8 +377,8 @@ struct MacroTests {
             dataArray: [Data([0x01]), Data([0x02, 0x03]), Data([0x04, 0x05, 0x06])]
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestArrayFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestArrayFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.int32Array == original.int32Array)
@@ -404,8 +404,8 @@ struct MacroTests {
             dataArray: []
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestArrayFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestArrayFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.int32Array.isEmpty)
@@ -432,8 +432,8 @@ struct MacroTests {
             address: address
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestUserWithAddress.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestUserWithAddress.self, from: data)
 
         #expect(decoded.userID == original.userID)
         #expect(decoded.name == original.name)
@@ -450,14 +450,19 @@ struct MacroTests {
 
         // Int32 should use wire type 0 (varint)
         let user = TestUser(userID: 1, name: "Test", email: "test@test.com", age: 25)
-        let data = try user.toProtobuf()
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(user)
 
-        // Field 4 (age: Int32) should have tag = (4 << 3) | 0 = 32
-        #expect(data.contains(32)) // Tag for field 4 with wire type 0
+        // With sequential field numbering (1=userID, 2=name, 3=email, 4=age):
+        // Field 1 (userID: Int64) should have tag = (1 << 3) | 0 = 8
+        #expect(data.contains(8)) // Tag for field 1 with wire type 0
 
         // String should use wire type 2 (length-delimited)
         // Field 2 (name: String) should have tag = (2 << 3) | 2 = 18
         #expect(data.contains(18)) // Tag for field 2 with wire type 2
+
+        // Field 4 (age: Int32) should have tag = (4 << 3) | 0 = 32
+        #expect(data.contains(32)) // Tag for field 4 with wire type 0
     }
 
     /// Test edge cases
@@ -476,8 +481,8 @@ struct MacroTests {
             doubleField: 0.0
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestAllTypes.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestAllTypes.self, from: data)
 
         #expect(decoded.id == 0)
         #expect(decoded.int32Field == 0)
@@ -499,8 +504,8 @@ struct MacroTests {
             optDoubleArray: [10.01, 20.02, 30.03]
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestOptionalArrayFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestOptionalArrayFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.optInt32Array == original.optInt32Array)
@@ -524,8 +529,8 @@ struct MacroTests {
             optDoubleArray: nil
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestOptionalArrayFields.fromProtobuf(data)
+        let data = try ProtobufEncoder().encode(original)
+        let decoded = try ProtobufDecoder().decode(TestOptionalArrayFields.self, from: data)
 
         #expect(decoded.id == original.id)
         #expect(decoded.optInt32Array == nil)
@@ -549,11 +554,13 @@ struct MacroTests {
             optDoubleArray: []
         )
 
-        let data = try original.toProtobuf()
-        let decoded = try TestOptionalArrayFields.fromProtobuf(data)
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(original)
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(TestOptionalArrayFields.self, from: data)
 
         #expect(decoded.id == original.id)
-        // Empty arrays should remain nil after round-trip (Protobuf doesn't encode empty arrays)
+        // Empty arrays should become nil after round-trip (Protobuf doesn't encode empty arrays)
         #expect(decoded.optInt32Array == nil)
         #expect(decoded.optInt64Array == nil)
         #expect(decoded.optBoolArray == nil)

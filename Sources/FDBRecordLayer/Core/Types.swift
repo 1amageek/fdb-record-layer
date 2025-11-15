@@ -38,6 +38,11 @@ public enum RecordLayerError: Error, Sendable {
     // Covering Index errors
     case reconstructionNotImplemented(recordType: String, suggestion: String)
     case reconstructionFailed(recordType: String, reason: String)
+
+    // Range Index errors
+    case fieldNotFound(String)
+    case fieldNotRangeType(fieldName: String, actualType: String)
+    case invalidRangeComponent(fieldName: String, requestedComponent: String, availableComponent: String)
 }
 
 extension RecordLayerError: LocalizedError {
@@ -103,6 +108,14 @@ extension RecordLayerError: LocalizedError {
                 """
         case .reconstructionFailed(let recordType, let reason):
             return "Record reconstruction failed for type \(recordType): \(reason)"
+
+        // Range Index errors
+        case .fieldNotFound(let fieldName):
+            return "Field not found: \(fieldName)"
+        case .fieldNotRangeType(let fieldName, let actualType):
+            return "Field '\(fieldName)' is not a Range type (actual type: \(actualType))"
+        case .invalidRangeComponent(let fieldName, let requested, let available):
+            return "Invalid range component '\(requested)' requested for field '\(fieldName)' (available: \(available))"
         }
     }
 }

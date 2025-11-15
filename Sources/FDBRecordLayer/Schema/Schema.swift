@@ -202,9 +202,21 @@ public final class Schema: Sendable {
     ) -> Index {
         // Build KeyExpression from field names
         let keyExpression: KeyExpression
-        if definition.fields.count == 1 {
+
+        // Check if this is a Range type index
+        if let rangeComponent = definition.rangeComponent,
+           definition.fields.count == 1 {
+            // Range型インデックス: RangeKeyExpressionを生成
+            keyExpression = RangeKeyExpression(
+                fieldName: definition.fields[0],
+                component: rangeComponent,
+                boundaryType: definition.boundaryType ?? .halfOpen
+            )
+        } else if definition.fields.count == 1 {
+            // 通常の単一フィールドインデックス
             keyExpression = FieldKeyExpression(fieldName: definition.fields[0])
         } else {
+            // 複合インデックス
             keyExpression = ConcatenateKeyExpression(
                 children: definition.fields.map { FieldKeyExpression(fieldName: $0) }
             )

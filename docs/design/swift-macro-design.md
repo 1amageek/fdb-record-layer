@@ -257,12 +257,6 @@ public protocol Recordable: Sendable {
     /// フィールド名からProtobufフィールド番号へのマッピング
     static func fieldNumber(for fieldName: String) -> Int?
 
-    /// Protobuf形式にシリアライズ
-    func toProtobuf() throws -> Data
-
-    /// Protobuf形式からデシリアライズ
-    static func fromProtobuf(_ data: Data) throws -> Self
-
     /// 指定されたフィールドの値を抽出（インデックス用）
     func extractField(_ fieldName: String) -> [any TupleElement]
 
@@ -307,11 +301,13 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
     public init() {}
 
     public func serialize(_ record: Record) throws -> Data {
-        return try record.toProtobuf()
+        let encoder = JSONEncoder()
+        return try encoder.encode(record)
     }
 
     public func deserialize(_ data: Data) throws -> Record {
-        return try Record.fromProtobuf(data)
+        let decoder = JSONDecoder()
+        return try decoder.decode(Record.self, from: data)
     }
 
     public func recordTypeName(for record: Record) -> String {
@@ -700,23 +696,8 @@ extension User: Recordable {
         }
     }
 
-    func toProtobuf() throws -> Data {
-        var proto = UserProto()
-        proto.userID = self.userID
-        proto.email = self.email
-        proto.name = self.name
-        return try proto.serializedData()
-    }
-
-    static func fromProtobuf(_ data: Data) throws -> User {
-        let proto = try UserProto(serializedData: data)
-        return User(
-            userID: proto.userID,
-            email: proto.email,
-            name: proto.name,
-            isLoggedIn: false  // @Transient はデフォルト値
-        )
-    }
+    // Codable conformance is automatically synthesized by Swift compiler
+    // Use JSONEncoder().encode(record) and JSONDecoder().decode(User.self, from: data)
 
     func extractField(_ fieldName: String) -> [any TupleElement] {
         switch fieldName {
@@ -864,13 +845,11 @@ extension User {
 **新規ファイル**: `Sources/FDBRecordLayer/Serialization/Recordable.swift`
 
 ```swift
-public protocol Recordable: Sendable {
+public protocol Recordable: Sendable, Codable {
     static var recordTypeName: String { get }
     static var primaryKeyFields: [String] { get }
     static var allFields: [String] { get }
     static func fieldNumber(for fieldName: String) -> Int?
-    func toProtobuf() throws -> Data
-    static func fromProtobuf(_ data: Data) throws -> Self
     func extractField(_ fieldName: String) -> [any TupleElement]
     func extractPrimaryKey() -> Tuple
 }
@@ -1009,7 +988,7 @@ let package = Package(
 
 **新規ファイル**: `FDBRecordLayerMacros/DefaultMacro.swift`
 
-**生成コード**: `fromProtobuf()` でデフォルト値を使用
+**生成コード**: フィールドにデフォルト値を提供（Codableデコード時に使用）
 
 **実装**: ✅ 完了
 

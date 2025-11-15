@@ -61,13 +61,13 @@ struct TypedInJoinPlanTests {
         }
 
         func serialize(_ record: TestRecord) throws -> FDB.Bytes {
-            let data = try JSONEncoder().encode(record)
+            let data = try ProtobufEncoder().encode(record)
             return FDB.Bytes(data)
         }
 
         func deserialize(_ bytes: FDB.Bytes) throws -> TestRecord {
             let data = Data(bytes)
-            return try JSONDecoder().decode(TestRecord.self, from: data)
+            return try ProtobufDecoder().decode(TestRecord.self, from: data)
         }
 
         func extractField(from record: TestRecord, fieldName: String) throws -> [any TupleElement] {
@@ -284,13 +284,13 @@ struct TypedInJoinPlanTests {
             }
 
             func serialize(_ record: TaggedRecord) throws -> FDB.Bytes {
-                let data = try JSONEncoder().encode(record)
+                let data = try ProtobufEncoder().encode(record)
                 return FDB.Bytes(data)
             }
 
             func deserialize(_ bytes: FDB.Bytes) throws -> TaggedRecord {
                 let data = Data(bytes)
-                return try JSONDecoder().decode(TaggedRecord.self, from: data)
+                return try ProtobufDecoder().decode(TaggedRecord.self, from: data)
             }
 
             func extractField(from record: TaggedRecord, fieldName: String) throws -> [any TupleElement] {
@@ -343,13 +343,13 @@ struct TypedInJoinPlanTests {
             }
 
             func serialize(_ record: TaggedRecord) throws -> FDB.Bytes {
-                let data = try JSONEncoder().encode(record)
+                let data = try ProtobufEncoder().encode(record)
                 return FDB.Bytes(data)
             }
 
             func deserialize(_ bytes: FDB.Bytes) throws -> TaggedRecord {
                 let data = Data(bytes)
-                return try JSONDecoder().decode(TaggedRecord.self, from: data)
+                return try ProtobufDecoder().decode(TaggedRecord.self, from: data)
             }
 
             func extractField(from record: TaggedRecord, fieldName: String) throws -> [any TupleElement] {
@@ -558,13 +558,13 @@ struct TypedInJoinPlanTests {
             }
 
             func serialize(_ record: TaggedRecord) throws -> FDB.Bytes {
-                let data = try JSONEncoder().encode(record)
+                let data = try ProtobufEncoder().encode(record)
                 return FDB.Bytes(data)
             }
 
             func deserialize(_ bytes: FDB.Bytes) throws -> TaggedRecord {
                 let data = Data(bytes)
-                return try JSONDecoder().decode(TaggedRecord.self, from: data)
+                return try ProtobufDecoder().decode(TaggedRecord.self, from: data)
             }
 
             func extractField(from record: TaggedRecord, fieldName: String) throws -> [any TupleElement] {

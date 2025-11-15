@@ -81,6 +81,14 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     /// - Returns: The optimal execution plan
     /// - Throws: RecordLayerError if planning fails
     public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
+        // DEBUG: Log available indexes for this record type
+        let applicableIndexes = schema.indexes(for: recordName)
+        logger.debug("Available indexes for record type", metadata: [
+            "recordType": "\(recordName)",
+            "indexCount": "\(applicableIndexes.count)",
+            "indexes": "\(applicableIndexes.map { "\($0.name):\(type(of: $0.rootExpression))" }.joined(separator: ", "))"
+        ])
+
         // Check cache (synchronous access with Mutex)
         if let cachedPlan = planCache.get(query: query) {
             logger.debug("Plan cache hit", metadata: [
@@ -219,7 +227,17 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             }
         }
 
-        // Rule 3: Any index match → likely better than full scan
+        // Rule 3: AND filter → try intersection plan
+        if let andFilter = query.filter as? TypedAndQueryComponent<Record> {
+            if let intersectionPlan = try await generateIntersectionPlan(andFilter) {
+                logger.debug("Selected intersection plan (heuristic)", metadata: [
+                    "planType": "TypedIntersectionPlan"
+                ])
+                return intersectionPlan
+            }
+        }
+
+        // Rule 4: Any index match → likely better than full scan
         if let indexPlan = try findFirstIndexPlan(query.filter) {
             logger.debug("Selected first matching index plan (heuristic)", metadata: [
                 "planType": "TypedIndexScanPlan"
@@ -227,7 +245,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return indexPlan
         }
 
-        // Rule 4: Fall back to full scan
+        // Rule 5: Fall back to full scan
         logger.debug("Selected full scan plan (heuristic fallback)", metadata: [
             "planType": "TypedFullScanPlan"
         ])
@@ -538,34 +556,57 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
 
         // Phase 2: Fall back to single-field matching for intersection plan
-        // Separate field filters from other complex predicates
+        // Separate indexable filters from other complex predicates
         var fieldFilters: [TypedFieldQueryComponent<Record>] = []
+        var keyExprFilters: [TypedKeyExpressionQueryComponent<Record>] = []
         var nonFieldPredicates: [any TypedQueryComponent<Record>] = []
 
-        for child in andFilter.children {
+        // Flatten nested AND conditions to extract all indexable filters
+        // This handles cases like overlaps() which generates TypedAnd(children: [lowerBound, upperBound])
+        let flattenedChildren = flattenAndFilters(andFilter.children)
+
+        for child in flattenedChildren {
             if let fieldFilter = child as? TypedFieldQueryComponent<Record> {
                 fieldFilters.append(fieldFilter)
+            } else if let keyExprFilter = child as? TypedKeyExpressionQueryComponent<Record> {
+                keyExprFilters.append(keyExprFilter)
             } else {
-                // Collect non-field predicates (NOT, nested AND/OR) for post-filtering
+                // Collect non-field predicates (NOT, OR) for post-filtering
+                // Note: Nested AND filters are already flattened above
                 nonFieldPredicates.append(child)
             }
         }
 
-        // Need at least 2 field filters for intersection
-        guard fieldFilters.count >= 2 else {
+        // Collect all indexable filters
+        let allIndexableFilters: [any TypedQueryComponent<Record>] = fieldFilters + keyExprFilters
+
+        logger.debug("IntersectionPlan Phase 2", metadata: [
+            "fieldFilters": "\(fieldFilters.count)",
+            "keyExprFilters": "\(keyExprFilters.count)",
+            "allIndexableFilters": "\(allIndexableFilters.count)"
+        ])
+
+        // Need at least 2 indexable filters for intersection
+        guard allIndexableFilters.count >= 2 else {
+            logger.debug("IntersectionPlan: Not enough indexable filters", metadata: [
+                "count": "\(allIndexableFilters.count)"
+            ])
             return nil
         }
 
-        // Try to find index for each field filter
+        // Try to find index for each indexable filter
         var childPlans: [any TypedQueryPlan<Record>] = []
-        var unmatchedFieldFilters: [TypedFieldQueryComponent<Record>] = []
+        var unmatchedFilters: [any TypedQueryComponent<Record>] = []
 
-        for fieldFilter in fieldFilters {
+        for filter in allIndexableFilters {
             // Find matching index
             var found = false
             for index in applicableIndexes {
-                if let matchResult = try matchFilterWithIndex(filter: fieldFilter, index: index) {
+                if let matchResult = try matchFilterWithIndex(filter: filter, index: index) {
                     childPlans.append(matchResult.plan)
+                    logger.debug("IntersectionPlan: Matched filter with index", metadata: [
+                        "indexName": "\(index.name)"
+                    ])
 
                     // If the match has remaining predicates, add them to non-field predicates
                     if let remainingFilter = matchResult.remainingFilter {
@@ -578,13 +619,24 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             }
 
             if !found {
-                // Cannot find index for this field, add to unmatched
-                unmatchedFieldFilters.append(fieldFilter)
+                // Cannot find index for this filter, add to unmatched
+                logger.debug("IntersectionPlan: No index found for filter", metadata: [
+                    "filterType": "\(type(of: filter))"
+                ])
+                unmatchedFilters.append(filter)
             }
         }
 
+        logger.debug("IntersectionPlan: Matching complete", metadata: [
+            "childPlans": "\(childPlans.count)",
+            "unmatchedFilters": "\(unmatchedFilters.count)"
+        ])
+
         // Create intersection plan if we have at least 2 indexes
         guard childPlans.count >= 2 else {
+            logger.debug("IntersectionPlan: Not enough child plans", metadata: [
+                "count": "\(childPlans.count)"
+            ])
             return nil
         }
 
@@ -600,9 +652,9 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             primaryKeyExpression: entity.primaryKeyExpression
         )
 
-        // Combine all remaining predicates (non-field predicates + unmatched field filters)
+        // Combine all remaining predicates (non-field predicates + unmatched filters)
         var allRemainingPredicates: [any TypedQueryComponent<Record>] = nonFieldPredicates
-        allRemainingPredicates.append(contentsOf: unmatchedFieldFilters)
+        allRemainingPredicates.append(contentsOf: unmatchedFilters)
 
         // Wrap with TypedFilterPlan if there are remaining predicates
         if !allRemainingPredicates.isEmpty {
@@ -623,9 +675,23 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         return intersectionPlan
     }
 
-    /// Count the number of field filters in a query component
+    /// Count the number of indexable filters (field filters + key expression filters) in a query component
+    ///
+    /// CRITICAL: Must count both TypedFieldQueryComponent AND TypedKeyExpressionQueryComponent
+    /// to correctly determine if IntersectionPlan generation is worthwhile.
+    ///
+    /// **Before**: Only counted TypedFieldQueryComponent
+    /// - Problem: Range conditions (TypedKeyExpressionQueryComponent) weren't counted
+    /// - Result: "0 remaining filters" when only Range conditions remained
+    /// - Consequence: Early return prevented IntersectionPlan generation
+    ///
+    /// **After**: Counts both types
+    /// - Allows IntersectionPlan for pure Range queries (e.g., overlaps())
     private func countFieldFilters(in component: any TypedQueryComponent<Record>) -> Int {
         if component is TypedFieldQueryComponent<Record> {
+            return 1
+        } else if component is TypedKeyExpressionQueryComponent<Record> {
+            // CRITICAL: Count Range filters to enable IntersectionPlan for overlaps() queries
             return 1
         } else if let andComponent = component as? TypedAndQueryComponent<Record> {
             return andComponent.children.reduce(0) { count, child in
@@ -651,6 +717,36 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         let remainingFilter: (any TypedQueryComponent<Record>)?
     }
 
+    /// Recursively flatten nested AND filters
+    ///
+    /// Handles cases like overlaps() which generates:
+    /// ```
+    /// TypedAnd(children: [
+    ///   TypedKeyExpressionQueryComponent(lowerBound < queryEnd),
+    ///   TypedKeyExpressionQueryComponent(upperBound > queryBegin)
+    /// ])
+    /// ```
+    ///
+    /// This function extracts the inner filters so they can be individually matched with indexes.
+    ///
+    /// - Parameter children: Array of query components
+    /// - Returns: Flattened array where nested AND filters are expanded
+    private func flattenAndFilters(_ children: [any TypedQueryComponent<Record>]) -> [any TypedQueryComponent<Record>] {
+        var result: [any TypedQueryComponent<Record>] = []
+
+        for child in children {
+            if let nestedAnd = child as? TypedAndQueryComponent<Record> {
+                // Recursively flatten nested AND filters
+                result.append(contentsOf: flattenAndFilters(nestedAnd.children))
+            } else {
+                // Keep non-AND filters as-is
+                result.append(child)
+            }
+        }
+
+        return result
+    }
+
     /// Try to match a filter with a specific index
     ///
     /// Supports both simple and compound indexes with prefix matching.
@@ -668,6 +764,11 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         // Try simple field filter first
         if let fieldFilter = filter as? TypedFieldQueryComponent<Record> {
             return try matchSimpleFilter(fieldFilter: fieldFilter, index: index)
+        }
+
+        // Try KeyExpression-based filter (for Range boundaries)
+        if let keyExprFilter = filter as? TypedKeyExpressionQueryComponent<Record> {
+            return try matchKeyExpressionFilter(keyExprFilter: keyExprFilter, index: index)
         }
 
         // Try AND filter for compound index matching
@@ -730,6 +831,115 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         return nil
     }
 
+    /// Match a KeyExpression-based filter with an index
+    ///
+    /// This handles TypedKeyExpressionQueryComponent filters, which include
+    /// RangeKeyExpression for Range boundary comparisons.
+    ///
+    /// **Example**: `period.lowerBound < queryEnd`
+    /// - KeyExpression: RangeKeyExpression(fieldName: "period", component: .lowerBound)
+    /// - Index: "event_by_period_start" with RangeKeyExpression(.lowerBound)
+    ///
+    /// - Parameters:
+    ///   - keyExprFilter: KeyExpression-based filter
+    ///   - index: Index to match against
+    /// - Returns: IndexMatchResult if matched, nil otherwise
+    private func matchKeyExpressionFilter(
+        keyExprFilter: TypedKeyExpressionQueryComponent<Record>,
+        index: Index
+    ) throws -> IndexMatchResult? {
+        // Extract RangeKeyExpression if present
+        guard let rangeExpr = keyExprFilter.keyExpression as? RangeKeyExpression else {
+            // Other KeyExpression types not yet supported
+            logger.debug("KeyExpressionFilter: Not a RangeKeyExpression", metadata: [
+                "filterType": "\(type(of: keyExprFilter.keyExpression))",
+                "index": "\(index.name)"
+            ])
+            return nil
+        }
+
+        logger.debug("Attempting to match RangeKeyExpression filter", metadata: [
+            "filter_field": "\(rangeExpr.fieldName)",
+            "filter_component": "\(rangeExpr.component)",
+            "filter_boundaryType": "\(rangeExpr.boundaryType)",
+            "index": "\(index.name)",
+            "index_rootExpression": "\(type(of: index.rootExpression))"
+        ])
+
+        // Check if index uses the same RangeKeyExpression
+        if let indexRangeExpr = index.rootExpression as? RangeKeyExpression {
+            logger.debug("Index has RangeKeyExpression", metadata: [
+                "index_field": "\(indexRangeExpr.fieldName)",
+                "index_component": "\(indexRangeExpr.component)",
+                "index_boundaryType": "\(indexRangeExpr.boundaryType)"
+            ])
+
+            // CRITICAL: Only match fieldName + component (NOT boundaryType)
+            //
+            // **Design Rationale**:
+            // - Physical indexes are created with .halfOpen regardless of Range/ClosedRange
+            // - Query filters have .closed for ClosedRange, .halfOpen for Range
+            // - Comparing boundaryType would reject valid index matches
+            // - Comparison operators (.lessThan vs .lessThanOrEquals) handle inclusive/exclusive
+            //
+            // **Example**:
+            // - Index: RangeKeyExpression("period", .lowerBound, .halfOpen)
+            // - ClosedRange query: RangeKeyExpression("period", .lowerBound, .closed)
+            // - Should match! Operator handles boundary semantics.
+            guard indexRangeExpr.fieldName == rangeExpr.fieldName,
+                  indexRangeExpr.component == rangeExpr.component else {
+                logger.debug("❌ RangeKeyExpression mismatch", metadata: [
+                    "reason": "fieldName or component mismatch"
+                ])
+                return nil
+            }
+
+            logger.debug("✅ RangeKeyExpression matched!", metadata: [
+                "index": "\(index.name)"
+            ])
+
+            // Generate key range for this comparison
+            guard let (beginValues, endValues) = keyRange(for: keyExprFilter) else {
+                return nil
+            }
+
+            let plan = createIndexScanPlan(
+                index: index,
+                beginValues: beginValues,
+                endValues: endValues
+            )
+
+            // No remaining filter - fully matched by index
+            return IndexMatchResult(plan: plan, remainingFilter: nil)
+        }
+
+        // Check if index is compound and first field matches
+        if let concatExpr = index.rootExpression as? ConcatenateKeyExpression {
+            // CRITICAL: Only match fieldName + component (NOT boundaryType) - same rationale as above
+            guard let firstRangeExpr = concatExpr.children.first as? RangeKeyExpression,
+                  firstRangeExpr.fieldName == rangeExpr.fieldName,
+                  firstRangeExpr.component == rangeExpr.component else {
+                return nil
+            }
+
+            // Prefix match on compound index
+            guard let (beginValues, endValues) = keyRange(for: keyExprFilter) else {
+                return nil
+            }
+
+            let plan = createIndexScanPlan(
+                index: index,
+                beginValues: beginValues,
+                endValues: endValues
+            )
+
+            // No remaining filter - fully matched by index
+            return IndexMatchResult(plan: plan, remainingFilter: nil)
+        }
+
+        return nil
+    }
+
     /// Match an AND filter with a compound index
     private func matchCompoundFilter(
         andFilter: TypedAndQueryComponent<Record>,
@@ -740,87 +950,152 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return nil
         }
 
-        // Separate field filters from other complex predicates
+        // Separate indexable filters from other complex predicates
         var fieldFilters: [TypedFieldQueryComponent<Record>] = []
+        var keyExprFilters: [TypedKeyExpressionQueryComponent<Record>] = []
         var nonFieldPredicates: [any TypedQueryComponent<Record>] = []
 
         for child in andFilter.children {
             if let fieldFilter = child as? TypedFieldQueryComponent<Record> {
                 fieldFilters.append(fieldFilter)
+            } else if let keyExprFilter = child as? TypedKeyExpressionQueryComponent<Record> {
+                keyExprFilters.append(keyExprFilter)
             } else {
                 // Collect non-field predicates (NOT, nested AND/OR) for post-filtering
                 nonFieldPredicates.append(child)
             }
         }
 
-        // Try to match field filters with index fields in order
-        var matchedFields: [TypedFieldQueryComponent<Record>] = []
-        var unmatchedFilters: [any TypedQueryComponent<Record>] = []
+        // Try to match filters with index fields in order
+        // CRITICAL: Use ObjectIdentifier for reference equality to avoid false positives
+        // when multiple filters of the same type exist (e.g., two TypedKeyExpressionQueryComponent)
+        var matchedFilters: [any TypedQueryComponent<Record>] = []
+        var matchedFilterIdentities: Set<ObjectIdentifier> = []
 
         for (i, indexField) in concatExpr.children.enumerated() {
-            guard let fieldExpr = indexField as? FieldKeyExpression else {
-                break
+            var foundMatch = false
+
+            // Try to match FieldKeyExpression
+            if let fieldExpr = indexField as? FieldKeyExpression {
+                // Find first unmatched filter for this field
+                if let matchingFilter = fieldFilters.first(where: { filter in
+                    !matchedFilterIdentities.contains(ObjectIdentifier(filter as AnyObject)) &&
+                    filter.fieldName == fieldExpr.fieldName
+                }) {
+                    matchedFilters.append(matchingFilter)
+                    matchedFilterIdentities.insert(ObjectIdentifier(matchingFilter as AnyObject))
+                    foundMatch = true
+
+                    // Range comparison allowed only on last matched field
+                    if i < concatExpr.children.count - 1 && !matchingFilter.comparison.isEquality {
+                        // Range on non-last field: stop matching
+                        break
+                    }
+                }
             }
 
-            // Find matching filter for this index field
-            if let matchingFilter = fieldFilters.first(where: { $0.fieldName == fieldExpr.fieldName }) {
-                matchedFields.append(matchingFilter)
+            // Try to match RangeKeyExpression
+            if !foundMatch, let rangeExpr = indexField as? RangeKeyExpression {
+                // Find first unmatched filter for this range expression
+                // CRITICAL: Only match fieldName + component (NOT boundaryType) - same rationale as matchKeyExpressionFilter
+                if let matchingFilter = keyExprFilters.first(where: { filter in
+                    guard !matchedFilterIdentities.contains(ObjectIdentifier(filter as AnyObject)),
+                          let filterRangeExpr = filter.keyExpression as? RangeKeyExpression else {
+                        return false
+                    }
+                    return filterRangeExpr.fieldName == rangeExpr.fieldName &&
+                           filterRangeExpr.component == rangeExpr.component
+                }) {
+                    matchedFilters.append(matchingFilter)
+                    matchedFilterIdentities.insert(ObjectIdentifier(matchingFilter as AnyObject))
+                    foundMatch = true
 
-                // Range comparison allowed only on last matched field
-                if i < concatExpr.children.count - 1 && !matchingFilter.comparison.isEquality {
-                    // Range on non-last field: stop matching
-                    break
+                    // Range comparison allowed only on last matched field
+                    if i < concatExpr.children.count - 1 && !matchingFilter.comparison.isEquality {
+                        // Range on non-last field: stop matching
+                        break
+                    }
                 }
-            } else {
+            }
+
+            if !foundMatch {
                 // No filter for this index field: stop prefix matching
                 break
             }
         }
 
         // Must match at least one field
-        guard !matchedFields.isEmpty else {
+        guard !matchedFilters.isEmpty else {
             return nil
         }
 
-        // Collect unmatched filters for post-filtering
-        let matchedFieldNames = Set(matchedFields.map { $0.fieldName })
+        // Compute unmatched filters using ObjectIdentifier for reference equality
+        var unmatchedFilters: [any TypedQueryComponent<Record>] = []
         for filter in fieldFilters {
-            if !matchedFieldNames.contains(filter.fieldName) {
+            if !matchedFilterIdentities.contains(ObjectIdentifier(filter as AnyObject)) {
+                unmatchedFilters.append(filter)
+            }
+        }
+        for filter in keyExprFilters {
+            if !matchedFilterIdentities.contains(ObjectIdentifier(filter as AnyObject)) {
                 unmatchedFilters.append(filter)
             }
         }
 
-        // Build key range from matched fields
+        // Build key range from matched filters
         var beginValues: [any TupleElement] = []
         var endValues: [any TupleElement] = []
 
-        for (i, matchedFilter) in matchedFields.enumerated() {
-            let isLastMatched = (i == matchedFields.count - 1)
+        for (i, matchedFilter) in matchedFilters.enumerated() {
+            let isLastMatched = (i == matchedFilters.count - 1)
 
-            if matchedFilter.comparison.isEquality {
-                // Equality: add exact value to both begin and end
-                beginValues.append(matchedFilter.value)
-                endValues.append(matchedFilter.value)
-            } else if isLastMatched {
-                // Range on last matched field
-                guard let (rangeBegin, rangeEnd) = rangeValues(for: matchedFilter) else {
-                    // rangeValues returns nil when boundary computation failed
-                    // (e.g., age > Int64.max, score <= Int64.max).
-                    // In this case, we cannot use the index optimization.
-                    // Return nil to fall back to full scan or other optimization strategies.
-                    logger.debug("Cannot compute safe range boundary for compound index", metadata: [
-                        "index": "\(index.name)",
-                        "field": "\(matchedFilter.fieldName)",
-                        "comparison": "\(matchedFilter.comparison)"
-                    ])
+            // Handle TypedFieldQueryComponent
+            if let fieldFilter = matchedFilter as? TypedFieldQueryComponent<Record> {
+                if fieldFilter.comparison.isEquality {
+                    // Equality: add exact value to both begin and end
+                    beginValues.append(fieldFilter.value)
+                    endValues.append(fieldFilter.value)
+                } else if isLastMatched {
+                    // Range on last matched field
+                    guard let (rangeBegin, rangeEnd) = rangeValues(for: fieldFilter) else {
+                        logger.debug("Cannot compute safe range boundary for compound index", metadata: [
+                            "index": "\(index.name)",
+                            "field": "\(fieldFilter.fieldName)",
+                            "comparison": "\(fieldFilter.comparison)"
+                        ])
+                        return nil
+                    }
+
+                    beginValues.append(contentsOf: rangeBegin)
+                    endValues.append(contentsOf: rangeEnd)
+                } else {
+                    // Range on non-last field: shouldn't reach here due to check above
                     return nil
                 }
+            }
+            // Handle TypedKeyExpressionQueryComponent
+            else if let keyExprFilter = matchedFilter as? TypedKeyExpressionQueryComponent<Record> {
+                if keyExprFilter.comparison.isEquality {
+                    // Equality: add exact value to both begin and end
+                    beginValues.append(keyExprFilter.value)
+                    endValues.append(keyExprFilter.value)
+                } else if isLastMatched {
+                    // Range on last matched field
+                    guard let (rangeBegin, rangeEnd) = rangeValues(for: keyExprFilter) else {
+                        logger.debug("Cannot compute safe range boundary for compound index", metadata: [
+                            "index": "\(index.name)",
+                            "keyExpression": "\(keyExprFilter.keyExpression)",
+                            "comparison": "\(keyExprFilter.comparison)"
+                        ])
+                        return nil
+                    }
 
-                beginValues.append(contentsOf: rangeBegin)
-                endValues.append(contentsOf: rangeEnd)
-            } else {
-                // Range on non-last field: shouldn't reach here due to check above
-                return nil
+                    beginValues.append(contentsOf: rangeBegin)
+                    endValues.append(contentsOf: rangeEnd)
+                } else {
+                    // Range on non-last field: shouldn't reach here due to check above
+                    return nil
+                }
             }
         }
 
@@ -906,6 +1181,58 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
     }
 
+    /// Generate key range for a KeyExpression-based filter
+    ///
+    /// This handles TypedKeyExpressionQueryComponent filters, currently supporting
+    /// RangeKeyExpression for Range boundary comparisons.
+    ///
+    /// **Example**: `period.lowerBound < queryEnd`
+    /// - Generates: ([], [queryEnd]) for index scan [min, queryEnd)
+    ///
+    /// **Design**: Same boundary logic as keyRange(for: TypedFieldQueryComponent)
+    /// to ensure consistent behavior across all filter types.
+    ///
+    /// - Parameter keyExprFilter: KeyExpression-based filter
+    /// - Returns: Tuple of (beginValues, endValues), or nil if boundary cannot be computed
+    private func keyRange(
+        for keyExprFilter: TypedKeyExpressionQueryComponent<Record>
+    ) -> ([any TupleElement], [any TupleElement])? {
+        // Currently only RangeKeyExpression is supported
+        guard keyExprFilter.keyExpression is RangeKeyExpression else {
+            return nil
+        }
+
+        // Use the same comparison logic as TypedFieldQueryComponent
+        switch keyExprFilter.comparison {
+        case .equals:
+            return ([keyExprFilter.value], [keyExprFilter.value])
+
+        case .notEquals:
+            return nil // Cannot optimize with index scan
+
+        case .lessThan:
+            return ([], [keyExprFilter.value])
+
+        case .lessThanOrEquals:
+            guard let nextValue = nextTupleValue(keyExprFilter.value) else {
+                return nil
+            }
+            return ([], [nextValue])
+
+        case .greaterThan:
+            guard let nextValue = nextTupleValue(keyExprFilter.value) else {
+                return nil
+            }
+            return ([nextValue], [])
+
+        case .greaterThanOrEquals:
+            return ([keyExprFilter.value], [])
+
+        case .startsWith, .contains:
+            return nil // String operations not yet optimized
+        }
+    }
+
     /// Generate range values for a field filter (for compound indexes)
     ///
     /// Same range boundary logic as keyRange(), propagating nil when boundary
@@ -942,6 +1269,48 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
         case .greaterThanOrEquals:
             return ([fieldFilter.value], [])
+
+        default:
+            return nil  // Unsupported operations
+        }
+    }
+
+    /// Generate range values for a KeyExpression-based filter (for compound indexes)
+    ///
+    /// Same range boundary logic as rangeValues(for: TypedFieldQueryComponent),
+    /// currently supporting RangeKeyExpression.
+    ///
+    /// - Parameter keyExprFilter: KeyExpression-based filter
+    /// - Returns: Tuple of (beginValues, endValues), or nil if boundary cannot be computed safely
+    private func rangeValues(
+        for keyExprFilter: TypedKeyExpressionQueryComponent<Record>
+    ) -> ([any TupleElement], [any TupleElement])? {
+        // Currently only RangeKeyExpression is supported
+        guard keyExprFilter.keyExpression is RangeKeyExpression else {
+            return nil
+        }
+
+        switch keyExprFilter.comparison {
+        case .equals:
+            return ([keyExprFilter.value], [keyExprFilter.value])
+
+        case .lessThan:
+            return ([], [keyExprFilter.value])
+
+        case .lessThanOrEquals:
+            guard let nextValue = nextTupleValue(keyExprFilter.value) else {
+                return nil
+            }
+            return ([], [nextValue])
+
+        case .greaterThan:
+            guard let nextValue = nextTupleValue(keyExprFilter.value) else {
+                return nil
+            }
+            return ([nextValue], [])
+
+        case .greaterThanOrEquals:
+            return ([keyExprFilter.value], [])
 
         default:
             return nil  // Unsupported operations
@@ -1502,6 +1871,25 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             // For strings, append null byte as conservative approximation
             // This works for most practical cases
             return stringValue + "\u{0000}"
+
+        case let dateValue as Date:
+            // For Date, use smallest practical increment
+            //
+            // **Precision Considerations**:
+            // - Date (Foundation) uses TimeInterval (Double) which has ~52 bits of precision
+            // - For dates near Unix epoch (2000s), Double can represent microseconds accurately
+            // - For extreme dates (far past/future), precision degrades to milliseconds or worse
+            // - We use 1 microsecond as a safe increment that works for practical date ranges
+            //
+            // **Why 1 microsecond**:
+            // - Small enough to preserve query semantics (> becomes >= with negligible difference)
+            // - Large enough to be reliably represented in Double for reasonable date ranges
+            // - Aligns with common database timestamp precision (e.g., PostgreSQL microseconds)
+            //
+            // **Limitations**:
+            // - Queries with sub-microsecond precision requirements may need custom handling
+            // - Extreme dates (billions of years from epoch) may lose precision
+            return dateValue.addingTimeInterval(0.000001)  // 1 microsecond
 
         default:
             // Unknown type: cannot safely increment

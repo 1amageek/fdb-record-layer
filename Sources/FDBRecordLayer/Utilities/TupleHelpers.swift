@@ -25,6 +25,9 @@ public enum TupleHelpers {
             return Tuple(double)
         } else if let uuid = element as? UUID {
             return Tuple(uuid)
+        } else if let date = element as? Date {
+            // Convert Date to Double (timeIntervalSince1970) for proper encoding
+            return Tuple(date.timeIntervalSince1970)
         } else if let bytes = element as? FDB.Bytes {
             return Tuple(bytes)
         } else {
@@ -60,6 +63,9 @@ public enum TupleHelpers {
                 singleTuple = Tuple(double)
             } else if let uuid = element as? UUID {
                 singleTuple = Tuple(uuid)
+            } else if let date = element as? Date {
+                // Convert Date to Double (timeIntervalSince1970) for proper encoding
+                singleTuple = Tuple(date.timeIntervalSince1970)
             } else if let bytes = element as? FDB.Bytes {
                 singleTuple = Tuple(bytes)
             } else {

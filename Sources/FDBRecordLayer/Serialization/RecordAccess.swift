@@ -64,6 +64,30 @@ public protocol RecordAccess<Record>: Sendable {
         fieldName: String
     ) throws -> [any TupleElement]
 
+    /// Extract Range boundary value
+    ///
+    /// Extracts the lowerBound or upperBound from a Range-type field.
+    /// This method is called by RangeKeyExpression evaluation and query components.
+    ///
+    /// **Supported Range types**:
+    /// - Range<Bound>: Half-open range [a, b)
+    /// - ClosedRange<Bound>: Closed range [a, b]
+    /// - PartialRangeFrom<Bound>: [a, ∞)
+    /// - PartialRangeThrough<Bound>: (-∞, b]
+    /// - PartialRangeUpTo<Bound>: (-∞, b)
+    ///
+    /// - Parameters:
+    ///   - record: The record to extract from
+    ///   - fieldName: The field name containing the Range type
+    ///   - component: The boundary component to extract (lowerBound/upperBound)
+    /// - Returns: Array containing the boundary value as TupleElement
+    /// - Throws: RecordLayerError if field not found or not a Range type
+    func extractRangeBoundary(
+        from record: Record,
+        fieldName: String,
+        component: RangeComponent
+    ) throws -> [any TupleElement]
+
     // MARK: - Serialization
 
     /// Serialize a record to bytes
@@ -272,6 +296,49 @@ extension RecordAccess {
     public var supportsReconstruction: Bool {
         return false
     }
+
+    /// Default implementation of extractRangeBoundary
+    ///
+    /// **Design**: Requires @Recordable macro for Range field support
+    ///
+    /// This method requires that the Record type conforms to the Recordable protocol
+    /// (via the @Recordable macro). The macro generates compile-time type-safe code
+    /// for extracting Range boundaries, providing:
+    /// - Zero runtime overhead (no Reflection)
+    /// - Compile-time type safety
+    /// - Proper Optional handling
+    /// - Clear error messages for unsupported types
+    ///
+    /// **Important**: Range fields are ONLY supported with @Recordable types.
+    /// Non-@Recordable types will receive a clear error message at runtime.
+    ///
+    /// - Parameters:
+    ///   - record: The record to extract from
+    ///   - fieldName: The field name containing the Range type
+    ///   - component: The boundary component to extract (lowerBound/upperBound)
+    /// - Returns: Array containing the boundary value as TupleElement (empty if nil Optional)
+    /// - Throws: RecordLayerError.internalError if Record does not conform to Recordable
+    public func extractRangeBoundary(
+        from record: Record,
+        fieldName: String,
+        component: RangeComponent
+    ) throws -> [any TupleElement] {
+        // Require @Recordable macro - no Reflection fallback
+        guard let recordableType = Record.self as? any Recordable.Type else {
+            throw RecordLayerError.internalError(
+                "Range fields are only supported with @Recordable macro. " +
+                "Record type '\(String(describing: Record.self))' does not conform to Recordable."
+            )
+        }
+
+        // Call macro-generated static function (type-safe, zero runtime overhead)
+        return try recordableType.extractRangeBoundary(
+            fieldName: fieldName,
+            component: component,
+            from: record as! any Recordable
+        )
+    }
+
 }
 
 // MARK: - RecordAccessEvaluator
@@ -305,6 +372,14 @@ fileprivate struct RecordAccessEvaluator<Access: RecordAccess>: KeyExpressionVis
 
     func visitEmpty() throws -> [any TupleElement] {
         return []
+    }
+
+    func visitRangeBoundary(_ fieldName: String, _ component: RangeComponent) throws -> [any TupleElement] {
+        return try recordAccess.extractRangeBoundary(
+            from: record,
+            fieldName: fieldName,
+            component: component
+        )
     }
 
     func visitNest(_ parentField: String, _ child: KeyExpression) throws -> [any TupleElement] {

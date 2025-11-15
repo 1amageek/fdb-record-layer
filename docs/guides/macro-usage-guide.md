@@ -158,8 +158,7 @@ struct User {
 ```
 
 **生成されるコード**:
-- `Recordable`プロトコル準拠
-- `toProtobuf()` / `fromProtobuf()`メソッド
+- `Recordable`プロトコル準拠（`Codable`を含む）
 - `fieldName(for:)`メソッド
 - `primaryKeyFields`静的プロパティ
 - `allFields`静的プロパティ

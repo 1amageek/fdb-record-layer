@@ -37,8 +37,8 @@ print("✓ Nested path (address.city): \(cityResult)")
 
 // Test 3: Serialization round-trip
 do {
-    let data = try person.toProtobuf()
-    let decoded = try TestPerson.fromProtobuf(data)
+    let data = try ProtobufEncoder().encode(person)
+    let decoded = try ProtobufDecoder().decode(TestPerson.self, from: data)
 
     assert(decoded.name == person.name)
     assert(decoded.address.city == person.address.city)

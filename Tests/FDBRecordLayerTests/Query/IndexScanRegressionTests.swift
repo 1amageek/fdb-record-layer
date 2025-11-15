@@ -36,6 +36,39 @@ struct IndexScanRegressionTests {
         let tags: [String]  // Multi-valued field
         let inStock: Bool
 
+        // Explicit CodingKeys with intValue for Protobuf field numbers
+        enum CodingKeys: String, CodingKey {
+            case productID
+            case name
+            case category
+            case price
+            case tags
+            case inStock
+
+            var intValue: Int? {
+                switch self {
+                case .productID: return 1
+                case .name: return 2
+                case .category: return 3
+                case .price: return 4
+                case .tags: return 5
+                case .inStock: return 6
+                }
+            }
+
+            init?(intValue: Int) {
+                switch intValue {
+                case 1: self = .productID
+                case 2: self = .name
+                case 3: self = .category
+                case 4: self = .price
+                case 5: self = .tags
+                case 6: self = .inStock
+                default: return nil
+                }
+            }
+        }
+
         static var recordName: String { "Product" }
         static var primaryKeyFields: [String] { ["productID"] }
         static var allFields: [String] { ["productID", "name", "category", "price", "tags", "inStock"] }
@@ -50,14 +83,6 @@ struct IndexScanRegressionTests {
             case "inStock": return 6
             default: return nil
             }
-        }
-
-        func toProtobuf() throws -> Data {
-            return try JSONEncoder().encode(self)
-        }
-
-        static func fromProtobuf(_ data: Data) throws -> Product {
-            return try JSONDecoder().decode(Product.self, from: data)
         }
 
         func extractField(_ fieldName: String) -> [any TupleElement] {
