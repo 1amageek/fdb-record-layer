@@ -1,0 +1,500 @@
+import Foundation
+
+/// S2 Geometry: Hierarchical cell ID on sphere surface using Hilbert curve
+///
+/// S2CellID represents a cell on the unit sphere using a 64-bit integer:
+/// - 3 bits: face ID (0-5) for cube projection
+/// - 60 bits: Hilbert curve index on face
+/// - 1 bit: LSB (always 1 for valid cells)
+///
+/// **Levels**:
+/// - Level 0: 6 faces (~85M km²)
+/// - Level 10: ~1000 km²
+/// - Level 20: ~2500 m² (≈50m precision, recommended default)
+/// - Level 30: ~1 cm² (maximum precision)
+///
+/// **Usage**:
+/// ```swift
+/// // Create cell from lat/lon
+/// let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 20)
+///
+/// // Get parent/children
+/// let parent = cell.parent(level: 15)
+/// let children = cell.children()
+///
+/// // Get neighbors
+/// let neighbors = cell.neighbors()
+///
+/// // Decode back to lat/lon
+/// let (lat, lon) = cell.toLatLon()
+/// ```
+public struct S2CellID: Sendable, Hashable, Comparable {
+    /// Raw 64-bit cell ID
+    public let rawValue: UInt64
+
+    // MARK: - Constants
+
+    /// Number of faces on the cube (6 faces)
+    private static let numFaces = 6
+
+    /// Maximum level (30)
+    public static let maxLevel = 30
+
+    /// Number of position bits (60)
+    private static let posBits = 2 * maxLevel
+
+    /// Face bits shift (60 bits)
+    private static let faceBitsShift = UInt64(posBits)
+
+    /// Lookup tables for Hilbert curve transformations
+    /// Maps (orientation, position) → new orientation
+    private static let posToOrientation: [Int] = [
+        // Orientation 0
+        0, 1, 3, 2,
+        // Orientation 1
+        0, 2, 3, 1,
+        // Orientation 2
+        3, 2, 0, 1,
+        // Orientation 3
+        3, 1, 0, 2
+    ]
+
+    /// Maps (orientation, position) → IJ position
+    private static let posToIJ: [[Int]] = [
+        [0, 1, 3, 2],  // Orientation 0
+        [0, 2, 3, 1],  // Orientation 1
+        [3, 2, 0, 1],  // Orientation 2
+        [3, 1, 0, 2]   // Orientation 3
+    ]
+
+    // MARK: - Initialization
+
+    /// Create S2CellID from raw 64-bit value
+    public init(rawValue: UInt64) {
+        self.rawValue = rawValue
+    }
+
+    /// Create S2CellID from latitude and longitude
+    ///
+    /// - Parameters:
+    ///   - lat: Latitude in degrees [-90, 90]
+    ///   - lon: Longitude in degrees [-180, 180]
+    ///   - level: Cell level [0, 30] (default: 20 ≈ 50m)
+    public init(lat: Double, lon: Double, level: Int = 20) {
+        precondition(lat >= -90 && lat <= 90, "Latitude must be in [-90, 90], got \(lat)")
+        precondition(lon >= -180 && lon <= 180, "Longitude must be in [-180, 180], got \(lon)")
+        precondition(level >= 0 && level <= S2CellID.maxLevel, "Level must be in [0, 30], got \(level)")
+
+        // Convert to radians
+        let latRad = lat * .pi / 180.0
+        let lonRad = lon * .pi / 180.0
+
+        // Convert to XYZ on unit sphere
+        let cosLat = cos(latRad)
+        let x = cos(lonRad) * cosLat
+        let y = sin(lonRad) * cosLat
+        let z = sin(latRad)
+
+        // Determine face and UV coordinates
+        let (face, u, v) = S2CellID.xyzToFaceUV(x: x, y: y, z: z)
+
+        // Convert UV to ST (quadratic projection)
+        let s = S2CellID.uvToST(u)
+        let t = S2CellID.uvToST(v)
+
+        // Convert ST to IJ (integer coordinates)
+        let maxSize = 1 << S2CellID.maxLevel
+        let si = max(0, min(maxSize - 1, Int((s * Double(maxSize)).rounded(.down))))
+        let ti = max(0, min(maxSize - 1, Int((t * Double(maxSize)).rounded(.down))))
+
+        // Encode face + IJ into cell ID using Hilbert curve
+        let cellID = S2CellID.encodeFaceIJ(face: face, i: si, j: ti, level: level)
+        self.init(rawValue: cellID)
+    }
+
+    // MARK: - Properties
+
+    /// Cell level (0-30)
+    public var level: Int {
+        if rawValue == 0 {
+            return 0
+        }
+
+        // Count trailing zero pairs
+        var n = rawValue
+        var level = S2CellID.maxLevel
+
+        // Remove trailing zero pairs
+        while (n & 1) == 0 {
+            n >>= 1
+            level -= 1
+        }
+
+        return max(0, level)
+    }
+
+    /// Face ID (0-5)
+    public var face: Int {
+        return Int((rawValue >> S2CellID.faceBitsShift) & 0x7)
+    }
+
+    /// Is this a leaf cell (level 30)?
+    public var isLeaf: Bool {
+        return level == S2CellID.maxLevel
+    }
+
+    /// Is this a valid cell?
+    public var isValid: Bool {
+        return face < S2CellID.numFaces && (rawValue & 0x1) != 0
+    }
+
+    // MARK: - Coordinate Conversion
+
+    /// Convert cell ID back to (latitude, longitude)
+    ///
+    /// - Returns: Tuple of (latitude, longitude) in degrees at cell center
+    public func toLatLon() -> (lat: Double, lon: Double) {
+        // Decode face and IJ
+        let (face, i, j) = S2CellID.decodeFaceIJ(rawValue: rawValue)
+
+        // Convert IJ to ST (center of cell)
+        let maxSize = 1 << S2CellID.maxLevel
+        let cellSize = 1 << (S2CellID.maxLevel - level)
+        let s = (Double(i) + Double(cellSize) / 2.0) / Double(maxSize)
+        let t = (Double(j) + Double(cellSize) / 2.0) / Double(maxSize)
+
+        // Convert ST to UV
+        let u = S2CellID.stToUV(s)
+        let v = S2CellID.stToUV(t)
+
+        // Convert UV to XYZ
+        let (x, y, z) = S2CellID.faceUVToXYZ(face: face, u: u, v: v)
+
+        // Normalize to unit sphere
+        let norm = sqrt(x * x + y * y + z * z)
+        let xn = x / norm
+        let yn = y / norm
+        let zn = z / norm
+
+        // Convert XYZ to lat/lon
+        let latRad = atan2(zn, sqrt(xn * xn + yn * yn))
+        let lonRad = atan2(yn, xn)
+
+        return (lat: latRad * 180.0 / .pi, lon: lonRad * 180.0 / .pi)
+    }
+
+    // MARK: - Hierarchical Operations
+
+    /// Get parent cell at specified level
+    ///
+    /// - Parameter level: Target level (must be <= current level)
+    /// - Returns: Parent cell
+    public func parent(level: Int) -> S2CellID {
+        precondition(level >= 0 && level <= S2CellID.maxLevel, "Level must be in [0, 30]")
+        precondition(level <= self.level, "Parent level must be <= current level (\(self.level))")
+
+        if level == self.level {
+            return self
+        }
+
+        // Calculate new LSB position
+        let newLSB = lsb() << (2 * (self.level - level))
+
+        // Clear lower bits and set new LSB
+        return S2CellID(rawValue: (rawValue & ~(newLSB - 1)) | newLSB)
+    }
+
+    /// Get all 4 child cells
+    ///
+    /// - Returns: Array of 4 child cells
+    public func children() -> [S2CellID] {
+        precondition(!isLeaf, "Leaf cells (level 30) have no children")
+
+        let lsb = lsb()
+        let newLSB = lsb >> 2
+
+        // Four children in Hilbert curve order
+        return [
+            S2CellID(rawValue: rawValue - lsb + newLSB),           // Child 0
+            S2CellID(rawValue: rawValue + newLSB),                  // Child 1
+            S2CellID(rawValue: rawValue + (lsb >> 1) - newLSB),    // Child 2
+            S2CellID(rawValue: rawValue + (lsb >> 1) + newLSB)     // Child 3
+        ]
+    }
+
+    /// Get child cell at specified position (0-3)
+    public func child(position: Int) -> S2CellID {
+        precondition(position >= 0 && position < 4, "Child position must be in [0, 3]")
+        precondition(!isLeaf, "Leaf cells have no children")
+
+        let lsb = lsb()
+        let newLSB = lsb >> 2
+
+        let offsets: [UInt64] = [
+            UInt64(bitPattern: -Int64(lsb)) + newLSB,   // Child 0
+            newLSB,                                      // Child 1
+            (lsb >> 1) - newLSB,                        // Child 2
+            (lsb >> 1) + newLSB                         // Child 3
+        ]
+
+        return S2CellID(rawValue: rawValue + offsets[position])
+    }
+
+    /// Get all edge neighbors (4 cells sharing an edge)
+    ///
+    /// - Returns: Array of neighboring cells (may be less than 4 at edges)
+    public func neighbors() -> [S2CellID] {
+        let (face, i, j) = S2CellID.decodeFaceIJ(rawValue: rawValue)
+        let cellSize = 1 << (S2CellID.maxLevel - level)
+
+        var result: [S2CellID] = []
+        result.reserveCapacity(4)
+
+        // Four edge neighbors: North, South, East, West
+        let offsets = [
+            (0, cellSize),   // North
+            (0, -cellSize),  // South
+            (cellSize, 0),   // East
+            (-cellSize, 0)   // West
+        ]
+
+        let maxCoord = 1 << S2CellID.maxLevel
+
+        for (di, dj) in offsets {
+            let ni = i + di
+            let nj = j + dj
+
+            // Check if neighbor is on same face
+            if ni >= 0 && ni < maxCoord && nj >= 0 && nj < maxCoord {
+                let neighborID = S2CellID.encodeFaceIJ(face: face, i: ni, j: nj, level: level)
+                result.append(S2CellID(rawValue: neighborID))
+            }
+            // TODO: Handle cross-face neighbors (complex edge case)
+        }
+
+        return result
+    }
+
+    // MARK: - Utility
+
+    /// Get least significant bit (LSB) of this cell ID
+    private func lsb() -> UInt64 {
+        return rawValue & (~rawValue + 1)
+    }
+
+    // MARK: - Coordinate Transformations
+
+    /// Convert (x, y, z) to (face, u, v)
+    ///
+    /// Projects unit sphere point to one of 6 cube faces
+    private static func xyzToFaceUV(x: Double, y: Double, z: Double) -> (face: Int, u: Double, v: Double) {
+        let absX = abs(x)
+        let absY = abs(y)
+        let absZ = abs(z)
+
+        let (face, u, v): (Int, Double, Double)
+
+        // Determine which face based on largest component
+        if absX >= absY && absX >= absZ {
+            // X face
+            if x >= 0 {
+                face = 0  // +X
+                u = y / x
+                v = z / x
+            } else {
+                face = 3  // -X
+                u = -y / x
+                v = -z / x
+            }
+        } else if absY >= absZ {
+            // Y face
+            if y >= 0 {
+                face = 1  // +Y
+                u = -x / y
+                v = z / y
+            } else {
+                face = 4  // -Y
+                u = x / y
+                v = -z / y
+            }
+        } else {
+            // Z face
+            if z >= 0 {
+                face = 2  // +Z
+                u = -x / z
+                v = -y / z
+            } else {
+                face = 5  // -Z
+                u = -x / z
+                v = y / z
+            }
+        }
+
+        return (face, u, v)
+    }
+
+    /// Convert (face, u, v) to (x, y, z)
+    ///
+    /// Projects cube face point back to unit sphere
+    private static func faceUVToXYZ(face: Int, u: Double, v: Double) -> (x: Double, y: Double, z: Double) {
+        switch face {
+        case 0: return (1.0, u, v)       // +X
+        case 1: return (-u, 1.0, v)      // +Y
+        case 2: return (-u, -v, 1.0)     // +Z
+        case 3: return (-1.0, -u, -v)    // -X
+        case 4: return (u, -1.0, -v)     // -Y
+        case 5: return (u, v, -1.0)      // -Z
+        default: fatalError("Invalid face: \(face)")
+        }
+    }
+
+    /// Convert U/V coordinate to S/T using quadratic projection
+    ///
+    /// This projection provides better area uniformity than linear projection
+    private static func uvToST(_ uv: Double) -> Double {
+        if uv >= 0 {
+            return 0.5 * sqrt(1.0 + 3.0 * uv)
+        } else {
+            return 1.0 - 0.5 * sqrt(1.0 - 3.0 * uv)
+        }
+    }
+
+    /// Convert S/T coordinate to U/V using inverse quadratic projection
+    private static func stToUV(_ st: Double) -> Double {
+        if st >= 0.5 {
+            return (1.0 / 3.0) * (4.0 * st * st - 1.0)
+        } else {
+            return (1.0 / 3.0) * (1.0 - 4.0 * (1.0 - st) * (1.0 - st))
+        }
+    }
+
+    /// Encode (face, i, j, level) into 64-bit cell ID using Hilbert curve
+    private static func encodeFaceIJ(face: Int, i: Int, j: Int, level: Int) -> UInt64 {
+        // Interleave i and j bits using Hilbert curve
+        var bits: UInt64 = 0
+        var orientation = 0
+
+        // Process from high bits to low bits
+        for k in (0..<level).reversed() {
+            let shift = maxLevel - 1 - k
+            let mask = 1 << shift
+
+            // Extract bit from i and j
+            let iBit = (i & mask) != 0 ? 1 : 0
+            let jBit = (j & mask) != 0 ? 1 : 0
+
+            // Combine into 2-bit position
+            let pos = (iBit << 1) | jBit
+
+            // Apply Hilbert curve transformation based on current orientation
+            let orientedPos = posToIJ[orientation][pos]
+            bits = (bits << 2) | UInt64(orientedPos)
+
+            // Update orientation for next level
+            orientation ^= posToOrientation[4 * orientation + pos]
+        }
+
+        // Shift to leave room for trailing bits
+        bits <<= (2 * (maxLevel - level))
+
+        // Add LSB
+        bits |= 1
+
+        // Combine face + bits
+        let faceBits = UInt64(face) << faceBitsShift
+        return faceBits | bits
+    }
+
+    /// Decode 64-bit cell ID into (face, i, j)
+    private static func decodeFaceIJ(rawValue: UInt64) -> (face: Int, i: Int, j: Int) {
+        let face = Int((rawValue >> faceBitsShift) & 0x7)
+
+        var i = 0
+        var j = 0
+        var orientation = 0
+
+        let level = S2CellID(rawValue: rawValue).level
+
+        // Extract bits in reverse Hilbert order
+        for k in 0..<level {
+            let shift = 2 * (maxLevel - 1 - k)
+            let pos = Int((rawValue >> UInt64(shift)) & 3)
+
+            // Reverse Hilbert transformation
+            let originalPos = posToIJ[orientation].firstIndex(of: pos) ?? 0
+
+            let iBit = (originalPos >> 1) & 1
+            let jBit = originalPos & 1
+
+            i = (i << 1) | iBit
+            j = (j << 1) | jBit
+
+            // Update orientation
+            orientation ^= posToOrientation[4 * orientation + originalPos]
+        }
+
+        // Shift to maxLevel coordinates
+        let shift = maxLevel - level
+        i <<= shift
+        j <<= shift
+
+        return (face, i, j)
+    }
+
+    // MARK: - Comparable
+
+    public static func < (lhs: S2CellID, rhs: S2CellID) -> Bool {
+        return lhs.rawValue < rhs.rawValue
+    }
+
+    // MARK: - CustomStringConvertible
+
+    public var description: String {
+        if !isValid {
+            return "S2CellID(invalid)"
+        }
+
+        let (lat, lon) = toLatLon()
+        return String(format: "S2CellID(face: %d, level: %d, lat: %.6f, lon: %.6f)", face, level, lat, lon)
+    }
+}
+
+// MARK: - Constants
+
+extension S2CellID {
+    /// Sentinel value representing an invalid cell
+    public static let none = S2CellID(rawValue: 0)
+
+    /// Face cells (level 0)
+    public static let faceCells: [S2CellID] = (0..<6).map { face in
+        S2CellID(rawValue: (UInt64(face) << UInt64(posBits)) | 1)
+    }
+}
+
+// MARK: - Utility Functions
+
+extension S2CellID {
+    /// Calculate Haversine distance between two lat/lon points
+    ///
+    /// - Returns: Distance in meters
+    public static func haversineDistance(
+        lat1: Double, lon1: Double,
+        lat2: Double, lon2: Double
+    ) -> Double {
+        let R = 6371000.0  // Earth radius in meters
+
+        // Convert to radians
+        let lat1Rad = lat1 * .pi / 180.0
+        let lat2Rad = lat2 * .pi / 180.0
+        let dLat = (lat2 - lat1) * .pi / 180.0
+        let dLon = (lon2 - lon1) * .pi / 180.0
+
+        // Haversine formula
+        let a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(lat1Rad) * cos(lat2Rad) *
+                sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+        return R * c
+    }
+}

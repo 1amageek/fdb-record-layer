@@ -762,35 +762,130 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         rangeMetadata: nil
                     ))
                 } else if attrName == "Spatial" {
-                    // Extract parameters from @Spatial(type: .geo)
-                    var spatialType = "geo"  // Default
+                    // Extract parameters from @Spatial(type: .geo(latitude: \.lat, longitude: \.lon, level: 17), altitudeRange: 0...10000)
+                    var spatialType: String?
+                    var keyPaths: [String] = []
+                    var level: Int? = nil
+                    var altitudeRange: String? = nil
 
                     if case let .argumentList(arguments) = attributeSyntax.arguments {
                         for argument in arguments {
                             guard let label = argument.label?.text else { continue }
 
                             if label == "type" {
-                                if let memberAccess = argument.expression.as(MemberAccessExprSyntax.self) {
-                                    spatialType = memberAccess.declName.baseName.text
+                                // type: is a function call expression like .geo(latitude: \.lat, longitude: \.lon, level: 17)
+                                if let funcCall = argument.expression.as(FunctionCallExprSyntax.self),
+                                   let callee = funcCall.calledExpression.as(MemberAccessExprSyntax.self) {
+                                    // Extract spatial type name ("geo", "geo3D", "cartesian", "cartesian3D")
+                                    spatialType = callee.declName.baseName.text
+
+                                    // Extract KeyPath and level arguments
+                                    for arg in funcCall.arguments {
+                                        if let argLabel = arg.label?.text, argLabel == "level" {
+                                            // Extract level: 17
+                                            if let intExpr = arg.expression.as(IntegerLiteralExprSyntax.self),
+                                               let value = Int(intExpr.literal.text) {
+                                                level = value
+                                            }
+                                        } else if let keyPathExpr = arg.expression.as(KeyPathExprSyntax.self) {
+                                            // Convert KeyPath syntax to string representation
+                                            let keyPathString = extractKeyPathString(keyPathExpr)
+                                            keyPaths.append(keyPathString)
+                                        }
+                                    }
+                                }
+                            } else if label == "altitudeRange" {
+                                // Extract altitudeRange: 0...10000
+                                // IMPORTANT: Must be a ClosedRange literal with numeric bounds
+                                // Variables, function calls, or complex expressions are NOT supported
+
+                                // Validate: Must be SequenceExprSyntax with "..." operator
+                                if let sequenceExpr = argument.expression.as(SequenceExprSyntax.self) {
+                                    // Check if sequence contains ClosedRangeOperator ("...")
+                                    var hasClosedRangeOp = false
+                                    var hasOnlyLiterals = true
+
+                                    for element in sequenceExpr.elements {
+                                        // Check for "..." operator
+                                        if let binaryOp = element.as(BinaryOperatorExprSyntax.self),
+                                           binaryOp.operator.text == "..." {
+                                            hasClosedRangeOp = true
+                                        }
+                                        // Ensure operands are numeric literals (IntegerLiteralExprSyntax or FloatLiteralExprSyntax)
+                                        else if !element.is(IntegerLiteralExprSyntax.self) &&
+                                                  !element.is(FloatLiteralExprSyntax.self) {
+                                            // Check if it's a negative sign (PrefixOperatorExprSyntax with "-")
+                                            if let prefixOp = element.as(PrefixOperatorExprSyntax.self),
+                                               prefixOp.operator.text == "-" {
+                                                // Allow negative numbers
+                                                continue
+                                            } else if !element.is(BinaryOperatorExprSyntax.self) {
+                                                // Non-literal found (variable, function call, etc.)
+                                                hasOnlyLiterals = false
+                                            }
+                                        }
+                                    }
+
+                                    if hasClosedRangeOp && hasOnlyLiterals {
+                                        // Valid ClosedRange literal: extract as string
+                                        altitudeRange = argument.expression.description.trimmingCharacters(in: .whitespaces)
+                                    } else {
+                                        // Invalid: not a literal range
+                                        altitudeRange = nil
+                                        // TODO: Could emit diagnostic here for better UX
+                                    }
+                                } else {
+                                    // Not a SequenceExprSyntax - invalid
+                                    altitudeRange = nil
                                 }
                             }
                         }
                     }
 
-                    indexes.append(IndexInfo(
-                        fields: [fieldName],
-                        isUnique: false,
-                        customName: nil,
-                        typeName: typeName,
-                        indexType: .spatial(type: spatialType),
-                        scope: .partition,
-                        rangeMetadata: nil
-                    ))
+                    // Only create index if we successfully parsed type and keyPaths
+                    if let spatialType = spatialType, !keyPaths.isEmpty {
+                        indexes.append(IndexInfo(
+                            fields: [fieldName],
+                            isUnique: false,
+                            customName: nil,
+                            typeName: typeName,
+                            indexType: .spatial(type: spatialType, keyPaths: keyPaths, level: level, altitudeRange: altitudeRange),
+                            scope: .partition,
+                            rangeMetadata: nil
+                        ))
+                    }
                 }
             }
         }
 
         return indexes
+    }
+
+    /// Extract KeyPath string representation from KeyPathExprSyntax
+    ///
+    /// Converts a KeyPath expression to its string form for code generation.
+    ///
+    /// **Examples**:
+    /// - `\.latitude` → `"\.latitude"`
+    /// - `\.address.location.latitude` → `"\.address.location.latitude"`
+    ///
+    /// - Parameter keyPathExpr: The KeyPath expression to convert
+    /// - Returns: String representation of the KeyPath
+    private static func extractKeyPathString(_ keyPathExpr: KeyPathExprSyntax) -> String {
+        var pathComponents: [String] = []
+
+        for component in keyPathExpr.components {
+            if let property = component.component.as(KeyPathPropertyComponentSyntax.self) {
+                pathComponents.append(property.declName.baseName.text)
+            }
+        }
+
+        // Return KeyPath format: \.field1.field2.field3
+        if pathComponents.isEmpty {
+            return "\\."
+        } else {
+            return "\\." + pathComponents.joined(separator: ".")
+        }
     }
 
     /// Deduplicate index definitions by field combination, order, uniqueness, and type
@@ -1049,10 +1144,89 @@ indexType: .vector(VectorIndexOptions(
                             metric: .\(metric)
                         ))
 """
-            case .spatial(let type):
-                indexTypeParam = """
-indexType: .spatial(SpatialIndexOptions(type: .\(type)))
+            case .spatial(let type, let keyPaths, let level, let altitudeRange):
+                // Generate SpatialType enum case with KeyPaths and optional level
+                let spatialTypeInit: String
+                switch type {
+                case "geo":
+                    // .geo(latitude: \.lat, longitude: \.lon, level: 17)
+                    guard keyPaths.count == 2 else {
+                        if let levelValue = level {
+                            spatialTypeInit = ".geo(latitude: \\.latitude, longitude: \\.longitude, level: \(levelValue))"
+                        } else {
+                            spatialTypeInit = ".geo(latitude: \\.latitude, longitude: \\.longitude)"
+                        }
+                        break
+                    }
+                    if let levelValue = level {
+                        spatialTypeInit = ".geo(latitude: \(keyPaths[0]), longitude: \(keyPaths[1]), level: \(levelValue))"
+                    } else {
+                        spatialTypeInit = ".geo(latitude: \(keyPaths[0]), longitude: \(keyPaths[1]))"
+                    }
+
+                case "geo3D":
+                    // .geo3D(latitude: \.lat, longitude: \.lon, altitude: \.alt, level: 16)
+                    guard keyPaths.count == 3 else {
+                        if let levelValue = level {
+                            spatialTypeInit = ".geo3D(latitude: \\.latitude, longitude: \\.longitude, altitude: \\.altitude, level: \(levelValue))"
+                        } else {
+                            spatialTypeInit = ".geo3D(latitude: \\.latitude, longitude: \\.longitude, altitude: \\.altitude)"
+                        }
+                        break
+                    }
+                    if let levelValue = level {
+                        spatialTypeInit = ".geo3D(latitude: \(keyPaths[0]), longitude: \(keyPaths[1]), altitude: \(keyPaths[2]), level: \(levelValue))"
+                    } else {
+                        spatialTypeInit = ".geo3D(latitude: \(keyPaths[0]), longitude: \(keyPaths[1]), altitude: \(keyPaths[2]))"
+                    }
+
+                case "cartesian":
+                    // .cartesian(x: \.x, y: \.y, level: 18)
+                    guard keyPaths.count == 2 else {
+                        if let levelValue = level {
+                            spatialTypeInit = ".cartesian(x: \\.x, y: \\.y, level: \(levelValue))"
+                        } else {
+                            spatialTypeInit = ".cartesian(x: \\.x, y: \\.y)"
+                        }
+                        break
+                    }
+                    if let levelValue = level {
+                        spatialTypeInit = ".cartesian(x: \(keyPaths[0]), y: \(keyPaths[1]), level: \(levelValue))"
+                    } else {
+                        spatialTypeInit = ".cartesian(x: \(keyPaths[0]), y: \(keyPaths[1]))"
+                    }
+
+                case "cartesian3D":
+                    // .cartesian3D(x: \.x, y: \.y, z: \.z, level: 16)
+                    guard keyPaths.count == 3 else {
+                        if let levelValue = level {
+                            spatialTypeInit = ".cartesian3D(x: \\.x, y: \\.y, z: \\.z, level: \(levelValue))"
+                        } else {
+                            spatialTypeInit = ".cartesian3D(x: \\.x, y: \\.y, z: \\.z)"
+                        }
+                        break
+                    }
+                    if let levelValue = level {
+                        spatialTypeInit = ".cartesian3D(x: \(keyPaths[0]), y: \(keyPaths[1]), z: \(keyPaths[2]), level: \(levelValue))"
+                    } else {
+                        spatialTypeInit = ".cartesian3D(x: \(keyPaths[0]), y: \(keyPaths[1]), z: \(keyPaths[2]))"
+                    }
+
+                default:
+                    // Fallback for unknown types
+                    spatialTypeInit = ".geo(latitude: \\.latitude, longitude: \\.longitude)"
+                }
+
+                // Generate SpatialIndexOptions with altitudeRange if present (for 3D types)
+                if let altitudeRangeValue = altitudeRange {
+                    indexTypeParam = """
+indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit), altitudeRange: \(altitudeRangeValue)))
 """
+                } else {
+                    indexTypeParam = """
+indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
+"""
+                }
             case .version:
                 indexTypeParam = "indexType: .version"
             }
@@ -1309,7 +1483,7 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             for indexDef in spatialIndexes {
                 guard let fieldName = indexDef.fields.first else { continue }
 
-                if case .spatial(let type) = indexDef.indexType {
+                if case .spatial(let type, _, _, _) = indexDef.indexType {
                     // Determine expected dimensionality based on SpatialType
                     let is3D = type == "geo3D" || type == "cartesian3D"
                     let expectedDims = is3D ? 3 : 2
@@ -2232,7 +2406,18 @@ enum IndexInfoType: Hashable {
     case min
     case max
     case vector(dimensions: Int, metric: String)
-    case spatial(type: String)
+    /// Spatial index with KeyPath-based coordinate extraction
+    ///
+    /// - Parameters:
+    ///   - type: Spatial type ("geo", "geo3D", "cartesian", "cartesian3D")
+    ///   - keyPaths: Array of KeyPath strings for coordinate extraction
+    ///     - geo: [latitude, longitude]
+    ///     - geo3D: [latitude, longitude, altitude]
+    ///     - cartesian: [x, y]
+    ///     - cartesian3D: [x, y, z]
+    ///   - level: Optional level parameter for precision control
+    ///   - altitudeRange: Optional altitude range for 3D types (e.g., "0...10000")
+    case spatial(type: String, keyPaths: [String], level: Int?, altitudeRange: String?)
     case version
 }
 

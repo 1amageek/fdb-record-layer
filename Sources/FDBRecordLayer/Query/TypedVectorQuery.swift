@@ -20,7 +20,7 @@ import FoundationDB
 ///     print("\(product.name): distance = \(distance)")
 /// }
 /// ```
-public struct TypedVectorQuery<Record: Sendable>: Sendable {
+public struct TypedVectorQuery<Record: Recordable>: Sendable {
     let k: Int
     let queryVector: [Float32]
     let index: Index
@@ -28,6 +28,7 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
     let recordSubspace: Subspace
     let indexSubspace: Subspace
     nonisolated(unsafe) let database: any DatabaseProtocol
+    let schema: Schema
 
     // Post-filter using TypedQueryComponent (consistent with existing DSL)
     private let postFilter: (any TypedQueryComponent<Record>)?
@@ -40,6 +41,7 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
         recordSubspace: Subspace,
         indexSubspace: Subspace,
         database: any DatabaseProtocol,
+        schema: Schema,
         postFilter: (any TypedQueryComponent<Record>)? = nil
     ) {
         self.k = k
@@ -49,6 +51,7 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
         self.recordSubspace = recordSubspace
         self.indexSubspace = indexSubspace
         self.database = database
+        self.schema = schema
         self.postFilter = postFilter
     }
 
@@ -77,6 +80,7 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
             recordSubspace: recordSubspace,
             indexSubspace: indexSubspace,
             database: database,
+            schema: schema,
             postFilter: newFilter
         )
     }
@@ -95,7 +99,8 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
             k: k,
             queryVector: queryVector,
             index: index,
-            postFilter: postFilter
+            postFilter: postFilter,
+            schema: schema
         )
 
         return try await plan.execute(
@@ -109,32 +114,41 @@ public struct TypedVectorQuery<Record: Sendable>: Sendable {
 
 /// Execution plan for vector similarity search
 ///
-/// **Design Note**: This plan directly calls GenericVectorIndexMaintainer.search(),
-/// which is marked as a read-only operation (snapshot: true). While maintainers are
-/// primarily designed for write operations, the search() method is explicitly intended
-/// for read-only queries and does not modify index state.
+/// **HNSW Support**: Automatically selects the appropriate index maintainer:
+/// - `.vector` indexes → GenericHNSWIndexMaintainer for O(log n) search
+/// - Other types → GenericVectorIndexMaintainer for O(n) flat scan
 ///
-/// **Future Enhancement**: Extract search() to a separate VectorIndexReader component
-/// to better separate read/write concerns.
-struct TypedVectorSearchPlan<Record: Sendable>: Sendable {
+/// **Design Note**: Search methods are marked as read-only operations (snapshot: true).
+/// While maintainers are primarily designed for write operations, the search() method
+/// is explicitly intended for read-only queries and does not modify index state.
+///
+/// **Implementation**: Type selection occurs at execute() time based on index.type,
+/// ensuring transparent HNSW usage without user code changes.
+struct TypedVectorSearchPlan<Record: Recordable>: Sendable {
     private let k: Int
     private let queryVector: [Float32]
     private let index: Index
     private let postFilter: (any TypedQueryComponent<Record>)?
+    private let schema: Schema
 
     init(
         k: Int,
         queryVector: [Float32],
         index: Index,
-        postFilter: (any TypedQueryComponent<Record>)? = nil
+        postFilter: (any TypedQueryComponent<Record>)? = nil,
+        schema: Schema
     ) {
         self.k = k
         self.queryVector = queryVector
         self.index = index
         self.postFilter = postFilter
+        self.schema = schema
     }
 
     /// Execute vector search plan
+    ///
+    /// **HNSW Support**: Automatically selects HNSW maintainer for .vector indexes,
+    /// providing O(log n) search instead of O(n) flat scan.
     ///
     /// - Returns: Array of (record, distance) tuples
     func execute(
@@ -148,25 +162,49 @@ struct TypedVectorSearchPlan<Record: Sendable>: Sendable {
         // Build index subspace
         let indexNameSubspace = subspace.subspace(index.name)
 
-        // Create vector index maintainer (read-only usage)
-        let maintainer = try GenericVectorIndexMaintainer<Record>(
-            index: index,
-            subspace: indexNameSubspace,
-            recordSubspace: recordSubspace
-        )
-
         // Perform search (snapshot read)
         // If post-filter exists, fetch more results to account for filtering
         let fetchK = postFilter != nil ? k * 2 : k
-        let searchResults = try await maintainer.search(
-            queryVector: queryVector,
-            k: fetchK,
-            transaction: transaction
-        )
+
+        // Select maintainer based on vector index strategy
+        let searchResults: [(primaryKey: Tuple, distance: Double)]
+
+        // ✅ Read strategy from Schema (runtime configuration)
+        // Separates data structure (VectorIndexOptions) from runtime optimization (IndexConfiguration)
+        let strategy = schema.getVectorStrategy(for: index.name)
+
+        switch strategy {
+        case .flatScan:
+            // Use flat scan for O(n) search (small-scale datasets, lower memory)
+            let flatMaintainer = try GenericVectorIndexMaintainer<Record>(
+                index: index,
+                subspace: indexNameSubspace,
+                recordSubspace: recordSubspace
+            )
+            searchResults = try await flatMaintainer.search(
+                queryVector: queryVector,
+                k: fetchK,
+                transaction: transaction
+            )
+
+        case .hnsw:
+            // Use HNSW for O(log n) search (large-scale datasets)
+            let hnswMaintainer = try GenericHNSWIndexMaintainer<Record>(
+                index: index,
+                subspace: indexNameSubspace,
+                recordSubspace: recordSubspace
+            )
+            searchResults = try await hnswMaintainer.search(
+                queryVector: queryVector,
+                k: fetchK,
+                transaction: transaction
+            )
+        }
 
         // Fetch records and apply post-filter
         var results: [(record: Record, distance: Double)] = []
-        let recordName = String(describing: Record.self)
+        // ✅ FIX: Use Record.recordName instead of String(describing:) to support custom record names
+        let recordName = Record.recordName
 
         for (primaryKey, distance) in searchResults {
             // Fetch record

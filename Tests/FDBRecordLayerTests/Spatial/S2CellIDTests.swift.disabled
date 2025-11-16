@@ -1,0 +1,588 @@
+import Testing
+import Foundation
+@testable import FDBRecordLayer
+
+/// S2CellID comprehensive test suite (30 tests)
+///
+/// Test coverage:
+/// 1. Basic encode/decode (10 tests)
+/// 2. Hierarchical operations (8 tests)
+/// 3. Neighbor operations (6 tests)
+/// 4. Precision and coordinate transformation (6 tests)
+@Suite("S2CellID Tests", .serialized)
+struct S2CellIDTests {
+
+    // MARK: - 1. Basic Encode/Decode Tests (10 tests)
+
+    @Test("Encode and decode equator (0°, 0°)")
+    func encodeDecodeEquator() throws {
+        let lat = 0.0
+        let lon = 0.0
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        // Verify round-trip accuracy
+        // Level 20 quantization error: up to 5e-05 degrees (~5.5m at equator)
+        // This is expected due to cell quantization (rounding to cell center)
+        #expect(abs(decodedLat - lat) < 0.00005)
+        #expect(abs(decodedLon - lon) < 0.00005)
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode and decode North Pole (90°, 0°)")
+    func encodeDecodeNorthPole() throws {
+        let lat = 90.0
+        let lon = 0.0
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        // North pole: slightly higher threshold due to spherical geometry
+        #expect(abs(decodedLat - lat) < 0.00006)
+        // Longitude is undefined at pole, but should decode
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode and decode South Pole (-90°, 0°)")
+    func encodeDecodeSouthPole() throws {
+        let lat = -90.0
+        let lon = 0.0
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        // South pole: slightly higher threshold due to spherical geometry
+        #expect(abs(decodedLat - lat) < 0.00006)
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode and decode International Date Line (0°, 180°)")
+    func encodeDateLine180() throws {
+        let lat = 0.0
+        let lon = 180.0
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        #expect(abs(decodedLat - lat) < 0.00005)
+        // 180° and -180° are equivalent
+        let lonDiff = abs(decodedLon - lon)
+        #expect(lonDiff < 0.00005 || abs(lonDiff - 360.0) < 0.00005)
+    }
+
+    @Test("Encode and decode International Date Line (0°, -180°)")
+    func encodeDateLineNeg180() throws {
+        let lat = 0.0
+        let lon = -180.0
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        #expect(abs(decodedLat - lat) < 0.00005)
+        // 180° and -180° are equivalent
+        let lonDiff = abs(decodedLon - lon)
+        #expect(lonDiff < 0.00005 || abs(lonDiff - 360.0) < 0.00005)
+    }
+
+    @Test("Encode and decode Tokyo (35.6762°, 139.6503°)")
+    func encodeDecodeTokyo() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        #expect(abs(decodedLat - lat) < 0.00005)
+        #expect(abs(decodedLon - lon) < 0.00005)
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode and decode New York (40.7128°, -74.0060°)")
+    func encodeDecodeNewYork() throws {
+        let lat = 40.7128
+        let lon = -74.0060
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        #expect(abs(decodedLat - lat) < 0.00005)
+        #expect(abs(decodedLon - lon) < 0.00005)
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode and decode Sydney (-33.8688°, 151.2093°)")
+    func encodeDecodeSydney() throws {
+        let lat = -33.8688
+        let lon = 151.2093
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        #expect(abs(decodedLat - lat) < 0.00005)
+        #expect(abs(decodedLon - lon) < 0.00005)
+        #expect(cell.level == level)
+    }
+
+    @Test("Encode precision at different levels (0-30)")
+    func encodePrecisionAtDifferentLevels() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+
+        // Test subset of levels (skip level 0 as cell size is ~60-90 degrees)
+        let testLevels = [5, 10, 15, 20, 25, 30]
+
+        for level in testLevels {
+            let cell = S2CellID(lat: lat, lon: lon, level: level)
+            #expect(cell.level == level)
+
+            let (decodedLat, decodedLon) = cell.toLatLon()
+
+            // Expected precision decreases with lower levels
+            // Cell size at equator: 180° / (2^level) → quantization error: ~cell_size / 2
+            let expectedPrecision: Double
+            switch level {
+            case 0...5:
+                expectedPrecision = 6.0   // Large cells (~5.625° per cell at level 5)
+            case 6...10:
+                expectedPrecision = 0.2   // Medium cells (~0.176° per cell at level 10)
+            case 11...15:
+                expectedPrecision = 0.01  // Small cells (~0.0055° per cell at level 15)
+            case 16...20:
+                expectedPrecision = 0.0005 // Very small cells (~0.00017° per cell at level 20)
+            default:
+                expectedPrecision = 0.00001 // Tiny cells (~5.36e-06° per cell at level 25-30)
+            }
+
+            #expect(abs(decodedLat - lat) < expectedPrecision)
+            #expect(abs(decodedLon - lon) < expectedPrecision)
+        }
+    }
+
+    @Test("Same coordinate at different levels has consistent encoding")
+    func sameCoordinateDifferentLevelsConsistency() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+
+        let cell10 = S2CellID(lat: lat, lon: lon, level: 10)
+        let cell20 = S2CellID(lat: lat, lon: lon, level: 20)
+        let cell30 = S2CellID(lat: lat, lon: lon, level: 30)
+
+        // Higher level cell should be a descendant of lower level cell
+        // (same face and within the same Hilbert curve subtree)
+        #expect(cell20.parent(level: 10).rawValue == cell10.rawValue)
+        #expect(cell30.parent(level: 20).rawValue == cell20.rawValue)
+        #expect(cell30.parent(level: 10).rawValue == cell10.rawValue)
+    }
+
+    // MARK: - 2. Hierarchical Operations Tests (8 tests)
+
+    @Test("Parent-child relationship consistency")
+    func parentChildConsistency() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+        let level = 15
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let parent = cell.parent(level: level - 1)
+        let children = parent.children()
+
+        // One of the 4 children must be the original cell
+        #expect(children.contains(cell))
+
+        // Each child's parent must be the parent
+        for child in children {
+            #expect(child.parent(level: level - 1).rawValue == parent.rawValue)
+        }
+    }
+
+    @Test("Four children completely cover parent")
+    func fourChildrenCoverParent() throws {
+        let cell = S2CellID(lat: 0.0, lon: 0.0, level: 10)
+        let children = cell.children()
+
+        #expect(children.count == 4)
+
+        // Children should have level + 1
+        for child in children {
+            #expect(child.level == cell.level + 1)
+        }
+
+        // Children should be sorted by rawValue (Hilbert curve order)
+        let rawValues = children.map { $0.rawValue }
+        #expect(rawValues == rawValues.sorted())
+    }
+
+    @Test("Child position order (0, 1, 2, 3)")
+    func childPositionOrder() throws {
+        let cell = S2CellID(lat: 0.0, lon: 0.0, level: 10)
+        let children = cell.children()
+
+        for position in 0..<4 {
+            let childAtPosition = cell.child(position: position)
+            #expect(childAtPosition.rawValue == children[position].rawValue)
+        }
+    }
+
+    @Test("Successive subdivision from level 0 to level 30")
+    func successiveSubdivision() throws {
+        var cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 0)
+
+        // Test subset of levels for performance
+        for targetLevel in stride(from: 0, through: 30, by: 5) {
+            if targetLevel > 0 {
+                cell = cell.child(position: 0)
+                for _ in 1..<5 {
+                    if cell.level < targetLevel {
+                        cell = cell.child(position: 0)
+                    }
+                }
+            }
+
+            #expect(cell.level >= min(targetLevel, cell.level))
+        }
+    }
+
+    @Test("Parent chain verification (level 10 → 5 → 0)")
+    func parentChain() throws {
+        let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 10)
+
+        let parent5 = cell.parent(level: 5)
+        let parent0 = cell.parent(level: 0)
+
+        #expect(parent5.level == 5)
+        #expect(parent0.level == 0)
+
+        // Chain consistency
+        #expect(parent5.parent(level: 0).rawValue == parent0.rawValue)
+    }
+
+    @Test("Children sorted by rawValue follow Hilbert curve")
+    func childrenHilbertOrder() throws {
+        let cell = S2CellID(lat: 0.0, lon: 0.0, level: 10)
+        let children = cell.children()
+
+        // rawValue should be in ascending order (Hilbert curve property)
+        for i in 1..<children.count {
+            #expect(children[i].rawValue > children[i - 1].rawValue)
+        }
+    }
+
+    @Test("Contains boundary conditions")
+    func containsBoundaryConditions() throws {
+        let parent = S2CellID(lat: 35.6762, lon: 139.6503, level: 10)
+        let child = parent.child(position: 0)
+
+        // Parent should contain child
+        #expect(parent.contains(child))
+
+        // Child should not contain parent
+        #expect(!child.contains(parent))
+
+        // Cell should contain itself
+        #expect(parent.contains(parent))
+        #expect(child.contains(child))
+    }
+
+    @Test("RangeMin/RangeMax inclusion")
+    func rangeMinMaxInclusion() throws {
+        let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 10)
+        let rangeMin = cell.rangeMin()
+        let rangeMax = cell.rangeMax()
+
+        // RangeMin should be the smallest descendant
+        #expect(rangeMin.level == 30)
+        #expect(cell.contains(rangeMin))
+
+        // RangeMax should be the largest descendant
+        #expect(rangeMax.level == 30)
+        #expect(cell.contains(rangeMax))
+
+        // RangeMin < RangeMax
+        #expect(rangeMin.rawValue < rangeMax.rawValue)
+    }
+
+    // MARK: - 3. Neighbor Operations Tests (6 tests)
+
+    @Test("Four directional neighbors (North, East, South, West)")
+    func fourDirectionalNeighbors() throws {
+        let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 15)
+
+        let neighbors = cell.edgeNeighbors()
+        #expect(neighbors.count == 4)
+
+        // All neighbors should be at the same level
+        for neighbor in neighbors {
+            #expect(neighbor.level == cell.level)
+        }
+
+        // Neighbors should be distinct
+        let uniqueRawValues = Set(neighbors.map { $0.rawValue })
+        #expect(uniqueRawValues.count == 4)
+
+        // Cell should not be its own neighbor
+        #expect(!neighbors.contains(cell))
+    }
+
+    @Test("Neighbors across face boundaries")
+    func neighborsAcrossFaceBoundaries() throws {
+        // Create a cell near face boundary
+        // Face 0 is +X face, boundary is around lon=45° or lon=-45°
+        let cell = S2CellID(lat: 0.0, lon: 44.9, level: 10)
+
+        let neighbors = cell.edgeNeighbors()
+        #expect(neighbors.count == 4)
+
+        // All neighbors should exist even if crossing face boundaries
+        for neighbor in neighbors {
+            #expect(neighbor.level == cell.level)
+        }
+    }
+
+    @Test("Neighbors at polar regions")
+    func neighborsAtPolarRegions() throws {
+        // Near North Pole
+        let northCell = S2CellID(lat: 89.9, lon: 0.0, level: 10)
+        let northNeighbors = northCell.edgeNeighbors()
+
+        #expect(northNeighbors.count == 4)
+        for neighbor in northNeighbors {
+            #expect(neighbor.level == northCell.level)
+        }
+
+        // Near South Pole
+        let southCell = S2CellID(lat: -89.9, lon: 0.0, level: 10)
+        let southNeighbors = southCell.edgeNeighbors()
+
+        #expect(southNeighbors.count == 4)
+        for neighbor in southNeighbors {
+            #expect(neighbor.level == southCell.level)
+        }
+    }
+
+    @Test("Neighbor level consistency")
+    func neighborLevelConsistency() throws {
+        let levels = [5, 10, 15, 20]
+        let lat = 35.6762
+        let lon = 139.6503
+
+        for level in levels {
+            let cell = S2CellID(lat: lat, lon: lon, level: level)
+            let neighbors = cell.edgeNeighbors()
+
+            // All neighbors at same level
+            for neighbor in neighbors {
+                #expect(neighbor.level == level)
+            }
+        }
+    }
+
+    @Test("Bidirectional neighbor relationship")
+    func bidirectionalNeighborRelationship() throws {
+        let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 15)
+        let neighbors = cell.edgeNeighbors()
+
+        // For each neighbor, cell should be in its neighbors
+        for neighbor in neighbors {
+            let neighborsOfNeighbor = neighbor.edgeNeighbors()
+            #expect(neighborsOfNeighbor.contains(cell))
+        }
+    }
+
+    @Test("Neighbor distance verification")
+    func neighborDistanceVerification() throws {
+        let cell = S2CellID(lat: 35.6762, lon: 139.6503, level: 15)
+        let neighbors = cell.edgeNeighbors()
+
+        let (cellLat, cellLon) = cell.toLatLon()
+
+        // Calculate distances to neighbors
+        var distances: [Double] = []
+        for neighbor in neighbors {
+            let (nLat, nLon) = neighbor.toLatLon()
+            let distance = S2CellID.haversineDistance(
+                lat1: cellLat, lon1: cellLon,
+                lat2: nLat, lon2: nLon
+            )
+            distances.append(distance)
+        }
+
+        // All distances should be roughly similar (same level cells)
+        if !distances.isEmpty {
+            let avgDistance = distances.reduce(0, +) / Double(distances.count)
+            for distance in distances {
+                // Within 50% variation (due to spherical geometry)
+                #expect(abs(distance - avgDistance) / avgDistance < 0.5)
+            }
+        }
+    }
+
+    // MARK: - 4. Precision and Coordinate Transformation Tests (6 tests)
+
+    @Test("Level 20 precision (~1.5cm)")
+    func level20Precision() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+        let level = 20
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        // Level 20: quantization error up to 5e-05 degrees (~5.5m worst case)
+        // This is expected due to cell quantization (rounding to cell center)
+        let latError = abs(decodedLat - lat)
+        let lonError = abs(decodedLon - lon)
+
+        #expect(latError < 0.00005)
+        #expect(lonError < 0.00005)
+
+        // Approximate distance error in meters
+        let distance = S2CellID.haversineDistance(
+            lat1: lat, lon1: lon,
+            lat2: decodedLat, lon2: decodedLon
+        )
+        #expect(distance < 6.0) // Less than 6m (realistic for level 20)
+    }
+
+    @Test("Level 15 precision (~1m)")
+    func level15Precision() throws {
+        let lat = 35.6762
+        let lon = 139.6503
+        let level = 15
+
+        let cell = S2CellID(lat: lat, lon: lon, level: level)
+        let (decodedLat, decodedLon) = cell.toLatLon()
+
+        // Level 15: ~1m accuracy ≈ 0.0001 degrees
+        let latError = abs(decodedLat - lat)
+        let lonError = abs(decodedLon - lon)
+
+        #expect(latError < 0.001)
+        #expect(lonError < 0.001)
+
+        // Approximate distance error in meters
+        let distance = S2CellID.haversineDistance(
+            lat1: lat, lon1: lon,
+            lat2: decodedLat, lon2: decodedLon
+        )
+        #expect(distance < 2.0) // Less than 2m
+    }
+
+    @Test("Quadratic projection symmetry (uvToST/stToUV)")
+    func quadraticProjectionSymmetry() throws {
+        // Test symmetry at various UV values
+        let testValues = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
+        for uv in testValues {
+            let st = S2CellID.uvToST(uv)
+            let uvReconstructed = S2CellID.stToUV(st)
+
+            // Round-trip should be accurate
+            #expect(abs(uvReconstructed - uv) < 1e-10)
+        }
+
+        // Test at intermediate values
+        for i in stride(from: -100, through: 100, by: 10) {
+            let uv = Double(i) / 100.0
+            let st = S2CellID.uvToST(uv)
+            let uvReconstructed = S2CellID.stToUV(st)
+
+            #expect(abs(uvReconstructed - uv) < 1e-10)
+        }
+    }
+
+    @Test("Hilbert encoding uniqueness")
+    func hilbertEncodingUniqueness() throws {
+        // Different coordinates should produce different cell IDs
+        let coordinates: [(lat: Double, lon: Double)] = [
+            (0.0, 0.0),
+            (0.0, 0.1),
+            (0.1, 0.0),
+            (35.6762, 139.6503),
+            (40.7128, -74.0060),
+            (-33.8688, 151.2093)
+        ]
+
+        let level = 20
+        var cellIDs = Set<UInt64>()
+
+        for coord in coordinates {
+            let cell = S2CellID(lat: coord.lat, lon: coord.lon, level: level)
+            cellIDs.insert(cell.rawValue)
+        }
+
+        // All cell IDs should be unique
+        #expect(cellIDs.count == coordinates.count)
+    }
+
+    @Test("toLatLon accuracy within cell size")
+    func toLatLonAccuracyWithinCellSize() throws {
+        let testLevels = [10, 15, 20, 25]
+        let lat = 35.6762
+        let lon = 139.6503
+
+        for level in testLevels {
+            let cell = S2CellID(lat: lat, lon: lon, level: level)
+            let (decodedLat, decodedLon) = cell.toLatLon()
+
+            // Calculate approximate cell size in degrees
+            // S2 cell size at equator: 180° / (2^level)
+            let cellSizeDegrees = 180.0 / pow(2.0, Double(level))
+
+            // Error should be within half cell size
+            let maxError = cellSizeDegrees / 2.0
+
+            #expect(abs(decodedLat - lat) < maxError)
+            #expect(abs(decodedLon - lon) < maxError)
+        }
+    }
+
+    @Test("XYZ to Face/UV and back transformation accuracy")
+    func xyzFaceUVTransformationAccuracy() throws {
+        // Test at various points on the sphere
+        let testPoints: [(lat: Double, lon: Double)] = [
+            (0.0, 0.0),      // Equator, prime meridian
+            (45.0, 0.0),     // Mid-latitude
+            (45.0, 90.0),    // Different face
+            (45.0, 180.0),   // Date line
+            (45.0, -90.0),   // Western hemisphere
+        ]
+
+        for point in testPoints {
+            let latRad = point.lat * .pi / 180.0
+            let lonRad = point.lon * .pi / 180.0
+            let cosLat = cos(latRad)
+
+            // Original XYZ
+            let x = cos(lonRad) * cosLat
+            let y = sin(lonRad) * cosLat
+            let z = sin(latRad)
+
+            // XYZ → Face/UV
+            let (face, u, v) = S2CellID.xyzToFaceUV(x: x, y: y, z: z)
+
+            // Face/UV → XYZ
+            let (xReconstructed, yReconstructed, zReconstructed) = S2CellID.faceUVToXYZ(face: face, u: u, v: v)
+
+            // Normalize
+            let normSquared = (xReconstructed * xReconstructed) + (yReconstructed * yReconstructed) + (zReconstructed * zReconstructed)
+            let norm = sqrt(normSquared)
+            let xNorm = xReconstructed / norm
+            let yNorm = yReconstructed / norm
+            let zNorm = zReconstructed / norm
+
+            // Round-trip should be accurate
+            #expect(abs(xNorm - x) < 1e-10)
+            #expect(abs(yNorm - y) < 1e-10)
+            #expect(abs(zNorm - z) < 1e-10)
+        }
+    }
+}

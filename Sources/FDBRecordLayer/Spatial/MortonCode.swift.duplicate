@@ -1,0 +1,309 @@
+import Foundation
+
+/// Morton Code (Z-order curve) implementation for Cartesian spatial indexing
+///
+/// Morton Code interleaves the bits of multiple coordinates to create a single index value
+/// that preserves spatial locality. Points that are close in 2D/3D space tend to have
+/// similar Morton codes, enabling efficient range queries.
+///
+/// **2D Morton Code**: Interleaves bits of x and y
+/// ```
+/// x = 0b1010 (10)
+/// y = 0b1100 (12)
+/// morton = 0b11011000 (yx yx yx yx) = 216
+/// ```
+///
+/// **3D Morton Code**: Interleaves bits of x, y, z
+/// ```
+/// x = 0b101 (5)
+/// y = 0b110 (6)
+/// z = 0b011 (3)
+/// morton = 0b011111001 (zyx zyx zyx) = 249
+/// ```
+///
+/// **Level Parameter**:
+/// - 2D: `level` specifies bits per axis (max 32 → 64-bit UInt64)
+/// - 3D: `level` specifies bits per axis (max 21 → 63 bits, 1 bit unused)
+public struct MortonCode {
+
+    // MARK: - 2D Morton Code
+
+    /// Encode 2D coordinates (x, y) into Morton Code
+    ///
+    /// - Parameters:
+    ///   - x: Normalized x coordinate [0, 1]
+    ///   - y: Normalized y coordinate [0, 1]
+    ///   - level: Bit depth per axis (0-32, default 18)
+    /// - Returns: 64-bit Morton Code
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let morton = MortonCode.encode2D(x: 0.5, y: 0.75, level: 18)
+    /// // x = 0.5 → 131072 (2^17)
+    /// // y = 0.75 → 196608 (3 * 2^16)
+    /// // morton = interleaved bits
+    /// ```
+    public static func encode2D(x: Double, y: Double, level: Int = 18) -> UInt64 {
+        precondition(level >= 0 && level <= 32, "Level must be 0-32 for 2D Morton Code")
+        precondition(x >= 0.0 && x <= 1.0, "x must be in range [0, 1]")
+        precondition(y >= 0.0 && y <= 1.0, "y must be in range [0, 1]")
+
+        let maxValue = UInt64(1 << level) - 1
+
+        // Convert normalized [0, 1] to integer coordinates [0, maxValue]
+        let xi = UInt64(x * Double(maxValue))
+        let yi = UInt64(y * Double(maxValue))
+
+        return interleave2D(x: xi, y: yi)
+    }
+
+    /// Decode Morton Code into 2D coordinates (x, y)
+    ///
+    /// - Parameters:
+    ///   - morton: 64-bit Morton Code
+    ///   - level: Bit depth per axis (0-32, default 18)
+    /// - Returns: Tuple of (x, y) normalized coordinates [0, 1]
+    public static func decode2D(morton: UInt64, level: Int = 18) -> (x: Double, y: Double) {
+        precondition(level >= 0 && level <= 32, "Level must be 0-32 for 2D Morton Code")
+
+        let (xi, yi) = deinterleave2D(morton: morton)
+
+        let maxValue = Double((1 << level) - 1)
+        let x = Double(xi) / maxValue
+        let y = Double(yi) / maxValue
+
+        return (x, y)
+    }
+
+    // MARK: - 3D Morton Code
+
+    /// Encode 3D coordinates (x, y, z) into Morton Code
+    ///
+    /// - Parameters:
+    ///   - x: Normalized x coordinate [0, 1]
+    ///   - y: Normalized y coordinate [0, 1]
+    ///   - z: Normalized z coordinate [0, 1]
+    ///   - level: Bit depth per axis (0-21, default 16)
+    /// - Returns: 64-bit Morton Code (63 bits used, 1 bit unused)
+    ///
+    /// **Bit Allocation**:
+    /// - Each axis: 21 bits max (2,097,152 steps)
+    /// - Total: 3 × 21 = 63 bits
+    /// - Bit 63: Unused (always 0)
+    public static func encode3D(x: Double, y: Double, z: Double, level: Int = 16) -> UInt64 {
+        precondition(level >= 0 && level <= 21, "Level must be 0-21 for 3D Morton Code")
+        precondition(x >= 0.0 && x <= 1.0, "x must be in range [0, 1]")
+        precondition(y >= 0.0 && y <= 1.0, "y must be in range [0, 1]")
+        precondition(z >= 0.0 && z <= 1.0, "z must be in range [0, 1]")
+
+        let maxValue = UInt64(1 << level) - 1
+
+        // Convert normalized [0, 1] to integer coordinates [0, maxValue]
+        let xi = UInt64(x * Double(maxValue))
+        let yi = UInt64(y * Double(maxValue))
+        let zi = UInt64(z * Double(maxValue))
+
+        return interleave3D(x: xi, y: yi, z: zi)
+    }
+
+    /// Decode Morton Code into 3D coordinates (x, y, z)
+    ///
+    /// - Parameters:
+    ///   - morton: 64-bit Morton Code
+    ///   - level: Bit depth per axis (0-21, default 16)
+    /// - Returns: Tuple of (x, y, z) normalized coordinates [0, 1]
+    public static func decode3D(morton: UInt64, level: Int = 16) -> (x: Double, y: Double, z: Double) {
+        precondition(level >= 0 && level <= 21, "Level must be 0-21 for 3D Morton Code")
+
+        let (xi, yi, zi) = deinterleave3D(morton: morton)
+
+        let maxValue = Double((1 << level) - 1)
+        let x = Double(xi) / maxValue
+        let y = Double(yi) / maxValue
+        let z = Double(zi) / maxValue
+
+        return (x, y, z)
+    }
+
+    // MARK: - Private Bit Interleaving
+
+    /// Interleave bits of two 32-bit integers into a 64-bit Morton Code
+    ///
+    /// **Bit Pattern** (reading right to left):
+    /// ```
+    /// x = 0b...00001010
+    /// y = 0b...00001100
+    /// result = 0b...0011011000 (y3 x3 y2 x2 y1 x1 y0 x0)
+    /// ```
+    ///
+    /// Uses magic number technique for efficient bit spreading.
+    private static func interleave2D(x: UInt64, y: UInt64) -> UInt64 {
+        let x_spread = spread2D(x)
+        let y_spread = spread2D(y)
+        return (y_spread << 1) | x_spread  // yx yx yx yx...
+    }
+
+    /// Deinterleave Morton Code into two 32-bit integers
+    private static func deinterleave2D(morton: UInt64) -> (x: UInt64, y: UInt64) {
+        let x = compact2D(morton)        // Extract even bits (x0, x1, x2...)
+        let y = compact2D(morton >> 1)   // Extract odd bits (y0, y1, y2...)
+        return (x, y)
+    }
+
+    /// Spread bits of a 32-bit integer into every 2nd position of a 64-bit value
+    ///
+    /// Example: 0b1010 → 0b01000100 (bit spreading for interleaving)
+    ///
+    /// Uses magic numbers based on: https://graphics.stanford.edu/~seander/bithacks.html
+    private static func spread2D(_ value: UInt64) -> UInt64 {
+        var x = value & 0xFFFFFFFF  // Ensure only lower 32 bits
+
+        x = (x | (x << 16)) & 0x0000FFFF0000FFFF
+        x = (x | (x << 8))  & 0x00FF00FF00FF00FF
+        x = (x | (x << 4))  & 0x0F0F0F0F0F0F0F0F
+        x = (x | (x << 2))  & 0x3333333333333333
+        x = (x | (x << 1))  & 0x5555555555555555
+
+        return x
+    }
+
+    /// Compact bits from every 2nd position into a 32-bit integer
+    ///
+    /// Inverse of spread2D()
+    private static func compact2D(_ value: UInt64) -> UInt64 {
+        var x = value & 0x5555555555555555
+
+        x = (x | (x >> 1))  & 0x3333333333333333
+        x = (x | (x >> 2))  & 0x0F0F0F0F0F0F0F0F
+        x = (x | (x >> 4))  & 0x00FF00FF00FF00FF
+        x = (x | (x >> 8))  & 0x0000FFFF0000FFFF
+        x = (x | (x >> 16)) & 0x00000000FFFFFFFF
+
+        return x
+    }
+
+    /// Interleave bits of three 21-bit integers into a 63-bit Morton Code
+    ///
+    /// **Bit Pattern** (reading right to left):
+    /// ```
+    /// x = 0b...0000101
+    /// y = 0b...0000110
+    /// z = 0b...0000011
+    /// result = 0b...011111001 (z2 y2 x2 z1 y1 x1 z0 y0 x0)
+    /// ```
+    private static func interleave3D(x: UInt64, y: UInt64, z: UInt64) -> UInt64 {
+        let x_spread = spread3D(x)
+        let y_spread = spread3D(y)
+        let z_spread = spread3D(z)
+        return (z_spread << 2) | (y_spread << 1) | x_spread  // zyx zyx zyx...
+    }
+
+    /// Deinterleave Morton Code into three 21-bit integers
+    private static func deinterleave3D(morton: UInt64) -> (x: UInt64, y: UInt64, z: UInt64) {
+        let x = compact3D(morton)        // Extract bits at positions 0, 3, 6, 9...
+        let y = compact3D(morton >> 1)   // Extract bits at positions 1, 4, 7, 10...
+        let z = compact3D(morton >> 2)   // Extract bits at positions 2, 5, 8, 11...
+        return (x, y, z)
+    }
+
+    /// Spread bits of a 21-bit integer into every 3rd position of a 64-bit value
+    ///
+    /// Example: 0b101 → 0b001001001 (bit spreading for 3D interleaving)
+    private static func spread3D(_ value: UInt64) -> UInt64 {
+        var x = value & 0x1FFFFF  // Ensure only lower 21 bits (max for 3D)
+
+        x = (x | (x << 32)) & 0x001F00000000FFFF
+        x = (x | (x << 16)) & 0x001F0000FF0000FF
+        x = (x | (x << 8))  & 0x100F00F00F00F00F
+        x = (x | (x << 4))  & 0x10C30C30C30C30C3
+        x = (x | (x << 2))  & 0x1249249249249249
+
+        return x
+    }
+
+    /// Compact bits from every 3rd position into a 21-bit integer
+    ///
+    /// Inverse of spread3D()
+    private static func compact3D(_ value: UInt64) -> UInt64 {
+        var x = value & 0x1249249249249249
+
+        x = (x | (x >> 2))  & 0x10C30C30C30C30C3
+        x = (x | (x >> 4))  & 0x100F00F00F00F00F
+        x = (x | (x >> 8))  & 0x001F0000FF0000FF
+        x = (x | (x >> 16)) & 0x001F00000000FFFF
+        x = (x | (x >> 32)) & 0x00000000001FFFFF
+
+        return x
+    }
+}
+
+// MARK: - Morton Code Extensions for Spatial Queries
+
+extension MortonCode {
+
+    /// Calculate the "BigMin" of a Morton Code range (minimum bounding code)
+    ///
+    /// Used in spatial queries to find the start of a range that covers a region.
+    ///
+    /// - Parameter codes: Array of Morton Codes representing region corners
+    /// - Returns: Minimum Morton Code that bounds the region
+    public static func bigMin(_ codes: [UInt64]) -> UInt64 {
+        guard !codes.isEmpty else { return 0 }
+        return codes.min() ?? 0
+    }
+
+    /// Calculate the "LitMax" of a Morton Code range (maximum bounding code)
+    ///
+    /// Used in spatial queries to find the end of a range that covers a region.
+    ///
+    /// - Parameter codes: Array of Morton Codes representing region corners
+    /// - Returns: Maximum Morton Code that bounds the region
+    public static func litMax(_ codes: [UInt64]) -> UInt64 {
+        guard !codes.isEmpty else { return UInt64.max }
+        return codes.max() ?? UInt64.max
+    }
+
+    /// Calculate Morton Code for a 2D bounding box
+    ///
+    /// Returns the range of Morton Codes that cover the bounding box.
+    ///
+    /// - Parameters:
+    ///   - minX: Minimum x coordinate [0, 1]
+    ///   - minY: Minimum y coordinate [0, 1]
+    ///   - maxX: Maximum x coordinate [0, 1]
+    ///   - maxY: Maximum y coordinate [0, 1]
+    ///   - level: Bit depth per axis
+    /// - Returns: Tuple of (minMorton, maxMorton)
+    public static func boundingBox2D(
+        minX: Double, minY: Double,
+        maxX: Double, maxY: Double,
+        level: Int = 18
+    ) -> (min: UInt64, max: UInt64) {
+        let minMorton = encode2D(x: minX, y: minY, level: level)
+        let maxMorton = encode2D(x: maxX, y: maxY, level: level)
+        return (min: minMorton, max: maxMorton)
+    }
+
+    /// Calculate Morton Code for a 3D bounding box
+    ///
+    /// Returns the range of Morton Codes that cover the bounding box.
+    ///
+    /// - Parameters:
+    ///   - minX: Minimum x coordinate [0, 1]
+    ///   - minY: Minimum y coordinate [0, 1]
+    ///   - minZ: Minimum z coordinate [0, 1]
+    ///   - maxX: Maximum x coordinate [0, 1]
+    ///   - maxY: Maximum y coordinate [0, 1]
+    ///   - maxZ: Maximum z coordinate [0, 1]
+    ///   - level: Bit depth per axis
+    /// - Returns: Tuple of (minMorton, maxMorton)
+    public static func boundingBox3D(
+        minX: Double, minY: Double, minZ: Double,
+        maxX: Double, maxY: Double, maxZ: Double,
+        level: Int = 16
+    ) -> (min: UInt64, max: UInt64) {
+        let minMorton = encode3D(x: minX, y: minY, z: minZ, level: level)
+        let maxMorton = encode3D(x: maxX, y: maxY, z: maxZ, level: level)
+        return (min: minMorton, max: maxMorton)
+    }
+}

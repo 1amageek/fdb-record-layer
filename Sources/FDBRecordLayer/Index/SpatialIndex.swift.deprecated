@@ -297,7 +297,7 @@ extension GenericSpatialIndexMaintainer {
         maxY: Double,
         transaction: any TransactionProtocol
     ) async throws -> [Tuple] {
-        guard spatialType == .geo || spatialType == .cartesian else {
+        guard spatialType.dimensions == 2 else {
             throw RecordLayerError.invalidArgument("rangeQuery2D requires 2D spatial type")
         }
 
@@ -352,7 +352,7 @@ extension GenericSpatialIndexMaintainer {
         maxZ: Double,
         transaction: any TransactionProtocol
     ) async throws -> [Tuple] {
-        guard spatialType == .geo3D || spatialType == .cartesian3D else {
+        guard spatialType.dimensions == 3 else {
             throw RecordLayerError.invalidArgument("rangeQuery3D requires 3D spatial type")
         }
 

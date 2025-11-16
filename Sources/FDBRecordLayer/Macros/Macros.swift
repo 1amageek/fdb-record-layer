@@ -342,7 +342,7 @@ public macro Vector(
 /// - For custom coordinates: implement `SpatialRepresentable` protocol
 @attached(peer)
 public macro Spatial(
-    type: SpatialType = .geo
+    type: SpatialType
 ) = #externalMacro(module: "FDBRecordLayerMacros", type: "SpatialMacro")
 
 /// Protocol for directory path elements

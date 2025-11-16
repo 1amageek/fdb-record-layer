@@ -14,7 +14,7 @@ import Synchronization
 /// - Throttling: Configurable delays between batches to reduce load
 ///
 /// **Generic Version**: Works with any record type through RecordAccess
-public final class OnlineIndexer<Record: Sendable>: Sendable {
+public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
     // MARK: - Properties
 
     nonisolated(unsafe) private let database: any DatabaseProtocol
@@ -100,6 +100,17 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
     ///
     /// - Parameter clearFirst: If true, clears existing progress before starting
     public func buildIndex(clearFirst: Bool = false) async throws {
+        // For HNSW-enabled vector indexes, delegate to buildHNSWIndex()
+        if case .vector = index.type,
+           index.options.vectorOptions != nil {
+            // ✅ Read strategy from Schema (runtime configuration)
+            let strategy = schema.getVectorStrategy(for: index.name)
+            if case .hnsw = strategy {
+                try await buildHNSWIndex(clearFirst: clearFirst)
+                return
+            }
+        }
+
         lock.withLock { state in
             state.startTime = Date()
             state.totalRecordsScanned = 0
@@ -403,29 +414,346 @@ public final class OnlineIndexer<Record: Sendable>: Sendable {
             }
 
         case .vector:
-            do {
-                let maintainer = try GenericVectorIndexMaintainer<Record>(
-                    index: index,
-                    subspace: indexSubspace,
-                    recordSubspace: recordSubspace
-                )
-                return AnyGenericIndexMaintainer(maintainer)
-            } catch {
-                logger.error("Failed to create vector index maintainer for '\(index.name)': \(error)")
-                throw RecordLayerError.internalError("Invalid vector index configuration for '\(index.name)': \(error)")
+            // Select maintainer based on vector index strategy from Schema
+            guard index.options.vectorOptions != nil else {
+                throw RecordLayerError.invalidArgument("Vector index requires vectorOptions")
+            }
+
+            // ✅ Read strategy from Schema (runtime configuration)
+            // Separates data structure (VectorIndexOptions) from runtime optimization (IndexConfiguration)
+            let strategy = schema.getVectorStrategy(for: index.name)
+
+            switch strategy {
+            case .flatScan:
+                // Flat scan: O(n) search, lower memory
+                do {
+                    let maintainer = try GenericVectorIndexMaintainer<Record>(
+                        index: index,
+                        subspace: indexSubspace,
+                        recordSubspace: recordSubspace
+                    )
+                    return AnyGenericIndexMaintainer(maintainer)
+                } catch {
+                    logger.error("Failed to create flat vector index maintainer for '\(index.name)': \(error)")
+                    throw RecordLayerError.internalError("Invalid vector index configuration for '\(index.name)': \(error)")
+                }
+
+            case .hnsw:
+                // HNSW: O(log n) search, higher memory
+                do {
+                    let maintainer = try GenericHNSWIndexMaintainer<Record>(
+                        index: index,
+                        subspace: indexSubspace,
+                        recordSubspace: recordSubspace
+                    )
+                    return AnyGenericIndexMaintainer(maintainer)
+                } catch {
+                    logger.error("Failed to create HNSW index maintainer for '\(index.name)': \(error)")
+                    throw RecordLayerError.internalError("Invalid HNSW index configuration for '\(index.name)': \(error)")
+                }
             }
 
         case .spatial:
-            do {
-                let maintainer = try GenericSpatialIndexMaintainer<Record>(
-                    index: index,
-                    subspace: indexSubspace,
-                    recordSubspace: recordSubspace
+            // NOTE: Spatial index support temporarily disabled during transition to S2-based design
+            // Will be re-implemented in Phase 2.6: SpatialIndexMetadata implementation
+            // See: docs/spatial-indexing-complete-design.md
+            logger.error("Spatial index type is currently not supported for '\(index.name)'")
+            throw RecordLayerError.internalError(
+                "Spatial index type is currently not supported. Use Value index with computed S2CellID property instead."
+            )
+        }
+    }
+
+    // MARK: - HNSW-Specific Build Methods
+
+    /// Build HNSW index using level-by-level processing
+    ///
+    /// This specialized build method handles HNSW vector indexes to stay within
+    /// FoundationDB transaction limits (~5 seconds, 10MB).
+    ///
+    /// **Two-Phase Process**:
+    /// 1. **Phase 1**: Assign levels to all nodes (~10 operations per node)
+    /// 2. **Phase 2**: Build graph level-by-level (~3,000 operations per level per node)
+    ///
+    /// **Transaction Budget**:
+    /// - Phase 1: Very lightweight, completes quickly
+    /// - Phase 2: Each level processed in separate transaction batches
+    ///
+    /// - Parameter clearFirst: If true, clears existing progress before starting
+    public func buildHNSWIndex(clearFirst: Bool = false) async throws {
+        guard case .vector = index.type else {
+            throw RecordLayerError.internalError("buildHNSWIndex() can only be called for vector indexes")
+        }
+
+        lock.withLock { state in
+            state.startTime = Date()
+            state.totalRecordsScanned = 0
+            state.batchesProcessed = 0
+        }
+
+        logger.info("Starting HNSW index build for: \(index.name)")
+
+        // Step 1: Transition to writeOnly (if not already)
+        let currentState = try await indexStateManager.state(of: index.name)
+        if currentState == .disabled {
+            try await indexStateManager.enable(index.name)
+            logger.info("Transitioned index '\(index.name)' to writeOnly")
+        }
+
+        // Step 2: Clear progress if requested
+        if clearFirst {
+            try await createRangeSet().clear()
+            logger.info("Cleared previous build progress")
+        }
+
+        // Step 3: Phase 1 - Assign levels to all nodes
+        logger.info("HNSW Phase 1: Assigning levels to all nodes")
+        try await assignLevelsToAllNodes()
+
+        // Step 4: Phase 2 - Build graph level-by-level
+        logger.info("HNSW Phase 2: Building graph level-by-level")
+        try await buildHNSWGraphLevelByLevel()
+
+        // Step 5: Transition to readable
+        try await indexStateManager.makeReadable(index.name)
+        logger.info("Transitioned index '\(index.name)' to readable")
+
+        let (totalScanned, batchCount) = lock.withLock { state in
+            state.endTime = Date()
+            return (state.totalRecordsScanned, state.batchesProcessed)
+        }
+
+        logger.info("HNSW index build completed for: \(index.name), scanned \(totalScanned) records in \(batchCount) batches")
+    }
+
+    /// Phase 1: Assign levels to all nodes (lightweight operation)
+    private func assignLevelsToAllNodes() async throws {
+        let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
+        let (fullBegin, fullEnd) = recordSubspace.range()
+        let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
+            .subspace(index.subspaceTupleKey)
+
+        var currentBegin = fullBegin
+        var totalAssigned: UInt64 = 0
+
+        while currentBegin.lexicographicallyPrecedes(fullEnd) {
+            let batchEnd = try await assignLevelsForBatch(
+                begin: currentBegin,
+                end: fullEnd,
+                recordSubspace: recordSubspace,
+                indexSubspace: indexSubspace
+            )
+
+            totalAssigned += UInt64(batchSize)
+            logger.debug("Assigned levels for \(totalAssigned) nodes")
+
+            // Move to next batch
+            currentBegin = batchEnd
+
+            if !batchEnd.lexicographicallyPrecedes(fullEnd) || batchEnd == fullEnd {
+                break
+            }
+
+            // Throttle between batches
+            if throttleDelayMs > 0 {
+                try await Task.sleep(nanoseconds: throttleDelayMs * 1_000_000)
+            }
+        }
+
+        logger.info("Phase 1 complete: Assigned levels to \(totalAssigned) nodes")
+    }
+
+    /// Assign levels for a single batch
+    private func assignLevelsForBatch(
+        begin: FDB.Bytes,
+        end: FDB.Bytes,
+        recordSubspace: Subspace,
+        indexSubspace: Subspace
+    ) async throws -> FDB.Bytes {
+        return try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+            var recordsInBatch = 0
+            var lastKey = begin
+
+            // Create HNSW maintainer
+            guard let hnswMaintainer = try? GenericHNSWIndexMaintainer<Record>(
+                index: self.index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            ) else {
+                throw RecordLayerError.internalError("Failed to create HNSW maintainer")
+            }
+
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterThan(end),
+                snapshot: true
+            )
+
+            for try await (key, _) in sequence {
+                // Extract primary key
+                let primaryKey = try recordSubspace.unpack(key)
+
+                // Assign level (lightweight: ~10 operations)
+                _ = try await hnswMaintainer.assignLevel(
+                    primaryKey: primaryKey,
+                    transaction: transaction
                 )
-                return AnyGenericIndexMaintainer(maintainer)
-            } catch {
-                logger.error("Failed to create spatial index maintainer for '\(index.name)': \(error)")
-                throw RecordLayerError.internalError("Invalid spatial index configuration for '\(index.name)': \(error)")
+
+                recordsInBatch += 1
+                lastKey = key
+
+                if recordsInBatch >= self.batchSize {
+                    break
+                }
+            }
+
+            self.logger.debug("Assigned levels for batch: \(recordsInBatch) records")
+
+            if recordsInBatch > 0 {
+                return self.incrementKey(lastKey)
+            } else {
+                return end
+            }
+        }
+    }
+
+    /// Phase 2: Build graph level-by-level
+    private func buildHNSWGraphLevelByLevel() async throws {
+        // First, determine the maximum level across all nodes
+        let maxLevel = try await findMaxLevel()
+        logger.info("Maximum level in graph: \(maxLevel)")
+
+        // Build each level from highest to lowest
+        for level in stride(from: maxLevel, through: 0, by: -1) {
+            logger.info("Building level \(level)")
+            try await buildSingleLevel(level: level)
+        }
+    }
+
+    /// Find the maximum level across all nodes
+    private func findMaxLevel() async throws -> Int {
+        let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
+            .subspace(index.subspaceTupleKey)
+
+        guard let hnswMaintainer = try? GenericHNSWIndexMaintainer<Record>(
+            index: self.index,
+            subspace: indexSubspace,
+            recordSubspace: subspace.subspace(RecordStoreKeyspace.record.rawValue)
+        ) else {
+            throw RecordLayerError.internalError("Failed to create HNSW maintainer")
+        }
+
+        return try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+            return try await hnswMaintainer.getMaxLevel(transaction: transaction)
+        }
+    }
+
+    /// Build a single level of the HNSW graph
+    private func buildSingleLevel(level: Int) async throws {
+        let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
+        let (fullBegin, fullEnd) = recordSubspace.range()
+        let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
+            .subspace(index.subspaceTupleKey)
+
+        var currentBegin = fullBegin
+        var totalInserted: UInt64 = 0
+
+        while currentBegin.lexicographicallyPrecedes(fullEnd) {
+            let batchEnd = try await insertLevelForBatch(
+                level: level,
+                begin: currentBegin,
+                end: fullEnd,
+                recordSubspace: recordSubspace,
+                indexSubspace: indexSubspace
+            )
+
+            totalInserted += UInt64(batchSize)
+
+            // Move to next batch
+            currentBegin = batchEnd
+
+            if !batchEnd.lexicographicallyPrecedes(fullEnd) || batchEnd == fullEnd {
+                break
+            }
+
+            // Throttle between batches
+            if throttleDelayMs > 0 {
+                try await Task.sleep(nanoseconds: throttleDelayMs * 1_000_000)
+            }
+        }
+
+        logger.info("Level \(level) complete: Inserted \(totalInserted) nodes")
+    }
+
+    /// Insert nodes at a specific level for a single batch
+    private func insertLevelForBatch(
+        level: Int,
+        begin: FDB.Bytes,
+        end: FDB.Bytes,
+        recordSubspace: Subspace,
+        indexSubspace: Subspace
+    ) async throws -> FDB.Bytes {
+        return try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+            var recordsInBatch = 0
+            var lastKey = begin
+
+            // Create HNSW maintainer
+            guard let hnswMaintainer = try? GenericHNSWIndexMaintainer<Record>(
+                index: self.index,
+                subspace: indexSubspace,
+                recordSubspace: recordSubspace
+            ) else {
+                throw RecordLayerError.internalError("Failed to create HNSW maintainer")
+            }
+
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterThan(end),
+                snapshot: true
+            )
+
+            for try await (key, value) in sequence {
+                // Extract primary key
+                let primaryKey = try recordSubspace.unpack(key)
+
+                // Check if this node has a level >= current level
+                if let metadata = try await hnswMaintainer.getNodeMetadata(
+                    primaryKey: primaryKey,
+                    transaction: transaction,
+                    snapshot: false
+                ) {
+                    if metadata.level >= level {
+                        // Deserialize record to extract vector
+                        let record = try self.recordAccess.deserialize(value)
+                        let vector = try hnswMaintainer.extractVector(from: record, recordAccess: self.recordAccess)
+
+                        // Insert at this level (~3,000 operations)
+                        try await hnswMaintainer.insertAtLevel(
+                            primaryKey: primaryKey,
+                            queryVector: vector,
+                            targetLevel: level,
+                            transaction: transaction
+                        )
+                    }
+                }
+
+                recordsInBatch += 1
+                lastKey = key
+
+                if recordsInBatch >= self.batchSize {
+                    break
+                }
+            }
+
+            self.logger.debug("Inserted level \(level) for batch: \(recordsInBatch) records")
+
+            if recordsInBatch > 0 {
+                return self.incrementKey(lastKey)
+            } else {
+                return end
             }
         }
     }

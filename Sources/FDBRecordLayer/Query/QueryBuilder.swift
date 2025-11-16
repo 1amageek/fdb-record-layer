@@ -931,7 +931,8 @@ public final class QueryBuilder<T: Recordable> {
             recordAccess: recordAccess,
             recordSubspace: subspace.subspace("R"),
             indexSubspace: baseIndexSubspace,
-            database: database
+            database: database,
+            schema: schema
         )
     }
 
@@ -959,185 +960,336 @@ public final class QueryBuilder<T: Recordable> {
 
     // MARK: - Spatial Search
 
-    /// Search within a 2D geographic bounding box
+    /// Perform geographic radius search using a spatial index
     ///
-    /// **Coordinate System**:
-    /// - Geographic (.geo): latitude ∈ [-90, 90], longitude ∈ [-180, 180]
-    /// - Cartesian (.cartesian): application-defined range
+    /// Searches for records within a circular radius from a center point.
+    /// **Only supported for .geo spatial indexes**.
     ///
-    /// **Note**: Results are automatically filtered to remove false positives from Z-order approximation.
+    /// **Distance Metric**: Great-circle distance (spherical Earth)
     ///
     /// **Example**:
     /// ```swift
+    /// // Find restaurants within 5km of Tokyo Station
     /// let restaurants = try await store.query(Restaurant.self)
-    ///     .withinBoundingBox(
-    ///         minLat: 35.6, minLon: 139.6,
-    ///         maxLat: 35.7, maxLon: 139.8,
-    ///         using: "restaurant_location_spatial"
-    ///     )
-    ///     .filter(\.rating >= 4.0)
-    ///     .execute()
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - minLat: Minimum latitude (or y for Cartesian)
-    ///   - minLon: Minimum longitude (or x for Cartesian)
-    ///   - maxLat: Maximum latitude (or y for Cartesian)
-    ///   - maxLon: Maximum longitude (or x for Cartesian)
-    ///   - spatialIndex: Index name
-    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
-    /// - Throws: RecordLayerError.invalidArgument if index is not 2D spatial
-    /// - Returns: TypedSpatialQuery for further refinement
-    public func withinBoundingBox(
-        minLat: Double,
-        minLon: Double,
-        maxLat: Double,
-        maxLon: Double,
-        using spatialIndex: String
-    ) throws -> TypedSpatialQuery<T> {
-        // Find index
-        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == spatialIndex }) else {
-            throw RecordLayerError.indexNotFound(
-                "Spatial index '\(spatialIndex)' not found in schema for record type '\(T.recordName)'"
-            )
-        }
-
-        // Validate index type
-        guard index.type == .spatial else {
-            throw RecordLayerError.invalidArgument(
-                "Index '\(spatialIndex)' is not a spatial index (type: \(index.type))"
-            )
-        }
-
-        // Validate 2D
-        guard let spatialOptions = index.options.spatialOptions else {
-            throw RecordLayerError.internalError(
-                "Spatial index '\(spatialIndex)' missing spatialOptions"
-            )
-        }
-
-        let is2D = spatialOptions.type == .geo || spatialOptions.type == .cartesian
-        guard is2D else {
-            throw RecordLayerError.invalidArgument(
-                "withinBoundingBox requires 2D spatial index (geo or cartesian), got: \(spatialOptions.type)"
-            )
-        }
-
-        let recordAccess = GenericRecordAccess<T>()
-
-        // Get base index subspace (respects index.scope)
-        let baseIndexSubspace = try baseIndexSubspace(for: index)
-
-        return TypedSpatialQuery(
-            boundingBox: .box2D(minLat: minLat, minLon: minLon, maxLat: maxLat, maxLon: maxLon),
-            index: index,
-            recordAccess: recordAccess,
-            recordSubspace: subspace.subspace("R"),
-            indexSubspace: baseIndexSubspace,
-            database: database
-        )
-    }
-
-    /// Search within a 3D bounding box (latitude, longitude, altitude)
-    ///
-    /// Similar to withinBoundingBox but for 3D coordinates.
-    ///
-    /// - Parameters:
-    ///   - minLat: Minimum latitude
-    ///   - minLon: Minimum longitude
-    ///   - minAlt: Minimum altitude
-    ///   - maxLat: Maximum latitude
-    ///   - maxLon: Maximum longitude
-    ///   - maxAlt: Maximum altitude
-    ///   - spatialIndex: Index name
-    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
-    /// - Throws: RecordLayerError.invalidArgument if index is not 3D spatial
-    /// - Returns: TypedSpatialQuery for further refinement
-    public func withinBoundingBox3D(
-        minLat: Double,
-        minLon: Double,
-        minAlt: Double,
-        maxLat: Double,
-        maxLon: Double,
-        maxAlt: Double,
-        using spatialIndex: String
-    ) throws -> TypedSpatialQuery<T> {
-        // Find index
-        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == spatialIndex }) else {
-            throw RecordLayerError.indexNotFound("Spatial index '\(spatialIndex)' not found")
-        }
-
-        // Validate index type
-        guard index.type == .spatial else {
-            throw RecordLayerError.invalidArgument("Index '\(spatialIndex)' is not a spatial index")
-        }
-
-        // Validate 3D
-        guard let spatialOptions = index.options.spatialOptions else {
-            throw RecordLayerError.internalError("Spatial index missing spatialOptions")
-        }
-
-        let is3D = spatialOptions.type == .geo3D || spatialOptions.type == .cartesian3D
-        guard is3D else {
-            throw RecordLayerError.invalidArgument(
-                "withinBoundingBox3D requires 3D spatial index, got: \(spatialOptions.type)"
-            )
-        }
-
-        let recordAccess = GenericRecordAccess<T>()
-
-        // Get base index subspace (respects index.scope)
-        let baseIndexSubspace = try baseIndexSubspace(for: index)
-
-        return TypedSpatialQuery(
-            boundingBox: .box3D(minLat: minLat, minLon: minLon, minAlt: minAlt, maxLat: maxLat, maxLon: maxLon, maxAlt: maxAlt),
-            index: index,
-            recordAccess: recordAccess,
-            recordSubspace: subspace.subspace("R"),
-            indexSubspace: baseIndexSubspace,
-            database: database
-        )
-    }
-
-    /// Search within radius (convenience method)
-    ///
-    /// Converts radius search to bounding box:
-    /// - minLat = centerLat - radius
-    /// - maxLat = centerLat + radius
-    /// - minLon = centerLon - radius
-    /// - maxLon = centerLon + radius
-    ///
-    /// **Note**: This is an approximation and may include points slightly outside the circular radius.
-    ///
-    /// **Example**:
-    /// ```swift
-    /// let nearby = try await store.query(Restaurant.self)
     ///     .withinRadius(
-    ///         centerLat: 35.6812, centerLon: 139.7671,
-    ///         radius: 0.01,  // ~1km
-    ///         using: "restaurant_location_spatial"
+    ///         \.location,  // KeyPath to @Spatial field
+    ///         centerLat: 35.6812,
+    ///         centerLon: 139.7671,
+    ///         radiusMeters: 5000
     ///     )
+    ///     .filter(\.category == "Italian")
     ///     .execute()
     /// ```
     ///
     /// - Parameters:
-    ///   - centerLat: Center latitude
-    ///   - centerLon: Center longitude
-    ///   - radius: Radius in coordinate units
-    ///   - spatialIndex: Index name
+    ///   - keyPath: KeyPath to the @Spatial field
+    ///   - centerLat: Center latitude in degrees (WGS84)
+    ///   - centerLon: Center longitude in degrees (WGS84)
+    ///   - radiusMeters: Radius in meters
+    /// - Throws: RecordLayerError.indexNotFound if spatial index doesn't exist for the field
+    /// - Throws: RecordLayerError.invalidArgument if index is not .geo type
     /// - Returns: TypedSpatialQuery for further refinement
-    public func withinRadius(
+    public func withinRadius<Value>(
+        _ keyPath: KeyPath<T, Value>,
         centerLat: Double,
         centerLon: Double,
-        radius: Double,
-        using spatialIndex: String
+        radiusMeters: Double
     ) throws -> TypedSpatialQuery<T> {
-        return try withinBoundingBox(
-            minLat: centerLat - radius,
-            minLon: centerLon - radius,
-            maxLat: centerLat + radius,
-            maxLon: centerLon + radius,
-            using: spatialIndex
+        // Validate radiusMeters
+        guard radiusMeters > 0 else {
+            throw RecordLayerError.invalidArgument("radiusMeters must be positive, got: \(radiusMeters)")
+        }
+
+        // Get field name from KeyPath
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Find spatial index for this field
+        let indexes = schema.indexes(for: T.recordName).filter { index in
+            index.type == .spatial &&
+            extractFieldNames(from: index.rootExpression).contains(fieldName)
+        }
+
+        guard let index = indexes.first else {
+            throw RecordLayerError.indexNotFound(
+                "No spatial index found for field '\(fieldName)' in record type '\(T.recordName)'. " +
+                "Ensure the field has @Spatial annotation."
+            )
+        }
+
+        // Validate .geo type
+        guard let spatialOptions = index.options.spatialOptions,
+              case .geo = spatialOptions.type else {
+            throw RecordLayerError.invalidArgument(
+                "Radius queries are only supported for .geo spatial indexes. " +
+                "Field '\(fieldName)' has spatial type: \(index.options.spatialOptions?.type.debugDescription ?? "unknown")"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            queryType: .radius(centerLat: centerLat, centerLon: centerLon, radiusMeters: radiusMeters),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
         )
     }
+
+    /// Perform geographic bounding box search using a spatial index
+    ///
+    /// Searches for records within a rectangular bounding box.
+    /// **Supported for .geo and .geo3D spatial indexes**.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Find stores in Tokyo region
+    /// let stores = try await store.query(Store.self)
+    ///     .withinBoundingBox(
+    ///         \.location,  // KeyPath to @Spatial field
+    ///         minLat: 35.5, maxLat: 35.8,
+    ///         minLon: 139.5, maxLon: 139.9
+    ///     )
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the @Spatial field
+    ///   - minLat: Minimum latitude in degrees (WGS84)
+    ///   - maxLat: Maximum latitude in degrees (WGS84)
+    ///   - minLon: Minimum longitude in degrees (WGS84)
+    ///   - maxLon: Maximum longitude in degrees (WGS84)
+    /// - Throws: RecordLayerError.indexNotFound if spatial index doesn't exist for the field
+    /// - Throws: RecordLayerError.invalidArgument if index is not .geo type
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinBoundingBox<Value>(
+        _ keyPath: KeyPath<T, Value>,
+        minLat: Double, maxLat: Double,
+        minLon: Double, maxLon: Double
+    ) throws -> TypedSpatialQuery<T> {
+        // Validate bounds
+        guard minLat <= maxLat else {
+            throw RecordLayerError.invalidArgument("minLat (\(minLat)) must be <= maxLat (\(maxLat))")
+        }
+        guard minLon <= maxLon else {
+            throw RecordLayerError.invalidArgument("minLon (\(minLon)) must be <= maxLon (\(maxLon))")
+        }
+
+        // Get field name from KeyPath
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Find spatial index for this field
+        let indexes = schema.indexes(for: T.recordName).filter { index in
+            index.type == .spatial &&
+            extractFieldNames(from: index.rootExpression).contains(fieldName)
+        }
+
+        guard let index = indexes.first else {
+            throw RecordLayerError.indexNotFound(
+                "No spatial index found for field '\(fieldName)' in record type '\(T.recordName)'. " +
+                "Ensure the field has @Spatial annotation."
+            )
+        }
+
+        // Validate .geo type
+        guard let spatialOptions = index.options.spatialOptions,
+              case .geo = spatialOptions.type else {
+            throw RecordLayerError.invalidArgument(
+                "Geographic bounding box queries require .geo spatial index. " +
+                "Field '\(fieldName)' has spatial type: \(index.options.spatialOptions?.type.debugDescription ?? "unknown")"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            queryType: .geoBoundingBox(minLat: minLat, maxLat: maxLat, minLon: minLon, maxLon: maxLon),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
+    /// Perform Cartesian 2D bounding box search using a spatial index
+    ///
+    /// Searches for records within a rectangular bounding box in 2D Cartesian space.
+    /// **Only supported for .cartesian spatial indexes**.
+    ///
+    /// **Coordinate System**: Normalized [0, 1] × [0, 1] space
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Find warehouses in region
+    /// let warehouses = try await store.query(Warehouse.self)
+    ///     .withinBoundingBox(
+    ///         \.position,  // KeyPath to @Spatial field
+    ///         minX: 0.2, maxX: 0.8,
+    ///         minY: 0.3, maxY: 0.9
+    ///     )
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the @Spatial field
+    ///   - minX: Minimum X coordinate (normalized to [0, 1])
+    ///   - maxX: Maximum X coordinate (normalized to [0, 1])
+    ///   - minY: Minimum Y coordinate (normalized to [0, 1])
+    ///   - maxY: Maximum Y coordinate (normalized to [0, 1])
+    /// - Throws: RecordLayerError.indexNotFound if spatial index doesn't exist for the field
+    /// - Throws: RecordLayerError.invalidArgument if index is not .cartesian type
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinBoundingBox<Value>(
+        _ keyPath: KeyPath<T, Value>,
+        minX: Double, maxX: Double,
+        minY: Double, maxY: Double
+    ) throws -> TypedSpatialQuery<T> {
+        // Validate bounds
+        guard minX <= maxX else {
+            throw RecordLayerError.invalidArgument("minX (\(minX)) must be <= maxX (\(maxX))")
+        }
+        guard minY <= maxY else {
+            throw RecordLayerError.invalidArgument("minY (\(minY)) must be <= maxY (\(maxY))")
+        }
+
+        // Get field name from KeyPath
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Find spatial index for this field
+        let indexes = schema.indexes(for: T.recordName).filter { index in
+            index.type == .spatial &&
+            extractFieldNames(from: index.rootExpression).contains(fieldName)
+        }
+
+        guard let index = indexes.first else {
+            throw RecordLayerError.indexNotFound(
+                "No spatial index found for field '\(fieldName)' in record type '\(T.recordName)'. " +
+                "Ensure the field has @Spatial annotation."
+            )
+        }
+
+        // Validate .cartesian type
+        guard let spatialOptions = index.options.spatialOptions,
+              case .cartesian = spatialOptions.type else {
+            throw RecordLayerError.invalidArgument(
+                "Cartesian 2D bounding box queries require .cartesian spatial index. " +
+                "Field '\(fieldName)' has spatial type: \(index.options.spatialOptions?.type.debugDescription ?? "unknown")"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            queryType: .cartesianBoundingBox(minX: minX, maxX: maxX, minY: minY, maxY: maxY),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
+    /// Perform Cartesian 3D bounding box search using a spatial index
+    ///
+    /// Searches for records within a rectangular bounding box in 3D Cartesian space.
+    /// **Only supported for .cartesian3D spatial indexes**.
+    ///
+    /// **Coordinate System**: Normalized [0, 1] × [0, 1] × [0, 1] space
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Find drones in airspace
+    /// let drones = try await store.query(Drone.self)
+    ///     .withinBoundingBox3D(
+    ///         \.position,  // KeyPath to @Spatial field
+    ///         minX: 0.0, maxX: 1.0,
+    ///         minY: 0.0, maxY: 1.0,
+    ///         minZ: 0.2, maxZ: 0.8
+    ///     )
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the @Spatial field
+    ///   - minX: Minimum X coordinate (normalized to [0, 1])
+    ///   - maxX: Maximum X coordinate (normalized to [0, 1])
+    ///   - minY: Minimum Y coordinate (normalized to [0, 1])
+    ///   - maxY: Maximum Y coordinate (normalized to [0, 1])
+    ///   - minZ: Minimum Z coordinate (normalized to [0, 1])
+    ///   - maxZ: Maximum Z coordinate (normalized to [0, 1])
+    /// - Throws: RecordLayerError.indexNotFound if spatial index doesn't exist for the field
+    /// - Throws: RecordLayerError.invalidArgument if index is not .cartesian3D type
+    /// - Returns: TypedSpatialQuery for further refinement
+    public func withinBoundingBox3D<Value>(
+        _ keyPath: KeyPath<T, Value>,
+        minX: Double, maxX: Double,
+        minY: Double, maxY: Double,
+        minZ: Double, maxZ: Double
+    ) throws -> TypedSpatialQuery<T> {
+        // Validate bounds
+        guard minX <= maxX else {
+            throw RecordLayerError.invalidArgument("minX (\(minX)) must be <= maxX (\(maxX))")
+        }
+        guard minY <= maxY else {
+            throw RecordLayerError.invalidArgument("minY (\(minY)) must be <= maxY (\(maxY))")
+        }
+        guard minZ <= maxZ else {
+            throw RecordLayerError.invalidArgument("minZ (\(minZ)) must be <= maxZ (\(maxZ))")
+        }
+
+        // Get field name from KeyPath
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Find spatial index for this field
+        let indexes = schema.indexes(for: T.recordName).filter { index in
+            index.type == .spatial &&
+            extractFieldNames(from: index.rootExpression).contains(fieldName)
+        }
+
+        guard let index = indexes.first else {
+            throw RecordLayerError.indexNotFound(
+                "No spatial index found for field '\(fieldName)' in record type '\(T.recordName)'. " +
+                "Ensure the field has @Spatial annotation."
+            )
+        }
+
+        // Validate .cartesian3D type
+        guard let spatialOptions = index.options.spatialOptions,
+              case .cartesian3D = spatialOptions.type else {
+            throw RecordLayerError.invalidArgument(
+                "Cartesian 3D bounding box queries require .cartesian3D spatial index. " +
+                "Field '\(fieldName)' has spatial type: \(index.options.spatialOptions?.type.debugDescription ?? "unknown")"
+            )
+        }
+
+        let recordAccess = GenericRecordAccess<T>()
+
+        // Get base index subspace (respects index.scope)
+        let baseIndexSubspace = try baseIndexSubspace(for: index)
+
+        return TypedSpatialQuery(
+            queryType: .cartesian3DBoundingBox(
+                minX: minX, maxX: maxX,
+                minY: minY, maxY: maxY,
+                minZ: minZ, maxZ: maxZ
+            ),
+            index: index,
+            recordAccess: recordAccess,
+            recordSubspace: subspace.subspace("R"),
+            indexSubspace: baseIndexSubspace,
+            database: database
+        )
+    }
+
 }

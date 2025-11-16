@@ -21,7 +21,7 @@ import FoundationDB
 /// // Get user rank
 /// let rank = try await store.rank(of: userScore, in: \.score)
 /// ```
-public struct TypedRankIndexScanPlan<Record: Sendable>: TypedQueryPlan, Sendable {
+public struct TypedRankIndexScanPlan<Record: Recordable>: TypedQueryPlan, Sendable {
     /// Record access for deserialization
     private let recordAccess: any RecordAccess<Record>
 
@@ -136,7 +136,8 @@ public struct TypedRankIndexScanPlan<Record: Sendable>: TypedQueryPlan, Sendable
         // Create cursor
         // NOTE: recordName is obtained from RecordAccess, not from generic type
         // This ensures compatibility with the Recordable protocol
-        let recordName = String(describing: Record.self)
+        // ✅ FIX: Use Record.recordName instead of String(describing:) to support custom record names
+        let recordName = Record.recordName
         let cursor = RankIndexValueCursor(
             sequence: sequence,
             indexSubspace: indexNameSubspace,
@@ -171,7 +172,8 @@ public struct TypedRankIndexScanPlan<Record: Sendable>: TypedQueryPlan, Sendable
 
         // Create cursor with rank filtering
         // NOTE: recordName is obtained from RecordAccess, not from generic type
-        let recordName = String(describing: Record.self)
+        // ✅ FIX: Use Record.recordName instead of String(describing:) to support custom record names
+        let recordName = Record.recordName
         let cursor = RankIndexRankCursor(
             sequence: sequence,
             indexSubspace: indexNameSubspace,
@@ -190,7 +192,7 @@ public struct TypedRankIndexScanPlan<Record: Sendable>: TypedQueryPlan, Sendable
 // MARK: - Rank Index Cursors
 
 /// Cursor for by-value rank index scan
-private struct RankIndexValueCursor<Record: Sendable>: TypedRecordCursor {
+private struct RankIndexValueCursor<Record: Recordable>: TypedRecordCursor {
     let sequence: FDB.AsyncKVSequence
     let indexSubspace: Subspace
     let recordSubspace: Subspace
@@ -263,7 +265,7 @@ private struct RankIndexValueCursor<Record: Sendable>: TypedRecordCursor {
 }
 
 /// Cursor for by-rank rank index scan
-private struct RankIndexRankCursor<Record: Sendable>: TypedRecordCursor {
+private struct RankIndexRankCursor<Record: Recordable>: TypedRecordCursor {
     let sequence: FDB.AsyncKVSequence
     let indexSubspace: Subspace
     let recordSubspace: Subspace

@@ -95,6 +95,10 @@ public final class Schema: Sendable {
     /// [FoundationDB extension] Indexes by name for quick lookup
     internal let indexesByName: [String: Index]
 
+    /// [FoundationDB extension] Index runtime configurations
+    /// Maps index name to runtime configuration (strategies, parameters)
+    private let indexConfigurations: [String: IndexConfiguration]
+
     // MARK: - Initialization
 
     /// SwiftData-style initializer - Create from array of types
@@ -136,7 +140,8 @@ public final class Schema: Sendable {
     public init(
         _ types: [any Recordable.Type],
         version: Version = Version(1, 0, 0),
-        indexes: [Index] = []
+        indexes: [Index] = [],
+        indexConfigurations: [IndexConfiguration] = []
     ) {
         self.version = version
         self.encodingVersion = version
@@ -179,6 +184,11 @@ public final class Schema: Sendable {
             indexesByName[index.name] = index
         }
         self.indexesByName = indexesByName
+
+        // Store index configurations
+        self.indexConfigurations = Dictionary(
+            uniqueKeysWithValues: indexConfigurations.map { ($0.indexName, $0) }
+        )
 
         // Former indexes (empty for now, future: migration support)
         self.formerIndexes = [:]
@@ -280,6 +290,38 @@ public final class Schema: Sendable {
         )
     }
 
+    /// Convenience initializer with vector strategies (Dictionary form)
+    ///
+    /// Allows specifying vector index strategies in a concise Dictionary format:
+    /// `["indexName": VectorIndexStrategy]`
+    ///
+    /// **Example usage**:
+    /// ```swift
+    /// let schema = Schema(
+    ///     [Product.self],
+    ///     vectorStrategies: [
+    ///         "product_embedding": .hnswBatch
+    ///     ]
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - types: Array of Recordable types
+    ///   - version: Schema version
+    ///   - indexes: Additional index definitions (optional)
+    ///   - vectorStrategies: Vector index strategies (Dictionary form)
+    public convenience init(
+        _ types: [any Recordable.Type],
+        version: Version = Version(1, 0, 0),
+        indexes: [Index] = [],
+        vectorStrategies: [String: VectorIndexStrategy]
+    ) {
+        let configs = vectorStrategies.map { (name, strategy) in
+            IndexConfiguration(indexName: name, vectorStrategy: strategy)
+        }
+        self.init(types, version: version, indexes: indexes, indexConfigurations: configs)
+    }
+
     /// Test-only initializer for manual Schema construction
     ///
     /// Allows creating Schema objects with custom Entity objects for testing purposes.
@@ -290,10 +332,12 @@ public final class Schema: Sendable {
     ///   - entities: Array of Entity objects
     ///   - version: Schema version
     ///   - indexes: Index definitions (optional)
+    ///   - indexConfigurations: Index runtime configurations (optional)
     public init(
         entities: [Entity],
         version: Version = Version(1, 0, 0),
-        indexes: [Index] = []
+        indexes: [Index] = [],
+        indexConfigurations: [IndexConfiguration] = []
     ) {
         self.version = version
         self.encodingVersion = version
@@ -314,6 +358,11 @@ public final class Schema: Sendable {
             indexesByName[index.name] = index
         }
         self.indexesByName = indexesByName
+
+        // Store index configurations
+        self.indexConfigurations = Dictionary(
+            uniqueKeysWithValues: indexConfigurations.map { ($0.indexName, $0) }
+        )
 
         // Former indexes (empty for test schemas)
         self.formerIndexes = [:]
@@ -365,6 +414,32 @@ public final class Schema: Sendable {
                 return true
             }
         }
+    }
+
+    /// Get vector index strategy for a specific index
+    ///
+    /// Returns the runtime configuration strategy for the given index name.
+    /// If no configuration is provided, returns the default safe strategy (`.flatScan`).
+    ///
+    /// **Design principle**: Separation of Concerns
+    /// - Model definition (VectorIndexOptions): Data structure (dimensions, metric)
+    /// - Runtime configuration (IndexConfiguration): Optimization strategy (flatScan vs HNSW)
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let schema = Schema(
+    ///     [Product.self],
+    ///     vectorStrategies: ["product_embedding": .hnswBatch]
+    /// )
+    ///
+    /// let strategy = schema.getVectorStrategy(for: "product_embedding")
+    /// // → .hnswBatch
+    /// ```
+    ///
+    /// - Parameter indexName: The index name
+    /// - Returns: Vector index strategy (default: `.flatScan`)
+    public func getVectorStrategy(for indexName: String) -> VectorIndexStrategy {
+        return indexConfigurations[indexName]?.vectorStrategy ?? .flatScan
     }
 
     // MARK: - Save/Load (future extension)

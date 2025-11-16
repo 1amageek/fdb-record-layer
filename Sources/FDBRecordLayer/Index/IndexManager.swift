@@ -316,15 +316,38 @@ public final class IndexManager: Sendable {
             return AnyGenericIndexMaintainer(maintainer)
 
         case .vector:
-            let maintainer = try GenericVectorIndexMaintainer<T>(
-                index: index,
-                subspace: indexSubspace,
-                recordSubspace: recordSubspace
-            )
-            return AnyGenericIndexMaintainer(maintainer)
+            // Select maintainer based on vector index strategy from Schema (runtime configuration)
+            guard index.options.vectorOptions != nil else {
+                throw RecordLayerError.invalidArgument("Vector index requires vectorOptions")
+            }
+
+            // ✅ Read strategy from Schema (runtime configuration)
+            // Separates data structure (VectorIndexOptions) from runtime optimization (IndexConfiguration)
+            let strategy = schema.getVectorStrategy(for: index.name)
+
+            switch strategy {
+            case .flatScan:
+                // Flat scan: O(n) search, lower memory
+                let maintainer = try GenericVectorIndexMaintainer<T>(
+                    index: index,
+                    subspace: indexSubspace,
+                    recordSubspace: recordSubspace
+                )
+                return AnyGenericIndexMaintainer(maintainer)
+
+            case .hnsw:
+                // HNSW: O(log n) search, higher memory
+                // Note: inlineIndexing is handled by GenericHNSWIndexMaintainer.updateIndex()
+                let maintainer = try GenericHNSWIndexMaintainer<T>(
+                    index: index,
+                    subspace: indexSubspace,
+                    recordSubspace: recordSubspace
+                )
+                return AnyGenericIndexMaintainer(maintainer)
+            }
 
         case .spatial:
-            let maintainer = try GenericSpatialIndexMaintainer<T>(
+            let maintainer = SpatialIndexMaintainer<T>(
                 index: index,
                 subspace: indexSubspace,
                 recordSubspace: recordSubspace
