@@ -62,6 +62,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Generate static fieldName method for KeyPath resolution
         results.append(generateFieldNameMethod(typeName: typeName, fields: persistentFields))
 
+        // Note: extractRangeBoundary is generated in ExtensionMacro, not here
         // Note: CodingKeys generation removed due to Swift macro system restrictions
         // Protobuf encoder will use Recordable.fieldNumber() instead
 
@@ -1350,6 +1351,108 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         return methods.joined(separator: "\n")
     }
 
+    /// Generate extractRangeBoundary method for Range type fields
+    private static func generateRangeBoundaryMethod(
+        typeName: String,
+        fields: [FieldInfo]
+    ) -> String {
+        // Find all Range type fields
+        let rangeFields = fields.filter { field in
+            let typeInfo = analyzeType(field.type)
+            if case .range = typeInfo.category {
+                return true
+            }
+            return false
+        }
+
+        // No Range fields - no need to generate extractRangeBoundary method
+        // (The protocol extension default implementation using Reflection will be used)
+        guard !rangeFields.isEmpty else {
+            return ""
+        }
+
+        // Generate switch cases for each Range field
+        var caseClauses: [String] = []
+
+        for field in rangeFields {
+            let typeInfo = analyzeType(field.type)
+            let rangeInfo = RangeTypeDetector.detectRangeType(typeInfo.baseType)
+
+            switch rangeInfo {
+            case .range, .closedRange:
+                // For Range and ClosedRange, handle both lowerBound and upperBound
+                let caseClause = """
+                case "\(field.name)":
+                        \(typeInfo.isOptional ? """
+                        guard let rangeValue = self.\(field.name) else {
+                            return []  // Optional Range is nil
+                        }
+                        """ : "let rangeValue = self.\(field.name)")
+                        switch component {
+                        case .lowerBound:
+                            return [rangeValue.lowerBound as any TupleElement]
+                        case .upperBound:
+                            return [rangeValue.upperBound as any TupleElement]
+                        }
+                """
+                caseClauses.append(caseClause)
+
+            case .partialRangeFrom:
+                // For PartialRangeFrom, only lowerBound exists
+                let caseClause = """
+                case "\(field.name)":
+                        \(typeInfo.isOptional ? """
+                        guard let rangeValue = self.\(field.name) else {
+                            return []  // Optional Range is nil
+                        }
+                        """ : "let rangeValue = self.\(field.name)")
+                        guard component == .lowerBound else {
+                            throw RecordLayerError.invalidArgument("PartialRangeFrom only supports lowerBound component")
+                        }
+                        return [rangeValue.lowerBound as any TupleElement]
+                """
+                caseClauses.append(caseClause)
+
+            case .partialRangeUpTo, .partialRangeThrough:
+                // For PartialRange..., only upperBound exists
+                let caseClause = """
+                case "\(field.name)":
+                        \(typeInfo.isOptional ? """
+                        guard let rangeValue = self.\(field.name) else {
+                            return []  // Optional Range is nil
+                        }
+                        """ : "let rangeValue = self.\(field.name)")
+                        guard component == .upperBound else {
+                            throw RecordLayerError.invalidArgument("Partial range only supports upperBound component")
+                        }
+                        return [rangeValue.upperBound as any TupleElement]
+                """
+                caseClauses.append(caseClause)
+
+            case .unboundedRange:
+                // UnboundedRange should have been caught during index expansion
+                continue
+
+            case .notRange:
+                continue
+            }
+        }
+
+        // Generate the complete method
+        return """
+            public func extractRangeBoundary(
+                fieldName: String,
+                component: RangeComponent
+            ) throws -> [any TupleElement] {
+                switch fieldName {
+                \(caseClauses.joined(separator: "\n\n                "))
+                default:
+                    throw RecordLayerError.fieldNotFound("Field '\\(fieldName)' not found or not a Range type. Available Range fields: \(rangeFields.map { $0.name }.joined(separator: ", "))")
+                }
+            }
+        """
+    }
+
     private static func generateRecordableExtension(
         typeName: String,  // Fully qualified name for extension declaration and KeyPaths
         recordName: String,
@@ -1368,46 +1471,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
             let fieldNumber = index + 1
             return "case \"\(field.name)\": return \(fieldNumber)"
         }.joined(separator: "\n            ")
-
-        // Generate extractField
-        let extractFieldCases = fields.map { field in
-            generateExtractFieldCase(field: field)
-        }.joined(separator: "\n            ")
-
-        // Generate nested field handling for custom types
-        let nestedFieldHandling = generateNestedFieldHandling(fields: fields)
-
-        // Generate extractRangeBoundary cases for Range-type fields
-        let extractRangeBoundaryCases = fields.compactMap { field in
-            let typeInfo = field.typeInfo
-            if case .range = typeInfo.category {
-                return generateExtractRangeBoundaryCase(field: field)
-            }
-            return nil
-        }.joined(separator: "\n            ")
-
-        // Check if there are any Range fields
-        let hasRangeFields = fields.contains { field in
-            if case .range = field.typeInfo.category {
-                return true
-            }
-            return false
-        }
-
-        // Generate extractPrimaryKey
-        let primaryKeyExtraction = primaryKeyFields.map { field in
-            let typeInfo = field.typeInfo
-            // Convert Int32/UInt32 to Int64 for TupleElement conformance
-            if case .primitive(let primitiveType) = typeInfo.category {
-                switch primitiveType {
-                case .int32, .uint32:
-                    return "Int64(self.\(field.name))"
-                default:
-                    return "self.\(field.name)"
-                }
-            }
-            return "self.\(field.name)"
-        }.joined(separator: ", ")
 
         // Generate openDirectory() and store() methods based on #Directory metadata
         // Use fully qualified typeName for RecordStore<T> return type
@@ -1430,6 +1493,10 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         // Generate validation methods for @Vector/@Spatial fields
         let validationMethods = generateValidationMethods(indexInfo: indexInfo, fields: fields)
 
+        // Generate extractRangeBoundary method for Range type fields
+        // Note: RecordableExtensions.swift has NO default implementation, so this is required
+        let rangeBoundaryMethod = generateRangeBoundaryMethod(typeName: typeName, fields: fields)
+
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
             public static var recordName: String { "\(raw: recordName)" }
@@ -1448,60 +1515,10 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                 }
             }
 
-            public func extractField(_ fieldName: String) -> [any TupleElement] {
-                // Handle nested field paths (e.g., "address.city")
-                if fieldName.contains(".") {
-                    let components = fieldName.split(separator: ".", maxSplits: 1)
-                    guard components.count == 2 else { return [] }
-
-                    let firstField = String(components[0])
-                    let remainingPath = String(components[1])
-
-                    switch firstField {
-                    \(raw: nestedFieldHandling)
-                    default:
-                        _ = remainingPath  // Suppress unused warning when no custom fields
-                        return []
-                    }
-                }
-
-                // Handle direct field access
-                switch fieldName {
-                \(raw: extractFieldCases)
-                default: return []
-                }
-            }
-
-            public static func extractRangeBoundary(
-                fieldName: String,
-                component: RangeComponent,
-                from record: any Recordable
-            ) throws -> [any TupleElement] {
-                \(raw: hasRangeFields ? """
-                // Cast to concrete type for field access
-                guard let typedRecord = record as? \(typeName) else {
-                    throw RecordLayerError.internalError("Expected \(typeName), got \\(type(of: record))")
-                }
-
-                switch (fieldName, component) {
-                \(extractRangeBoundaryCases)
-                default:
-                    throw RecordLayerError.fieldNotFound(fieldName)
-                }
-                """ : """
-                // No Range fields in this type
-                _ = record  // Suppress unused warning
-                throw RecordLayerError.fieldNotFound(fieldName)
-                """)
-            }
-
-            public func extractPrimaryKey() -> Tuple {
-                return Tuple([\(raw: primaryKeyExtraction)])
-            }
-
             \(raw: generateReconstructMethodIfSupported(typeName: typeName, fields: fields, primaryKeyFields: primaryKeyFields))
             \(raw: directoryMethods)
             \(raw: validationMethods)
+            \(raw: rangeBoundaryMethod)
         }
         """
 
@@ -1515,215 +1532,6 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
         }
 
         return ext
-    }
-
-
-    private static func generateExtractFieldCase(field: FieldInfo) -> String {
-        let typeInfo = field.typeInfo
-
-        // Arrays and custom types are not supported in FoundationDB tuples
-        if typeInfo.isArray {
-            return "case \"\(field.name)\": return []  // Arrays not supported in tuples"
-        }
-
-        if case .custom = typeInfo.category {
-            return "case \"\(field.name)\": return []  // Custom types not supported directly; use nested path like \"\(field.name).fieldName\""
-        }
-
-        // Primitive types that conform to TupleElement
-        if case .primitive(let primitiveType) = typeInfo.category {
-            // Data fields are not supported in tuples (binary data cannot be used in indexes)
-            if primitiveType == .data {
-                return "case \"\(field.name)\": return []  // Data fields not supported in tuples"
-            }
-
-            // Handle optionals
-            if typeInfo.isOptional {
-                switch primitiveType {
-                case .int32:
-                    return "case \"\(field.name)\": return self.\(field.name).map { [Int64($0)] } ?? []"
-                case .uint32:
-                    return "case \"\(field.name)\": return self.\(field.name).map { [Int64($0)] } ?? []"
-                case .int64, .uint64, .bool, .string, .double, .float:
-                    return "case \"\(field.name)\": return self.\(field.name).map { [$0] } ?? []"
-                case .data:
-                    return "case \"\(field.name)\": return []  // Data fields not supported in tuples"
-                }
-            } else {
-                // Non-optional primitives - convert Int32/UInt32 to Int64 for TupleElement conformance
-                switch primitiveType {
-                case .int32:
-                    return "case \"\(field.name)\": return [Int64(self.\(field.name))]"
-                case .uint32:
-                    return "case \"\(field.name)\": return [Int64(self.\(field.name))]"
-                case .int64, .uint64, .bool, .string, .double, .float:
-                    return "case \"\(field.name)\": return [self.\(field.name)]"
-                case .data:
-                    return "case \"\(field.name)\": return []  // Data fields not supported in tuples"
-                }
-            }
-        }
-
-        // Fallback (should not reach here)
-        return "case \"\(field.name)\": return []"
-    }
-
-    /// Generate switch cases for nested field access on custom type fields
-    private static func generateNestedFieldHandling(fields: [FieldInfo]) -> String {
-        let customTypeFields = fields.filter { field in
-            let typeInfo = field.typeInfo
-            // Only non-array custom types support nested access
-            if case .custom = typeInfo.category {
-                return !typeInfo.isArray
-            }
-            return false
-        }
-
-        if customTypeFields.isEmpty {
-            return ""
-        }
-
-        return customTypeFields.map { field in
-            let typeInfo = field.typeInfo
-            if typeInfo.isOptional {
-                // Optional custom type: unwrap and delegate
-                return """
-                case "\(field.name)":
-                    guard let nested = self.\(field.name) else { return [] }
-                    return nested.extractField(remainingPath)
-                """
-            } else {
-                // Required custom type: delegate directly
-                return """
-                case "\(field.name)":
-                    return self.\(field.name).extractField(remainingPath)
-                """
-            }
-        }.joined(separator: "\n                ")
-    }
-
-    /// Generate switch cases for Range boundary extraction
-    ///
-    /// For each Range-type field, generate cases for lowerBound and upperBound extraction.
-    /// Handles Optional unwrapping and TupleElement conversion at compile time.
-    private static func generateExtractRangeBoundaryCase(field: FieldInfo) -> String {
-        let typeInfo = field.typeInfo
-        // Normalize baseType to remove module prefixes (e.g., "Swift.Range<Date>" -> "Range<Date>")
-        let normalizedType = typeInfo.baseType.split(separator: ".").last.map(String.init) ?? typeInfo.baseType
-        // Use normalized baseType to handle Optional wrappers correctly
-        let rangeInfo = RangeTypeDetector.detectRangeType(normalizedType)
-
-        // Verify that the Range type was correctly detected
-        guard rangeInfo.boundType != nil else {
-            // This should never happen if category = .range, but handle it gracefully
-            return """
-            // WARNING: Could not extract bound type for Range field '\(field.name)'
-            case ("\(field.name)", _):
-                throw RecordLayerError.internalError("Could not extract bound type for Range field '\(field.name)'")
-            """
-        }
-
-        // Generate extraction logic based on Range type and Optional status
-        if typeInfo.isOptional {
-            // Optional Range types: unwrap then extract boundary
-            switch rangeInfo {
-            case .range:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.lowerBound]
-                case ("\(field.name)", .upperBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.upperBound]
-                """
-
-            case .closedRange:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.lowerBound]
-                case ("\(field.name)", .upperBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.upperBound]
-                """
-
-            case .partialRangeFrom:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.lowerBound]
-                case ("\(field.name)", .upperBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "upperBound", availableComponent: "lowerBound")
-                """
-
-            case .partialRangeThrough:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
-                case ("\(field.name)", .upperBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.upperBound]
-                """
-
-            case .partialRangeUpTo:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
-                case ("\(field.name)", .upperBound):
-                    guard let range = typedRecord.\(field.name) else { return [] }
-                    return [range.upperBound]
-                """
-
-            case .unboundedRange, .notRange:
-                return ""  // Should not happen, but handle gracefully
-            }
-        } else {
-            // Non-optional Range types: direct extraction
-            switch rangeInfo {
-            case .range:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    return [typedRecord.\(field.name).lowerBound]
-                case ("\(field.name)", .upperBound):
-                    return [typedRecord.\(field.name).upperBound]
-                """
-
-            case .closedRange:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    return [typedRecord.\(field.name).lowerBound]
-                case ("\(field.name)", .upperBound):
-                    return [typedRecord.\(field.name).upperBound]
-                """
-
-            case .partialRangeFrom:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    return [typedRecord.\(field.name).lowerBound]
-                case ("\(field.name)", .upperBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "upperBound", availableComponent: "lowerBound")
-                """
-
-            case .partialRangeThrough:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
-                case ("\(field.name)", .upperBound):
-                    return [typedRecord.\(field.name).upperBound]
-                """
-
-            case .partialRangeUpTo:
-                return """
-                case ("\(field.name)", .lowerBound):
-                    throw RecordLayerError.invalidRangeComponent(fieldName: "\(field.name)", requestedComponent: "lowerBound", availableComponent: "upperBound")
-                case ("\(field.name)", .upperBound):
-                    return [typedRecord.\(field.name).upperBound]
-                """
-
-            case .unboundedRange, .notRange:
-                return ""  // Should not happen, but handle gracefully
-            }
-        }
     }
 
     // MARK: - Type Analysis
@@ -1779,18 +1587,34 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
 
     /// Classify a type as primitive, range, or custom
     private static func classifyType(_ type: String) -> TypeCategory {
-        // Normalize type by removing module prefixes (e.g., "Swift.Int64" -> "Int64", "Foundation.Data" -> "Data")
-        let normalizedType = type.split(separator: ".").last.map(String.init) ?? type
-
-        // Check for Range types
-        if normalizedType.hasPrefix("Range<") ||
-           normalizedType.hasPrefix("ClosedRange<") ||
-           normalizedType.hasPrefix("PartialRangeFrom<") ||
-           normalizedType.hasPrefix("PartialRangeThrough<") ||
-           normalizedType.hasPrefix("PartialRangeUpTo<") ||
-           normalizedType == "UnboundedRange" {
-            return .range
+        // IMPORTANT: Check for Range types FIRST before module normalization
+        // because Range types contain generic parameters that may include module-qualified types
+        // (e.g., "ClosedRange<Foundation.Date>" would be incorrectly split by ".")
+        if type.contains("Range<") || type == "UnboundedRange" {
+            // Check for Range types without normalization to handle generic parameters correctly
+            if type.hasPrefix("Range<") || type.contains(".Range<") {
+                return .range
+            }
+            if type.hasPrefix("ClosedRange<") || type.contains(".ClosedRange<") {
+                return .range
+            }
+            if type.hasPrefix("PartialRangeFrom<") || type.contains(".PartialRangeFrom<") {
+                return .range
+            }
+            if type.hasPrefix("PartialRangeThrough<") || type.contains(".PartialRangeThrough<") {
+                return .range
+            }
+            if type.hasPrefix("PartialRangeUpTo<") || type.contains(".PartialRangeUpTo<") {
+                return .range
+            }
+            if type == "UnboundedRange" || type.hasSuffix(".UnboundedRange") {
+                return .range
+            }
         }
+
+        // Normalize type by removing module prefixes (e.g., "Swift.Int64" -> "Int64", "Foundation.Data" -> "Data")
+        // This is safe for primitive types since they don't have generic parameters
+        let normalizedType = type.split(separator: ".").last.map(String.init) ?? type
 
         switch normalizedType {
         case "Int32": return .primitive(.int32)
@@ -1822,7 +1646,7 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
                     // Attempt to cast \(enumTypeName) to CaseIterable at runtime
                     if let enumType = \(enumTypeName).self as? any CaseIterable.Type {
                         let cases = enumType.allCases.map { "\\($0)" }
-                        return Schema.EnumMetadata(
+                        return EnumMetadata(
                             typeName: "\(enumTypeName)",
                             cases: cases
                         )
@@ -1833,7 +1657,7 @@ indexType: .spatial(SpatialIndexOptions(type: .\(type)))
 
         return """
 
-            public static func enumMetadata(for fieldName: String) -> Schema.EnumMetadata? {
+            public static func enumMetadata(for fieldName: String) -> EnumMetadata? {
                 switch fieldName {
                 \(cases)
                 default:

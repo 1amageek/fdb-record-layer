@@ -67,11 +67,10 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
         fieldName: String,
         component: RangeComponent
     ) throws -> [any TupleElement] {
-        // Call macro-generated static function (type-safe, no Reflection)
-        return try Record.extractRangeBoundary(
+        // Call macro-generated instance method (type-safe, no Reflection)
+        return try record.extractRangeBoundary(
             fieldName: fieldName,
-            component: component,
-            from: record
+            component: component
         )
     }
 

@@ -5,7 +5,7 @@ import FoundationDB
 ///
 /// Encodes Date as Double (timeIntervalSince1970) in Tuple format.
 /// This ensures Date values can be used in indexes and as query parameters.
-extension Date: TupleElement {
+extension Date: @retroactive TupleElement {
     /// Encode Date as Double timestamp
     public func encodeTuple() -> FDB.Bytes {
         return timeIntervalSince1970.encodeTuple()

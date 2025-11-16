@@ -7,7 +7,7 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// let count = try await store.aggregate {
-///     Where(\.city == "Tokyo")
+///     AggregateWhere(\.city == "Tokyo")
 ///     Count()
 /// }
 /// ```
@@ -235,10 +235,12 @@ public struct Min<Record: Recordable, Value>: AggregateDSLComponent where Value:
 // MARK: - WHERE for Aggregates
 
 /// WHERE clause for aggregate queries
+///
+/// **Note**: Named `AggregateWhere` to avoid conflict with `Where` in QueryDSL
 public struct AggregateWhere<Record: Recordable>: AggregateDSLComponent {
     public typealias Result = Void
 
-    private let predicate: Predicate<Record>
+    internal let predicate: Predicate<Record>
 
     public init(_ predicate: Predicate<Record>) {
         self.predicate = predicate
@@ -255,44 +257,30 @@ public struct AggregateWhere<Record: Recordable>: AggregateDSLComponent {
 // MARK: - RecordStore Extension
 
 extension RecordStore {
-    /// Execute aggregate query with Result Builder DSL
+    /// Execute aggregate query with a single aggregate function
     ///
     /// **Usage**:
     /// ```swift
-    /// let count = try await store.aggregate {
-    ///     Where(\.city == "Tokyo")
-    ///     Count()
-    /// }
-    ///
-    /// let avgAge = try await store.aggregate {
-    ///     Where(\.status == "active")
-    ///     Average(\.age)
-    /// }
+    /// let count = try await store.aggregate(Count())
+    /// let sum = try await store.aggregate(Sum(\.price))
     /// ```
     public func aggregate<Component: AggregateDSLComponent>(
-        @AggregateDSL<Record> _ build: () -> [Component]
+        _ component: Component
     ) async throws -> Component.Result where Component.Record == Record {
-        let components = build()
+        return try await component.execute(on: self, filters: [])
+    }
 
-        // Extract filters and aggregate function
-        let filters: [Predicate<Record>] = []
-        var aggregateFunc: Component? = nil
-
-        for component in components {
-            if component is AggregateWhere<Record> {
-                // Extract predicate from WHERE clause
-                // Note: This is a simplified implementation
-                // In a full implementation, we would need to properly extract the predicate
-                continue
-            } else {
-                aggregateFunc = component
-            }
-        }
-
-        guard let function = aggregateFunc else {
-            throw RecordLayerError.invalidArgument("No aggregate function provided")
-        }
-
-        return try await function.execute(on: self, filters: filters)
+    /// Execute aggregate query with filter and aggregate function
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let count = try await store.aggregate(where: \.city == "Tokyo", Count())
+    /// let avgAge = try await store.aggregate(where: \.status == "active", Average(\.age))
+    /// ```
+    public func aggregate<Component: AggregateDSLComponent>(
+        where predicate: Predicate<Record>,
+        _ component: Component
+    ) async throws -> Component.Result where Component.Record == Record {
+        return try await component.execute(on: self, filters: [predicate])
     }
 }

@@ -324,18 +324,17 @@ extension RecordAccess {
         component: RangeComponent
     ) throws -> [any TupleElement] {
         // Require @Recordable macro - no Reflection fallback
-        guard let recordableType = Record.self as? any Recordable.Type else {
+        guard let recordable = record as? any Recordable else {
             throw RecordLayerError.internalError(
                 "Range fields are only supported with @Recordable macro. " +
                 "Record type '\(String(describing: Record.self))' does not conform to Recordable."
             )
         }
 
-        // Call macro-generated static function (type-safe, zero runtime overhead)
-        return try recordableType.extractRangeBoundary(
+        // Call macro-generated instance method (type-safe, zero runtime overhead)
+        return try recordable.extractRangeBoundary(
             fieldName: fieldName,
-            component: component,
-            from: record as! any Recordable
+            component: component
         )
     }
 

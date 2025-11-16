@@ -298,21 +298,6 @@ extension Schema {
     ///     cases: ["active", "inactive", "archived"]
     /// )
     /// ```
-    public struct EnumMetadata: Sendable, Hashable {
-        /// Enum type name (e.g., "ProductStatus")
-        public let typeName: String
-
-        /// Enum case names in declaration order
-        /// For String raw values: ["active", "inactive"]
-        /// For Int raw values: ["0", "1", "2"]
-        /// For no raw value: ["case1", "case2"]
-        public let cases: [String]
-
-        public init(typeName: String, cases: [String]) {
-            self.typeName = typeName
-            self.cases = cases
-        }
-    }
 
     // MARK: - Attribute
 

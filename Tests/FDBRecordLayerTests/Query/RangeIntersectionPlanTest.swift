@@ -132,7 +132,7 @@ struct RangeIntersectionPlanTest {
             value: queryRange.lowerBound
         )
 
-        let overlapsFilter = TypedAndQueryComponent<Event>(children: [lowerBoundFilter, upperBoundFilter])
+        let _ = TypedAndQueryComponent<Event>(children: [lowerBoundFilter, upperBoundFilter])
 
         // 2. Create title filter
         let titleFilter = TypedFieldQueryComponent<Event>(

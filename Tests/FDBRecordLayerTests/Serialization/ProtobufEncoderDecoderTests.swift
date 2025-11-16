@@ -40,6 +40,46 @@ fileprivate struct OptionalRangeRecord: Codable {
     var period: Range<Date>?
 }
 
+fileprivate struct PartialRangeRecord: Codable {
+    var id: Int64
+    var validFrom: PartialRangeFrom<Date>
+    var validThrough: PartialRangeThrough<Date>
+    var validUpTo: PartialRangeUpTo<Date>
+}
+
+fileprivate struct OptionalPartialRangeRecord: Codable {
+    var id: Int64
+    var validFrom: PartialRangeFrom<Date>?
+    var validThrough: PartialRangeThrough<Date>?
+    var validUpTo: PartialRangeUpTo<Date>?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case validFrom
+        case validThrough
+        case validUpTo
+
+        var intValue: Int? {
+            switch self {
+            case .id: return 1
+            case .validFrom: return 2
+            case .validThrough: return 3
+            case .validUpTo: return 4
+            }
+        }
+
+        init?(intValue: Int) {
+            switch intValue {
+            case 1: self = .id
+            case 2: self = .validFrom
+            case 3: self = .validThrough
+            case 4: self = .validUpTo
+            default: return nil
+            }
+        }
+    }
+}
+
 // MARK: - Test Suite
 
 @Suite("Protobuf Encoder/Decoder Tests")
@@ -299,6 +339,135 @@ struct ProtobufEncoderDecoderTests {
         #expect(decoded.period != nil)
         #expect(abs(decoded.period!.lowerBound.timeIntervalSince1970 - start.timeIntervalSince1970) < 0.001)
         #expect(abs(decoded.period!.upperBound.timeIntervalSince1970 - end.timeIntervalSince1970) < 0.001)
+    }
+
+    // MARK: - PartialRange Tests
+
+    @Test("PartialRangeFrom<Date> encoding and decoding")
+    func testPartialRangeFromEncoding() throws {
+        let start = Date(timeIntervalSince1970: 1000)
+        let through = Date(timeIntervalSince1970: 2000)
+        let upTo = Date(timeIntervalSince1970: 3000)
+
+        let record = PartialRangeRecord(
+            id: 1,
+            validFrom: start...,
+            validThrough: ...through,
+            validUpTo: ..<upTo
+        )
+
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
+
+        #expect(!data.isEmpty)
+
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(PartialRangeRecord.self, from: data)
+
+        #expect(decoded.id == record.id)
+        // PartialRangeFrom: lowerBound only
+        #expect(abs(decoded.validFrom.lowerBound.timeIntervalSince1970 - start.timeIntervalSince1970) < 0.001)
+        // PartialRangeThrough: upperBound only
+        #expect(abs(decoded.validThrough.upperBound.timeIntervalSince1970 - through.timeIntervalSince1970) < 0.001)
+        // PartialRangeUpTo: upperBound only
+        #expect(abs(decoded.validUpTo.upperBound.timeIntervalSince1970 - upTo.timeIntervalSince1970) < 0.001)
+    }
+
+    @Test("Optional PartialRange with nil values encoding and decoding")
+    func testOptionalPartialRangeWithNil() throws {
+        let record = OptionalPartialRangeRecord(
+            id: 1,
+            validFrom: nil,
+            validThrough: nil,
+            validUpTo: nil
+        )
+
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
+
+        #expect(!data.isEmpty)
+
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(OptionalPartialRangeRecord.self, from: data)
+
+        #expect(decoded.id == record.id)
+        #expect(decoded.validFrom == nil, "validFrom should be nil")
+        #expect(decoded.validThrough == nil, "validThrough should be nil")
+        #expect(decoded.validUpTo == nil, "validUpTo should be nil")
+    }
+
+    @Test("Optional PartialRange with values encoding and decoding")
+    func testOptionalPartialRangeWithValues() throws {
+        let start = Date(timeIntervalSince1970: 1000)
+        let through = Date(timeIntervalSince1970: 2000)
+        let upTo = Date(timeIntervalSince1970: 3000)
+
+        let record = OptionalPartialRangeRecord(
+            id: 1,
+            validFrom: start...,
+            validThrough: ...through,
+            validUpTo: ..<upTo
+        )
+
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
+
+        #expect(!data.isEmpty)
+
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(OptionalPartialRangeRecord.self, from: data)
+
+        #expect(decoded.id == record.id)
+        #expect(decoded.validFrom != nil)
+        #expect(decoded.validThrough != nil)
+        #expect(decoded.validUpTo != nil)
+        #expect(abs(decoded.validFrom!.lowerBound.timeIntervalSince1970 - start.timeIntervalSince1970) < 0.001)
+        #expect(abs(decoded.validThrough!.upperBound.timeIntervalSince1970 - through.timeIntervalSince1970) < 0.001)
+        #expect(abs(decoded.validUpTo!.upperBound.timeIntervalSince1970 - upTo.timeIntervalSince1970) < 0.001)
+    }
+
+    @Test("PartialRangeFrom with epoch date encoding and decoding")
+    func testPartialRangeFromEpochDate() throws {
+        let epochDate = Date(timeIntervalSince1970: 0)
+
+        let record = OptionalPartialRangeRecord(
+            id: 1,
+            validFrom: epochDate...,
+            validThrough: nil,
+            validUpTo: nil
+        )
+
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
+
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(OptionalPartialRangeRecord.self, from: data)
+
+        #expect(decoded.id == record.id)
+        #expect(decoded.validFrom != nil)
+        #expect(abs(decoded.validFrom!.lowerBound.timeIntervalSince1970 - epochDate.timeIntervalSince1970) < 0.001)
+    }
+
+    @Test("PartialRangeThrough with far future date encoding and decoding")
+    func testPartialRangeThroughFutureDate() throws {
+        let futureDate = Date(timeIntervalSince1970: Double(Int32.max))
+
+        let record = OptionalPartialRangeRecord(
+            id: 1,
+            validFrom: nil,
+            validThrough: ...futureDate,
+            validUpTo: nil
+        )
+
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(record)
+
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decode(OptionalPartialRangeRecord.self, from: data)
+
+        #expect(decoded.id == record.id)
+        #expect(decoded.validThrough != nil)
+        #expect(abs(decoded.validThrough!.upperBound.timeIntervalSince1970 - futureDate.timeIntervalSince1970) < 0.001)
     }
 
     // MARK: - Edge Cases

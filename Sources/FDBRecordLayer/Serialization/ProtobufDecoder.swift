@@ -413,6 +413,110 @@ private struct _ProtobufKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCon
             return (lowerBound...upperBound) as! T
         }
 
+        // Special handling for PartialRange types
+        // Check if type is one of the PartialRange types
+        let isPartialRangeFrom = type == PartialRangeFrom<Date>.self
+        let isPartialRangeThrough = type == PartialRangeThrough<Date>.self
+        let isPartialRangeUpTo = type == PartialRangeUpTo<Date>.self
+
+        if isPartialRangeFrom || isPartialRangeThrough || isPartialRangeUpTo {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "PartialRange field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Determine which PartialRange type based on present fields
+            let hasField1 = fields[1] != nil
+            let hasField2 = fields[2] != nil
+
+            // PartialRangeFrom: field 1 only
+            if hasField1 && !hasField2 {
+                guard isPartialRangeFrom else {
+                    throw DecodingError.typeMismatch(
+                        type,
+                        DecodingError.Context(
+                            codingPath: codingPath,
+                            debugDescription: "Expected PartialRangeFrom but got different type with field 1 present"
+                        )
+                    )
+                }
+                guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                    throw DecodingError.dataCorrupted(
+                        DecodingError.Context(
+                            codingPath: codingPath,
+                            debugDescription: "PartialRangeFrom lowerBound (field 1) invalid"
+                        )
+                    )
+                }
+                let lowerBits = UInt64(lowerField.data[0]) |
+                               (UInt64(lowerField.data[1]) << 8) |
+                               (UInt64(lowerField.data[2]) << 16) |
+                               (UInt64(lowerField.data[3]) << 24) |
+                               (UInt64(lowerField.data[4]) << 32) |
+                               (UInt64(lowerField.data[5]) << 40) |
+                               (UInt64(lowerField.data[6]) << 48) |
+                               (UInt64(lowerField.data[7]) << 56)
+                let lowerBound = Date(timeIntervalSince1970: Double(bitPattern: lowerBits))
+
+                return (lowerBound...) as! T
+            }
+            // PartialRangeThrough or PartialRangeUpTo: field 2 only
+            else if !hasField1 && hasField2 {
+                guard isPartialRangeThrough || isPartialRangeUpTo else {
+                    throw DecodingError.typeMismatch(
+                        type,
+                        DecodingError.Context(
+                            codingPath: codingPath,
+                            debugDescription: "Expected PartialRangeThrough or PartialRangeUpTo but got different type with field 2 present"
+                        )
+                    )
+                }
+                guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                    throw DecodingError.dataCorrupted(
+                        DecodingError.Context(
+                            codingPath: codingPath,
+                            debugDescription: "PartialRange upperBound (field 2) invalid"
+                        )
+                    )
+                }
+                let upperBits = UInt64(upperField.data[0]) |
+                               (UInt64(upperField.data[1]) << 8) |
+                               (UInt64(upperField.data[2]) << 16) |
+                               (UInt64(upperField.data[3]) << 24) |
+                               (UInt64(upperField.data[4]) << 32) |
+                               (UInt64(upperField.data[5]) << 40) |
+                               (UInt64(upperField.data[6]) << 48) |
+                               (UInt64(upperField.data[7]) << 56)
+                let upperBound = Date(timeIntervalSince1970: Double(bitPattern: upperBits))
+
+                if isPartialRangeThrough {
+                    return (...upperBound) as! T
+                } else if isPartialRangeUpTo {
+                    return (..<upperBound) as! T
+                } else {
+                    fatalError("Unreachable: checked isPartialRangeThrough || isPartialRangeUpTo above")
+                }
+            }
+            else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid PartialRange structure: both or neither fields present"
+                    )
+                )
+            }
+        }
+
         // Special handling for arrays (packed repeated fields)
         if type == [Int32].self {
             return try decodePackedInt32Array(forKey: key) as! T

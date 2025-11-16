@@ -221,7 +221,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "ProductStatus",
                         cases: ["active", "inactive", "discontinued"]
                     )
@@ -241,7 +241,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "ProductStatus",  // Same type name
                         cases: ["active", "inactive"]  // "discontinued" removed
                     )
@@ -293,7 +293,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "OrderStatus",  // Old type name
                         cases: ["pending", "shipped", "delivered", "cancelled"]
                     )
@@ -313,7 +313,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "OrderStatusV2",  // ← Type name changed (refactoring)
                         cases: ["pending", "shipped", "delivered"]  // "cancelled" removed
                     )
@@ -365,7 +365,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "ProductStatus",
                         cases: ["active", "inactive"]
                     )
@@ -385,7 +385,7 @@ struct MetaDataEvolutionValidatorTests {
                 ),
                 TestEntityBuilder.createAttribute(
                     name: "status",
-                    enumMetadata: Schema.EnumMetadata(
+                    enumMetadata: EnumMetadata(
                         typeName: "ProductStatus",
                         cases: ["active", "inactive", "archived"]  // "archived" added
                     )
@@ -427,7 +427,7 @@ enum TestEntityBuilder {
         name: String,
         isOptional: Bool = false,
         isPrimaryKey: Bool = false,
-        enumMetadata: Schema.EnumMetadata? = nil
+        enumMetadata: EnumMetadata? = nil
     ) -> Schema.Attribute {
         return Schema.Attribute(
             name: name,

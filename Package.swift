@@ -9,6 +9,10 @@ let package = Package(
     ],
     products: [
         .library(
+            name: "FDBRecordCore",
+            targets: ["FDBRecordCore"]
+        ),
+        .library(
             name: "FDBRecordLayer",
             targets: ["FDBRecordLayer"]
         ),
@@ -54,7 +58,16 @@ let package = Package(
             path: "Sources/FDBRecordLayerMacros"
         ),
 
-        // Main library
+        // Core library (FDB-independent, shared by client and server)
+        .target(
+            name: "FDBRecordCore",
+            dependencies: [
+                "FDBRecordLayerMacros",
+            ],
+            path: "Sources/FDBRecordCore"
+        ),
+
+        // Main library (FDB-dependent, server-only)
         .target(
             name: "FDBRecordLayer",
             dependencies: [
@@ -64,6 +77,7 @@ let package = Package(
                 .product(name: "SwiftPrometheus", package: "SwiftPrometheus"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Collections", package: "swift-collections"),
+                "FDBRecordCore",
                 "FDBRecordLayerMacros",
             ],
             path: "Sources/FDBRecordLayer"

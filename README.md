@@ -12,6 +12,9 @@ The Record Layer provides a powerful abstraction for storing and querying struct
 
 - **SwiftData-Style Macro API**: Declarative record definitions with @Recordable, @PrimaryKey, #Index, #Directory (100% complete)
 - **Type-Safe API**: Recordable protocol for compile-time type safety
+- **Client-Server Model Sharing**: SSOT (Single Source of Truth) with modular architecture
+  - **FDBRecordCore**: FoundationDB-independent model definitions (for iOS/macOS clients)
+  - **FDBRecordLayer**: Full persistence layer (for servers)
 - **Cost-Based Query Optimizer**: Statistics-driven query planning with histogram selectivity
 - **Automatic Index Maintenance**: Value, Count, Sum, MIN/MAX indexes with online building
 - **Swift 6 Ready**: Full strict concurrency mode compliance with explicit Mutex + nonisolated(unsafe) patterns
@@ -27,13 +30,39 @@ The Record Layer provides a powerful abstraction for storing and querying struct
 
 Add to your `Package.swift`:
 
+**For Server Applications** (with FoundationDB):
 ```swift
 dependencies: [
     .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0")
+],
+targets: [
+    .target(
+        name: "MyServerApp",
+        dependencies: [
+            .product(name: "FDBRecordLayer", package: "fdb-record-layer")
+        ]
+    )
 ]
 ```
 
-### Basic Usage
+**For Client Applications** (iOS/macOS, no FoundationDB):
+```swift
+dependencies: [
+    .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0")
+],
+targets: [
+    .target(
+        name: "MyClientApp",
+        dependencies: [
+            .product(name: "FDBRecordCore", package: "fdb-record-layer")  // Only model definitions
+        ]
+    )
+]
+```
+
+### Basic Usage (Server)
+
+For client-side usage with JSON serialization, see [Client-Server Model Sharing](#client-server-model-sharing).
 
 ```swift
 import FDBRecordLayer
@@ -252,6 +281,146 @@ let sanFranciscoAdults = try await store.query(User.self)
 - `.lessThan`, `.lessThanOrEquals`
 - `.greaterThan`, `.greaterThanOrEquals`
 - `.startsWith`, `.contains` (for strings)
+
+## Client-Server Model Sharing
+
+The Record Layer supports **SSOT (Single Source of Truth)** - define your models once and use them on both client and server.
+
+### Module Architecture
+
+- **FDBRecordCore**: FoundationDB-independent model definitions
+  - `@Recordable` macro support
+  - Metadata only (recordName, primaryKeyFields, indexDefinitions)
+  - `Codable` conformance for JSON serialization
+  - No FoundationDB dependency (~0KB additional size)
+
+- **FDBRecordLayer**: Full persistence layer
+  - Includes `FDBRecordCore`
+  - FoundationDB integration
+  - Index management, query planning, transactions
+
+### Shared Model Definition
+
+Define your model once in a shared package:
+
+```swift
+// Shared/Models/User.swift
+import FDBRecordCore
+
+@Recordable
+struct User {
+    #PrimaryKey<User>([\.userID])
+    #Index<User>([\.email])
+
+    var userID: Int64
+    var email: String
+    var name: String
+}
+```
+
+### Client-Side Usage (iOS/macOS)
+
+Use the same model for JSON API communication:
+
+```swift
+// iOS App
+import FDBRecordCore
+
+class UserService {
+    func fetchUsers() async throws -> [User] {
+        let url = URL(string: "https://api.example.com/users")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+
+        // Same User model decodes from JSON
+        return try JSONDecoder().decode([User].self, from: data)
+    }
+
+    func createUser(_ user: User) async throws {
+        let url = URL(string: "https://api.example.com/users")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // Same User model encodes to JSON
+        request.httpBody = try JSONEncoder().encode(user)
+
+        let (_, _) = try await URLSession.shared.data(for: request)
+    }
+}
+
+// SwiftUI
+struct UserListView: View {
+    @State private var users: [User] = []
+
+    var body: some View {
+        List(users, id: \.userID) { user in
+            VStack(alignment: .leading) {
+                Text(user.name)
+                Text(user.email)
+                    .font(.caption)
+            }
+        }
+        .task {
+            users = (try? await UserService().fetchUsers()) ?? []
+        }
+    }
+}
+```
+
+### Server-Side Usage
+
+Use the same model for FoundationDB persistence:
+
+```swift
+// Server
+import FDBRecordCore   // Model definitions
+import FDBRecordLayer  // Full persistence
+
+class UserRepository {
+    private let store: RecordStore<User>
+
+    init(database: any DatabaseProtocol, schema: Schema) async throws {
+        // Same User model for RecordStore
+        self.store = try await User.store(database: database, schema: schema)
+    }
+
+    func save(_ user: User) async throws {
+        try await store.save(user)
+    }
+
+    func findByEmail(_ email: String) async throws -> User? {
+        let users = try await store.query()
+            .where(\.email, .equals, email)
+            .execute()
+        return users.first
+    }
+}
+
+// Vapor API
+app.get("users") { req async throws -> [User] in
+    let repo = try await UserRepository(database: req.fdb, schema: schema)
+    return try await repo.findAll()
+}
+
+app.post("users") { req async throws -> User in
+    // Same User model decodes from request
+    let user = try req.content.decode(User.self)
+    let repo = try await UserRepository(database: req.fdb, schema: schema)
+    try await repo.save(user)
+    return user
+}
+```
+
+### Benefits
+
+✅ **SSOT**: Define models once, use everywhere
+✅ **Type Safety**: Compile-time guarantees on both client and server
+✅ **Zero Duplication**: No need to maintain separate model definitions
+✅ **Automatic Sync**: Model changes automatically propagate to all platforms
+✅ **Codable Integration**: Seamless JSON API communication
+✅ **Lightweight**: Client apps don't include FoundationDB (~20MB saved)
+
+For more details, see [Module Separation Design](docs/module-separation-design.md).
 
 ## Architecture
 

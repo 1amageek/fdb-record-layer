@@ -271,6 +271,87 @@ private struct _ProtobufKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingCon
             return
         }
 
+        // Special handling for PartialRangeFrom<Date> - only lowerBound
+        if let range = value as? PartialRangeFrom<Date> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (Double timestamp)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = range.lowerBound.timeIntervalSince1970.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Encode as length-delimited
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for PartialRangeThrough<Date> - only upperBound (inclusive)
+        if let range = value as? PartialRangeThrough<Date> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 2: upperBound (Double timestamp)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = range.upperBound.timeIntervalSince1970.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            // Encode as length-delimited
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for PartialRangeUpTo<Date> - only upperBound (exclusive)
+        if let range = value as? PartialRangeUpTo<Date> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 2: upperBound (Double timestamp)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = range.upperBound.timeIntervalSince1970.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            // Encode as length-delimited
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
         // Special handling for arrays (packed repeated fields)
         // Check for common array types
         if let int32Array = value as? [Int32] {

@@ -5,6 +5,12 @@
 
 ## 目次
 
+### Part 0: モジュール分離（SSOT）
+- アーキテクチャ概要
+- FDBRecordCore vs FDBRecordLayer
+- マクロ設計の変更
+- 使用例（クライアント・サーバー）
+
 ### Part 1: FoundationDB基礎
 - FoundationDBとは
 - コアアーキテクチャ
@@ -39,6 +45,880 @@
 - Record Layerアーキテクチャ
 - マクロAPI
 - スキーママイグレーション
+
+---
+
+## Part 0: モジュール分離（SSOT）
+
+### アーキテクチャ概要
+
+**実装状況**: ✅ 完了
+
+このプロジェクトは **SSOT (Single Source of Truth)** を実現するため、2つのモジュールに分離されています：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              FDBRecordLayerMacros (コンパイラプラグイン)   │
+│  - @Recordable, #PrimaryKey<T>, #Index<T>              │
+│  ※FDB非依存のコードを生成                                 │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                     FDBRecordCore                        │
+│  依存: Swift標準ライブラリのみ                              │
+│  プラットフォーム: iOS, macOS, Linux                       │
+│                                                          │
+│  ✅ Recordable プロトコル（FDB非依存版）                  │
+│  ✅ IndexDefinition（メタデータ）                        │
+│  ✅ EnumMetadata                                        │
+│  ✅ Codable 準拠（JSON/Protobuf）                       │
+│                                                          │
+└────────────┬────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    FDBRecordLayer                        │
+│  依存: FDBRecordCore + FoundationDB                     │
+│  プラットフォーム: macOS, Linux                           │
+│                                                          │
+│  ✅ RecordableExtensions (Mirror-based FDB変換)         │
+│  ✅ RecordStore<Record: Recordable>                     │
+│  ✅ IndexManager, QueryPlanner                          │
+│  ✅ OnlineIndexer, MigrationManager                     │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### FDBRecordCore vs FDBRecordLayer
+
+#### FDBRecordCore（FoundationDB非依存）
+
+**用途**: iOS/macOS クライアントアプリ、サーバーアプリ共通
+
+**依存**:
+- ✅ Swift標準ライブラリ（Foundation, Codable）
+- ✅ FDBRecordLayerMacros（コンパイル時のみ）
+- ❌ FoundationDB（依存しない）
+
+**提供機能**:
+```swift
+// Sources/FDBRecordCore/Recordable.swift
+
+public protocol Recordable: Sendable, Codable {
+    // メタデータ（FDB非依存）
+    static var recordName: String { get }
+    static var primaryKeyFields: [String] { get }
+    static var allFields: [String] { get }
+    static var indexDefinitions: [IndexDefinition] { get }
+    static func fieldNumber(for fieldName: String) -> Int?
+    static func enumMetadata(for fieldName: String) -> EnumMetadata?
+
+    // ❌ FDB依存メソッドは含まない
+    // func extractField(_:) -> [any TupleElement]  // 削除済み
+    // func extractPrimaryKey() -> Tuple             // 削除済み
+}
+```
+
+#### FDBRecordLayer（FoundationDB依存）
+
+**用途**: サーバーアプリのみ
+
+**依存**:
+- ✅ FDBRecordCore
+- ✅ FoundationDB (fdb-swift-bindings)
+
+**提供機能**:
+```swift
+// Sources/FDBRecordLayer/Serialization/RecordableExtensions.swift
+
+public extension Recordable {
+    // FDB-specific properties
+    typealias PrimaryKeyValue = Tuple
+    static var primaryKeyPaths: PrimaryKeyPaths<Self, Tuple>? { nil }
+    var primaryKeyValue: Tuple? { nil }
+
+    // FDB-specific methods using Mirror (reflection-based)
+    func extractField(_ fieldName: String) -> [any TupleElement] {
+        let mirror = Mirror(reflecting: self)
+        for child in mirror.children {
+            if child.label == fieldName {
+                return convertToTupleElements(child.value)
+            }
+        }
+        return []
+    }
+
+    func extractPrimaryKey() -> Tuple {
+        let mirror = Mirror(reflecting: self)
+        var elements: [any TupleElement] = []
+        for fieldName in Self.primaryKeyFields {
+            for child in mirror.children {
+                if child.label == fieldName {
+                    if let tupleElement = convertToTupleElement(child.value) {
+                        elements.append(tupleElement)
+                    }
+                    break
+                }
+            }
+        }
+        return Tuple(elements)
+    }
+}
+```
+
+### マクロ設計の変更
+
+**重要**: `@Recordable` マクロは **FDB非依存のコードのみ** を生成します。
+
+#### ❌ 旧実装（削除済み）
+
+マクロがFDB依存のメソッドを生成していた：
+
+```swift
+// RecordableMacro.swift が生成していたコード（削除済み）
+extension User: Recordable {
+    public func extractField(_ fieldName: String) -> [any TupleElement] {
+        switch fieldName {
+        case "userID": return [userID]
+        case "email": return [email]
+        default: return []
+        }
+    }
+
+    public func extractPrimaryKey() -> Tuple {
+        return Tuple(userID)
+    }
+}
+```
+
+**問題**: クライアント側で `TupleElement` や `Tuple` が見つからずコンパイルエラー
+
+#### ✅ 新実装（実装済み）
+
+マクロはメタデータのみ生成：
+
+```swift
+// RecordableMacro.swift が生成するコード（FDB非依存）
+extension User: Recordable {
+    // メタデータのみ
+    public static var recordName: String { "User" }
+    public static var primaryKeyFields: [String] { ["userID"] }
+    public static var allFields: [String] { ["userID", "email", "name"] }
+    public static var indexDefinitions: [IndexDefinition] { [...] }
+    public static func fieldNumber(for fieldName: String) -> Int? { ... }
+    public static func enumMetadata(for fieldName: String) -> EnumMetadata? { ... }
+}
+```
+
+FDB依存メソッドは RecordableExtensions.swift で提供：
+
+```swift
+// RecordableExtensions.swift (FDBRecordLayer)
+public extension Recordable {
+    func extractField(_ fieldName: String) -> [any TupleElement] {
+        // Mirror API を使用した実装
+    }
+
+    func extractPrimaryKey() -> Tuple {
+        // Mirror API を使用した実装
+    }
+}
+```
+
+**利点**:
+- ✅ クライアント側でコンパイル成功（FDB型なし）
+- ✅ サーバー側で完全な機能（RecordableExtensions経由）
+- ✅ 既存APIとの互換性維持
+
+### 使用例（クライアント・サーバー）
+
+#### 共通モデル定義（SSOT）
+
+```swift
+// Shared/Models/User.swift
+import FDBRecordCore
+
+@Recordable
+struct User {
+    #PrimaryKey<User>([\.userID])
+    #Index<User>([\.email])
+
+    var userID: Int64
+    var email: String
+    var name: String
+}
+```
+
+#### クライアント側（iOS/macOS）
+
+```swift
+import FDBRecordCore  // FoundationDB非依存
+
+// JSON serialization
+let user = User(userID: 1, email: "test@example.com", name: "Alice")
+let jsonData = try JSONEncoder().encode(user)
+
+// SwiftUI
+struct UserListView: View {
+    @State private var users: [User] = []
+
+    var body: some View {
+        List(users, id: \.userID) { user in
+            Text(user.name)
+        }
+    }
+}
+```
+
+#### サーバー側
+
+```swift
+import FDBRecordCore   // Model definitions
+import FDBRecordLayer  // Full persistence
+
+// RecordStore
+let store = try await User.store(database: database, schema: schema)
+try await store.save(user)
+
+// Query
+let users = try await store.query()
+    .where(\.email, .equals, "test@example.com")
+    .execute()
+```
+
+詳細は [Module Separation Design](docs/module-separation-design.md) を参照。
+
+### Package.swift依存関係の設定
+
+#### クライアントプロジェクト（iOS/macOS App）
+
+**FDBRecordCoreのみ**を依存に追加します：
+
+```swift
+// Package.swift (iOS/macOS Client)
+let package = Package(
+    name: "MyiOSApp",
+    platforms: [
+        .iOS(.v17),
+        .macOS(.v14),
+    ],
+    products: [
+        .library(name: "Shared", targets: ["Shared"]),
+    ],
+    dependencies: [
+        // ✅ FDBRecordCoreのみ（FoundationDB非依存）
+        .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0"),
+    ],
+    targets: [
+        .target(
+            name: "Shared",
+            dependencies: [
+                // ✅ FDBRecordCoreのみ依存
+                .product(name: "FDBRecordCore", package: "fdb-record-layer"),
+            ]
+        ),
+    ]
+)
+```
+
+**重要**:
+- ❌ `FDBRecordLayer` は依存に**含めない**（FoundationDBバイナリが必要になる）
+- ✅ `FDBRecordCore` のみで十分（軽量、iOS対応）
+
+#### サーバープロジェクト（Vapor等）
+
+**FDBRecordLayerを依存**に追加します（FDBRecordCoreは自動的に含まれる）：
+
+```swift
+// Package.swift (Server)
+let package = Package(
+    name: "MyServerApp",
+    platforms: [
+        .macOS(.v15),
+    ],
+    dependencies: [
+        // ✅ FDBRecordLayerを依存（FDBRecordCoreも含まれる）
+        .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0"),
+        .package(url: "https://github.com/vapor/vapor.git", from: "4.0.0"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "App",
+            dependencies: [
+                // ✅ FDBRecordLayerを使用（完全な永続化機能）
+                .product(name: "FDBRecordLayer", package: "fdb-record-layer"),
+                .product(name: "Vapor", package: "vapor"),
+            ]
+        ),
+    ]
+)
+```
+
+**重要**:
+- ✅ `FDBRecordLayer` を依存に含める
+- ✅ FoundationDBクラスタへの接続が必要
+- ✅ `/usr/local/lib/libfdb_c.dylib` が必要
+
+### Import文の使い分け
+
+#### クライアントコード
+
+```swift
+// ✅ 正しい: FDBRecordCoreのみimport
+import FDBRecordCore
+
+// モデル定義
+@Recordable
+struct User {
+    #PrimaryKey<User>([\.userID])
+    var userID: Int64
+    var name: String
+}
+
+// Codable使用（JSON/Protobuf）
+let user = User(userID: 1, name: "Alice")
+let jsonData = try JSONEncoder().encode(user)
+
+// ❌ 間違い: FDBRecordLayerをimportするとエラー
+// import FDBRecordLayer  // ← FoundationDB依存でビルドエラー
+```
+
+#### サーバーコード
+
+```swift
+// ✅ 正しい: 両方をimport
+import FDBRecordCore   // モデル定義用
+import FDBRecordLayer  // RecordStore等の永続化機能用
+
+// 同じモデル定義を使用
+@Recordable
+struct User {
+    #PrimaryKey<User>([\.userID])
+    var userID: Int64
+    var name: String
+}
+
+// RecordStore使用（FDB永続化）
+let store = try await User.store(database: database, schema: schema)
+try await store.save(user)
+```
+
+**重要**:
+- サーバーでは `FDBRecordLayer` を import することで、自動的に `FDBRecordCore` も利用可能
+- クライアントでは `FDBRecordCore` のみ import
+
+### 完全な使用例
+
+#### 例1: iOSアプリ + Vapor サーバー
+
+**プロジェクト構成**:
+
+```
+MyProject/
+├── Shared/                  # 共通モジュール
+│   └── Sources/
+│       └── Models/
+│           └── User.swift   # @Recordable モデル定義（SSOT）
+├── iOSApp/                  # iOSクライアント
+│   ├── Package.swift        # FDBRecordCoreのみ依存
+│   └── Sources/
+│       └── UserService.swift
+└── Server/                  # Vaporサーバー
+    ├── Package.swift        # FDBRecordLayer依存
+    └── Sources/
+        └── UserRepository.swift
+```
+
+**Shared/Sources/Models/User.swift**（SSOT）:
+
+```swift
+import FDBRecordCore
+
+/// クライアント・サーバー共通のUser定義
+@Recordable
+public struct User: Identifiable {
+    #PrimaryKey<User>([\.userID])
+    #Index<User>([\.email], name: "user_by_email")
+    #Index<User>([\.status], name: "user_by_status")
+
+    public var userID: Int64
+    public var email: String
+    public var name: String
+    public var status: UserStatus
+    public var createdAt: Date
+
+    @Transient
+    public var isLoggedIn: Bool = false
+
+    public enum UserStatus: String, Codable, Sendable {
+        case active
+        case inactive
+        case suspended
+    }
+
+    // Identifiableプロトコル準拠
+    public var id: Int64 { userID }
+
+    public init(userID: Int64, email: String, name: String, status: UserStatus, createdAt: Date) {
+        self.userID = userID
+        self.email = email
+        self.name = name
+        self.status = status
+        self.createdAt = createdAt
+    }
+}
+```
+
+**iOSApp/Sources/UserService.swift**:
+
+```swift
+import Foundation
+import FDBRecordCore  // ✅ FDBRecordCoreのみ
+import Shared
+
+/// iOS側のユーザーサービス（JSON API連携）
+public class UserService {
+    private let baseURL = URL(string: "https://api.example.com")!
+
+    /// ユーザー一覧を取得
+    public func fetchUsers() async throws -> [User] {
+        let url = baseURL.appendingPathComponent("users")
+        let (data, _) = try await URLSession.shared.data(from: url)
+
+        // ✅ Codableでデコード（サーバーと同じ型）
+        return try JSONDecoder().decode([User].self, from: data)
+    }
+
+    /// 新規ユーザーを作成
+    public func createUser(email: String, name: String) async throws -> User {
+        let url = baseURL.appendingPathComponent("users")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let newUser = User(
+            userID: 0,  // サーバー側で採番
+            email: email,
+            name: name,
+            status: .active,
+            createdAt: Date()
+        )
+
+        // ✅ Codableでエンコード
+        request.httpBody = try JSONEncoder().encode(newUser)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 201 else {
+            throw URLError(.badServerResponse)
+        }
+
+        return try JSONDecoder().decode(User.self, from: data)
+    }
+
+    /// メールアドレスでユーザーを検索
+    public func findByEmail(_ email: String) async throws -> User? {
+        let url = baseURL.appendingPathComponent("users/\(email)")
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(User.self, from: data)
+    }
+}
+```
+
+**iOSApp/Sources/UserListView.swift**（SwiftUI）:
+
+```swift
+import SwiftUI
+import FDBRecordCore
+import Shared
+
+struct UserListView: View {
+    @State private var users: [User] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    private let service = UserService()
+
+    var body: some View {
+        NavigationView {
+            Group {
+                if isLoading {
+                    ProgressView()
+                } else if let error = errorMessage {
+                    Text("Error: \(error)")
+                        .foregroundColor(.red)
+                } else {
+                    List(users) { user in
+                        VStack(alignment: .leading) {
+                            Text(user.name)
+                                .font(.headline)
+                            Text(user.email)
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                            Label(user.status.rawValue, systemImage: statusIcon(for: user.status))
+                                .font(.caption2)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Users")
+            .task {
+                await loadUsers()
+            }
+        }
+    }
+
+    private func loadUsers() async {
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            users = try await service.fetchUsers()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func statusIcon(for status: User.UserStatus) -> String {
+        switch status {
+        case .active: return "checkmark.circle.fill"
+        case .inactive: return "pause.circle"
+        case .suspended: return "xmark.circle"
+        }
+    }
+}
+```
+
+**Server/Sources/UserRepository.swift**:
+
+```swift
+import Foundation
+import FDBRecordCore   // ✅ モデル定義
+import FDBRecordLayer  // ✅ RecordStore等
+import FoundationDB
+import Shared
+
+/// サーバー側のユーザーリポジトリ（FoundationDB永続化）
+public actor UserRepository {
+    private let store: RecordStore<User>
+    private let database: any DatabaseProtocol
+
+    public init(database: any DatabaseProtocol, schema: Schema) async throws {
+        self.database = database
+        // ✅ RecordStoreを使用（FDB永続化）
+        self.store = try await User.store(database: database, schema: schema)
+    }
+
+    /// ユーザーを保存
+    public func save(_ user: User) async throws {
+        try await store.save(user)
+    }
+
+    /// メールアドレスでユーザーを検索
+    public func findByEmail(_ email: String) async throws -> User? {
+        // ✅ インデックスクエリ（O(log n)）
+        let users = try await store.query()
+            .where(\.email, .equals, email)
+            .execute()
+        return users.first
+    }
+
+    /// ステータスでユーザーをフィルタ
+    public func findByStatus(_ status: User.UserStatus) async throws -> [User] {
+        // ✅ Enumインデックスを使用
+        return try await store.query()
+            .where(\.status, .equals, status)
+            .execute()
+    }
+
+    /// 全ユーザーを取得
+    public func findAll() async throws -> [User] {
+        var result: [User] = []
+        for try await user in store.scan() {
+            result.append(user)
+        }
+        return result
+    }
+
+    /// ユーザーIDでユーザーを取得
+    public func findByID(_ userID: Int64) async throws -> User? {
+        // ✅ プライマリキー検索（O(1)）
+        return try await store.load(primaryKey: Tuple(userID))
+    }
+
+    /// ユーザーを削除
+    public func delete(userID: Int64) async throws {
+        try await store.delete(primaryKey: Tuple(userID))
+    }
+
+    /// アクティブなユーザー数を取得
+    public func countActive() async throws -> Int64 {
+        // ✅ COUNT集約インデックス
+        return try await store.evaluateAggregate(
+            .count(indexName: "user_by_status"),
+            groupBy: [User.UserStatus.active.rawValue]
+        )
+    }
+}
+```
+
+**Server/Sources/UserRoutes.swift**（Vapor）:
+
+```swift
+import Vapor
+import FDBRecordCore
+import FDBRecordLayer
+import Shared
+
+func routes(_ app: Application) throws {
+    let database: any DatabaseProtocol = app.fdb  // Vaporの拡張で設定済み
+    let schema = Schema([User.self])
+    let repo = try await UserRepository(database: database, schema: schema)
+
+    // GET /users - 全ユーザー取得
+    app.get("users") { req async throws -> [User] in
+        return try await repo.findAll()
+    }
+
+    // POST /users - 新規ユーザー作成
+    app.post("users") { req async throws -> User in
+        var user = try req.content.decode(User.self)
+
+        // サーバー側でuserID採番
+        user.userID = try await generateUserID(database)
+
+        try await repo.save(user)
+        return user
+    }
+
+    // GET /users/:email - メールアドレスで検索
+    app.get("users", ":email") { req async throws -> User in
+        guard let email = req.parameters.get("email"),
+              let user = try await repo.findByEmail(email) else {
+            throw Abort(.notFound)
+        }
+        return user
+    }
+
+    // GET /users/status/:status - ステータスでフィルタ
+    app.get("users", "status", ":status") { req async throws -> [User] in
+        guard let statusRaw = req.parameters.get("status"),
+              let status = User.UserStatus(rawValue: statusRaw) else {
+            throw Abort(.badRequest)
+        }
+        return try await repo.findByStatus(status)
+    }
+
+    // DELETE /users/:id - ユーザー削除
+    app.delete("users", ":id") { req async throws -> HTTPStatus in
+        guard let userID = req.parameters.get("id", as: Int64.self) else {
+            throw Abort(.badRequest)
+        }
+        try await repo.delete(userID: userID)
+        return .noContent
+    }
+
+    // GET /users/stats/active - アクティブユーザー数
+    app.get("users", "stats", "active") { req async throws -> [String: Int64] in
+        let count = try await repo.countActive()
+        return ["activeUsers": count]
+    }
+}
+
+// ヘルパー関数: userID採番（High-Contention Allocatorパターン）
+private func generateUserID(_ database: any DatabaseProtocol) async throws -> Int64 {
+    // 実装省略（High-Contention Allocatorまたはversionstamp使用）
+    return Int64.random(in: 1...Int64.max)
+}
+```
+
+#### 例2: マルチプラットフォーム対応（Shared Package）
+
+**プロジェクト構成**:
+
+```
+MyMultiPlatformApp/
+├── Package.swift            # Workspace定義
+├── Shared/
+│   ├── Package.swift        # FDBRecordCoreのみ依存
+│   └── Sources/
+│       └── Models/
+│           └── Product.swift
+├── iOS/
+│   └── App.swift
+├── macOS/
+│   └── App.swift
+└── Server/
+    ├── Package.swift        # FDBRecordLayer依存
+    └── Sources/
+        └── App/
+            └── configure.swift
+```
+
+**Shared/Package.swift**:
+
+```swift
+let package = Package(
+    name: "Shared",
+    platforms: [
+        .iOS(.v17),
+        .macOS(.v14),
+    ],
+    products: [
+        .library(name: "Shared", targets: ["Shared"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0"),
+    ],
+    targets: [
+        .target(
+            name: "Shared",
+            dependencies: [
+                .product(name: "FDBRecordCore", package: "fdb-record-layer"),
+            ]
+        ),
+    ]
+)
+```
+
+**Shared/Sources/Models/Product.swift**:
+
+```swift
+import FDBRecordCore
+
+@Recordable
+public struct Product {
+    #PrimaryKey<Product>([\.productID])
+    #Index<Product>([\.category, \.price], name: "product_by_category_price")
+    #Index<Product>([\.inStock], name: "product_by_stock")
+
+    public var productID: Int64
+    public var name: String
+    public var category: String
+    public var price: Double
+    public var inStock: Bool
+
+    public init(productID: Int64, name: String, category: String, price: Double, inStock: Bool) {
+        self.productID = productID
+        self.name = name
+        self.category = category
+        self.price = price
+        self.inStock = inStock
+    }
+}
+```
+
+このモデルは **iOS, macOS, サーバー全てで同じコード** を使用できます。
+
+### よくあるエラーと対処法
+
+#### エラー1: FDBRecordLayerをクライアントでimport
+
+```swift
+// ❌ 間違い: iOSアプリでFDBRecordLayerをimport
+import FDBRecordLayer
+
+// エラー:
+// error: cannot find module 'FoundationDB' in scope
+// error: undefined symbol: _fdb_create_database
+```
+
+**対処法**:
+```swift
+// ✅ 正しい: FDBRecordCoreのみimport
+import FDBRecordCore
+```
+
+#### エラー2: サーバーでFDBRecordCoreのみを依存
+
+```swift
+// Package.swift (Server)
+dependencies: [
+    // ❌ 間違い: FDBRecordCoreのみ依存
+    .product(name: "FDBRecordCore", package: "fdb-record-layer"),
+]
+
+// エラー:
+// error: cannot find 'RecordStore' in scope
+// error: value of type 'User' has no member 'store'
+```
+
+**対処法**:
+```swift
+// ✅ 正しい: FDBRecordLayerを依存
+dependencies: [
+    .product(name: "FDBRecordLayer", package: "fdb-record-layer"),
+]
+```
+
+#### エラー3: マクロ生成コードの古いバージョン使用
+
+```swift
+// ビルドエラー:
+// error: value of type 'User' has no member 'extractField'
+```
+
+**対処法**:
+```bash
+# キャッシュをクリアして再ビルド
+swift package clean
+swift build
+```
+
+または、Xcodeの場合:
+```
+Product > Clean Build Folder (Shift + Cmd + K)
+```
+
+### ベストプラクティス
+
+#### 1. モデル定義は共通モジュールに集約
+
+```
+✅ 推奨構成:
+MyProject/
+├── Shared/          # 共通モデル定義（FDBRecordCoreのみ依存）
+├── iOSApp/          # Sharedを依存
+├── macOSApp/        # Sharedを依存
+└── Server/          # Shared + FDBRecordLayerを依存
+```
+
+#### 2. Import文は必要最小限に
+
+```swift
+// クライアント
+import FDBRecordCore  // ✅ 最小限
+
+// サーバー
+import FDBRecordCore   // ✅ モデル定義用
+import FDBRecordLayer  // ✅ 永続化機能用
+```
+
+#### 3. Codableを活用
+
+```swift
+// クライアント・サーバー間のデータ交換
+let jsonData = try JSONEncoder().encode(user)
+let user = try JSONDecoder().decode(User.self, from: jsonData)
+```
+
+#### 4. @Transientで一時フィールドを除外
+
+```swift
+@Recordable
+struct User {
+    var userID: Int64
+    var name: String
+
+    @Transient  // ✅ JSON/FDBに保存されない
+    var isLoggedIn: Bool = false
+}
+```
 
 ---
 
