@@ -287,6 +287,10 @@ private final class MockStatisticsManager: StatisticsManagerProtocol {
         return nil
     }
 
+    func getRangeStatistics(indexName: String) async throws -> RangeIndexStatistics? {
+        return nil
+    }
+
     func estimateSelectivity<Record: Sendable>(
         filter: any TypedQueryComponent<Record>,
         recordType: String

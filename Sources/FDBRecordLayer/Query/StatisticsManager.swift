@@ -9,6 +9,7 @@ import Synchronization
 public protocol StatisticsManagerProtocol: Sendable {
     func getTableStatistics(recordType: String) async throws -> TableStatistics?
     func getIndexStatistics(indexName: String) async throws -> IndexStatistics?
+    func getRangeStatistics(indexName: String) async throws -> RangeIndexStatistics?
     func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double
 }
 
@@ -24,8 +25,8 @@ public protocol StatisticsManagerProtocol: Sendable {
 /// - tableStats and indexStats have independent locks for better concurrency
 /// - I/O operations are performed outside of locks to maximize parallelism
 public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
-    private let subspace: Subspace
+    nonisolated(unsafe) internal let database: any DatabaseProtocol
+    internal let subspace: Subspace
 
     // Statistics cache with independent locks for better concurrency
     private let tableStatsLock: Mutex<[String: TableStatistics]>

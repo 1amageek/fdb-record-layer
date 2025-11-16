@@ -26,6 +26,10 @@ public final class NullStatisticsManager: StatisticsManagerProtocol, Sendable {
         return nil
     }
 
+    public func getRangeStatistics(indexName: String) async throws -> RangeIndexStatistics? {
+        return nil
+    }
+
     public func estimateSelectivity<Record: Sendable>(
         filter: any TypedQueryComponent<Record>,
         recordType: String

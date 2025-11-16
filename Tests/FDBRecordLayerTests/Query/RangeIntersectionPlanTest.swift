@@ -26,6 +26,10 @@ struct RangeIntersectionPlanTest {
             return nil  // Use heuristic mode
         }
 
+        func getRangeStatistics(indexName: String) async throws -> RangeIndexStatistics? {
+            return nil  // Use heuristic mode
+        }
+
         func estimateSelectivity<Record: Sendable>(
             filter: any TypedQueryComponent<Record>,
             recordType: String

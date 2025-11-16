@@ -57,19 +57,98 @@ public struct SpatialIndexOptions: Sendable {
     }
 }
 
-/// Spatial index type
-public enum SpatialType: String, Sendable {
+/// Spatial index type with KeyPath-based coordinate extraction
+///
+/// This enum uses associated values to store KeyPaths for extracting coordinate values
+/// from arbitrary nested structures. This eliminates the need for SpatialRepresentable protocol.
+///
+/// **Usage**:
+/// ```swift
+/// @Spatial(
+///     type: .geo(
+///         latitude: \.address.location.latitude,
+///         longitude: \.address.location.longitude
+///     )
+/// )
+/// var address: Address
+/// ```
+public enum SpatialType: Sendable {
     /// 2D geographic coordinates (latitude, longitude)
-    case geo
+    ///
+    /// - Parameters:
+    ///   - latitude: KeyPath to latitude field (Double)
+    ///   - longitude: KeyPath to longitude field (Double)
+    case geo(latitude: AnyKeyPath, longitude: AnyKeyPath)
 
     /// 3D geographic coordinates (latitude, longitude, altitude)
-    case geo3D
+    ///
+    /// - Parameters:
+    ///   - latitude: KeyPath to latitude field (Double)
+    ///   - longitude: KeyPath to longitude field (Double)
+    ///   - altitude: KeyPath to altitude field (Double)
+    case geo3D(latitude: AnyKeyPath, longitude: AnyKeyPath, altitude: AnyKeyPath)
 
     /// 2D Cartesian coordinates (x, y)
-    case cartesian
+    ///
+    /// - Parameters:
+    ///   - x: KeyPath to x field (Double)
+    ///   - y: KeyPath to y field (Double)
+    case cartesian(x: AnyKeyPath, y: AnyKeyPath)
 
     /// 3D Cartesian coordinates (x, y, z)
-    case cartesian3D
+    ///
+    /// - Parameters:
+    ///   - x: KeyPath to x field (Double)
+    ///   - y: KeyPath to y field (Double)
+    ///   - z: KeyPath to z field (Double)
+    case cartesian3D(x: AnyKeyPath, y: AnyKeyPath, z: AnyKeyPath)
+
+    /// Number of dimensions (2 or 3)
+    public var dimensions: Int {
+        switch self {
+        case .geo, .cartesian:
+            return 2
+        case .geo3D, .cartesian3D:
+            return 3
+        }
+    }
+
+    /// Extract KeyPaths for coordinate value extraction
+    ///
+    /// Returns KeyPaths in order:
+    /// - `.geo`: [latitude, longitude]
+    /// - `.geo3D`: [latitude, longitude, altitude]
+    /// - `.cartesian`: [x, y]
+    /// - `.cartesian3D`: [x, y, z]
+    public var keyPaths: [AnyKeyPath] {
+        switch self {
+        case .geo(let lat, let lon):
+            return [lat, lon]
+        case .geo3D(let lat, let lon, let alt):
+            return [lat, lon, alt]
+        case .cartesian(let x, let y):
+            return [x, y]
+        case .cartesian3D(let x, let y, let z):
+            return [x, y, z]
+        }
+    }
+
+    /// Extract coordinate values from a record using stored KeyPaths
+    ///
+    /// - Parameter record: The record to extract coordinates from
+    /// - Returns: Array of Double values in order (lat/lon or x/y or lat/lon/alt or x/y/z)
+    /// - Throws: RecordLayerError if KeyPath type mismatch or value extraction fails
+    public func extractCoordinates<Record>(from record: Record) throws -> [Double] {
+        return try keyPaths.map { keyPath in
+            guard let typedKeyPath = keyPath as? KeyPath<Record, Double> else {
+                throw RecordLayerError.internalError(
+                    "SpatialType KeyPath must resolve to Double. " +
+                    "KeyPath: \(keyPath), Record: \(type(of: record))"
+                )
+            }
+            return record[keyPath: typedKeyPath]
+        }
+    }
 }
 
 // MARK: - Index Definition Types

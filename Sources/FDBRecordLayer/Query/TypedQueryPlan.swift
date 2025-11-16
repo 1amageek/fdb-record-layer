@@ -76,6 +76,10 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
     public let primaryKeyLength: Int
     public let recordName: String
 
+    /// Range window for pre-filtering (Phase 1: Range Pre-filtering)
+    /// When set, narrows the scan range to the intersection window
+    public let window: Range<Date>?
+
     public init(
         indexName: String,
         indexSubspaceTupleKey: any TupleElement,
@@ -83,7 +87,8 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         endValues: [any TupleElement],
         filter: (any TypedQueryComponent<Record>)?,
         primaryKeyLength: Int,
-        recordName: String
+        recordName: String,
+        window: Range<Date>? = nil
     ) {
         self.indexName = indexName
         self.indexSubspaceTupleKey = indexSubspaceTupleKey
@@ -92,6 +97,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         self.filter = filter
         self.primaryKeyLength = primaryKeyLength
         self.recordName = recordName
+        self.window = window
     }
 
     public func execute(
@@ -104,9 +110,26 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         let indexSubspace = subspace.subspace("I")
             .subspace(indexSubspaceTupleKey)
 
+        // Apply window bounds if specified (Phase 1: Range Pre-filtering)
+        var effectiveBeginValues = beginValues
+        var effectiveEndValues = endValues
+
+        if let window = window {
+            // Window narrows the scan range to the intersection window
+            // Apply window bounds to the first field (assumes Range index has Date as first field)
+            effectiveBeginValues = applyWindowToBeginValues(
+                beginValues: beginValues,
+                window: window
+            )
+            effectiveEndValues = applyWindowToEndValues(
+                endValues: endValues,
+                window: window
+            )
+        }
+
         // Build index key range
-        let beginTuple = TupleHelpers.toTuple(beginValues)
-        let endTuple = TupleHelpers.toTuple(endValues)
+        let beginTuple = TupleHelpers.toTuple(effectiveBeginValues)
+        let endTuple = TupleHelpers.toTuple(effectiveEndValues)
 
         // CRITICAL FIX: Pack the tuple directly without nesting
         // Index keys are stored as: <indexSubspace><indexValue><primaryKey>
@@ -129,7 +152,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         // WARNING: Do NOT use indexSubspace.subspace(tuple) as it creates nested tuples
         // with the \x05 marker, which won't match the flat encoding used by IndexManager
         let beginKey: FDB.Bytes
-        if beginValues.isEmpty {
+        if effectiveBeginValues.isEmpty {
             // Open lower bound: start from beginning of index
             let (rangeBegin, _) = indexSubspace.range()
             beginKey = rangeBegin
@@ -138,7 +161,7 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         }
 
         var endKey: FDB.Bytes
-        if endValues.isEmpty {
+        if effectiveEndValues.isEmpty {
             // Open upper bound: use range end (strinc of prefix)
             let (_, rangeEnd) = indexSubspace.range()
             endKey = rangeEnd
@@ -180,6 +203,107 @@ public struct TypedIndexScanPlan<Record: Sendable>: TypedQueryPlan {
 
         return AnyTypedRecordCursor(cursor)
     }
+
+    // MARK: - Range Window Application Helpers
+
+    /// Apply window to begin values for range pre-filtering
+    ///
+    /// Takes the maximum of the original begin bound and the window's lowerBound
+    /// to ensure we don't scan records outside the intersection window.
+    ///
+    /// **SAFETY**: This function is only called when window is non-nil, which means
+    /// the filter passed isRangeCompatibleFilter() check in generateIntersectionPlan().
+    /// Therefore, the field is guaranteed to be Date-based, and inserting Date bounds is safe.
+    ///
+    /// - Parameters:
+    ///   - beginValues: Original begin values from the query
+    ///   - window: Intersection window from multiple Range filters
+    /// - Returns: Narrowed begin values
+    private func applyWindowToBeginValues(
+        beginValues: [any TupleElement],
+        window: Range<Date>
+    ) -> [any TupleElement] {
+        // If beginValues is empty (open lower bound), use window's lowerBound
+        // SAFETY: window is only set for Range-compatible filters (Date fields)
+        if beginValues.isEmpty {
+            return [window.lowerBound]
+        }
+
+        // If beginValues has a Date value, take the max of (original, window.lowerBound)
+        guard let firstValue = beginValues.first else {
+            return [window.lowerBound]
+        }
+
+        // Extract Date from the first value
+        let originalDate: Date
+        if let date = firstValue as? Date {
+            originalDate = date
+        } else if let double = firstValue as? Double {
+            // Handle case where Date might be encoded as Double
+            originalDate = Date(timeIntervalSince1970: double)
+        } else {
+            // If first value is not a Date, keep original beginValues
+            // (This handles non-Range indexes that might have window set incorrectly)
+            return beginValues
+        }
+
+        // Take the maximum (later date) to narrow the range
+        let effectiveBegin = max(originalDate, window.lowerBound)
+
+        // Reconstruct beginValues with the narrowed bound
+        var result = beginValues
+        result[0] = effectiveBegin
+        return result
+    }
+
+    /// Apply window to end values for range pre-filtering
+    ///
+    /// Takes the minimum of the original end bound and the window's upperBound
+    /// to ensure we don't scan records outside the intersection window.
+    ///
+    /// **SAFETY**: This function is only called when window is non-nil, which means
+    /// the filter passed isRangeCompatibleFilter() check in generateIntersectionPlan().
+    /// Therefore, the field is guaranteed to be Date-based, and inserting Date bounds is safe.
+    ///
+    /// - Parameters:
+    ///   - endValues: Original end values from the query
+    ///   - window: Intersection window from multiple Range filters
+    /// - Returns: Narrowed end values
+    private func applyWindowToEndValues(
+        endValues: [any TupleElement],
+        window: Range<Date>
+    ) -> [any TupleElement] {
+        // If endValues is empty (open upper bound), use window's upperBound
+        // SAFETY: window is only set for Range-compatible filters (Date fields)
+        if endValues.isEmpty {
+            return [window.upperBound]
+        }
+
+        // If endValues has a Date value, take the min of (original, window.upperBound)
+        guard let firstValue = endValues.first else {
+            return [window.upperBound]
+        }
+
+        // Extract Date from the first value
+        let originalDate: Date
+        if let date = firstValue as? Date {
+            originalDate = date
+        } else if let double = firstValue as? Double {
+            // Handle case where Date might be encoded as Double
+            originalDate = Date(timeIntervalSince1970: double)
+        } else {
+            // If first value is not a Date, keep original endValues
+            return endValues
+        }
+
+        // Take the minimum (earlier date) to narrow the range
+        let effectiveEnd = min(originalDate, window.upperBound)
+
+        // Reconstruct endValues with the narrowed bound
+        var result = endValues
+        result[0] = effectiveEnd
+        return result
+    }
 }
 
 // MARK: - Covering Index Scan Plan
@@ -205,13 +329,18 @@ public struct TypedCoveringIndexScanPlan<Record: Sendable>: TypedQueryPlan {
     public let filter: (any TypedQueryComponent<Record>)?
     public let primaryKeyExpression: KeyExpression
 
+    /// Range window for pre-filtering (Phase 1: Range Pre-filtering)
+    /// When set, narrows the scan range to the intersection window
+    public let window: Range<Date>?
+
     public init(
         index: Index,
         indexSubspaceTupleKey: any TupleElement,
         beginValues: [any TupleElement],
         endValues: [any TupleElement],
         filter: (any TypedQueryComponent<Record>)?,
-        primaryKeyExpression: KeyExpression
+        primaryKeyExpression: KeyExpression,
+        window: Range<Date>? = nil
     ) {
         self.index = index
         self.indexSubspaceTupleKey = indexSubspaceTupleKey
@@ -219,6 +348,7 @@ public struct TypedCoveringIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         self.endValues = endValues
         self.filter = filter
         self.primaryKeyExpression = primaryKeyExpression
+        self.window = window
     }
 
     public func execute(
@@ -231,12 +361,28 @@ public struct TypedCoveringIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         let indexSubspace = subspace.subspace("I")
             .subspace(indexSubspaceTupleKey)
 
+        // Apply window bounds if specified (Phase 1: Range Pre-filtering)
+        var effectiveBeginValues = beginValues
+        var effectiveEndValues = endValues
+
+        if let window = window {
+            // Window narrows the scan range to the intersection window
+            effectiveBeginValues = applyWindowToBeginValues(
+                beginValues: beginValues,
+                window: window
+            )
+            effectiveEndValues = applyWindowToEndValues(
+                endValues: endValues,
+                window: window
+            )
+        }
+
         // Build index key range (same logic as TypedIndexScanPlan)
-        let beginTuple = TupleHelpers.toTuple(beginValues)
-        let endTuple = TupleHelpers.toTuple(endValues)
+        let beginTuple = TupleHelpers.toTuple(effectiveBeginValues)
+        let endTuple = TupleHelpers.toTuple(effectiveEndValues)
 
         let beginKey: FDB.Bytes
-        if beginValues.isEmpty {
+        if effectiveBeginValues.isEmpty {
             let (rangeBegin, _) = indexSubspace.range()
             beginKey = rangeBegin
         } else {
@@ -244,7 +390,7 @@ public struct TypedCoveringIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         }
 
         var endKey: FDB.Bytes
-        if endValues.isEmpty {
+        if effectiveEndValues.isEmpty {
             let (_, rangeEnd) = indexSubspace.range()
             endKey = rangeEnd
         } else {
@@ -275,6 +421,107 @@ public struct TypedCoveringIndexScanPlan<Record: Sendable>: TypedQueryPlan {
         )
 
         return AnyTypedRecordCursor(cursor)
+    }
+
+    // MARK: - Range Window Application Helpers
+
+    /// Apply window to begin values for range pre-filtering
+    ///
+    /// Takes the maximum of the original begin bound and the window's lowerBound
+    /// to ensure we don't scan records outside the intersection window.
+    ///
+    /// **SAFETY**: This function is only called when window is non-nil, which means
+    /// the filter passed isRangeCompatibleFilter() check in generateIntersectionPlan().
+    /// Therefore, the field is guaranteed to be Date-based, and inserting Date bounds is safe.
+    ///
+    /// - Parameters:
+    ///   - beginValues: Original begin values from the query
+    ///   - window: Intersection window from multiple Range filters
+    /// - Returns: Narrowed begin values
+    private func applyWindowToBeginValues(
+        beginValues: [any TupleElement],
+        window: Range<Date>
+    ) -> [any TupleElement] {
+        // If beginValues is empty (open lower bound), use window's lowerBound
+        // SAFETY: window is only set for Range-compatible filters (Date fields)
+        if beginValues.isEmpty {
+            return [window.lowerBound]
+        }
+
+        // If beginValues has a Date value, take the max of (original, window.lowerBound)
+        guard let firstValue = beginValues.first else {
+            return [window.lowerBound]
+        }
+
+        // Extract Date from the first value
+        let originalDate: Date
+        if let date = firstValue as? Date {
+            originalDate = date
+        } else if let double = firstValue as? Double {
+            // Handle case where Date might be encoded as Double
+            originalDate = Date(timeIntervalSince1970: double)
+        } else {
+            // If first value is not a Date, keep original beginValues
+            // (This handles non-Range indexes that might have window set incorrectly)
+            return beginValues
+        }
+
+        // Take the maximum (later date) to narrow the range
+        let effectiveBegin = max(originalDate, window.lowerBound)
+
+        // Reconstruct beginValues with the narrowed bound
+        var result = beginValues
+        result[0] = effectiveBegin
+        return result
+    }
+
+    /// Apply window to end values for range pre-filtering
+    ///
+    /// Takes the minimum of the original end bound and the window's upperBound
+    /// to ensure we don't scan records outside the intersection window.
+    ///
+    /// **SAFETY**: This function is only called when window is non-nil, which means
+    /// the filter passed isRangeCompatibleFilter() check in generateIntersectionPlan().
+    /// Therefore, the field is guaranteed to be Date-based, and inserting Date bounds is safe.
+    ///
+    /// - Parameters:
+    ///   - endValues: Original end values from the query
+    ///   - window: Intersection window from multiple Range filters
+    /// - Returns: Narrowed end values
+    private func applyWindowToEndValues(
+        endValues: [any TupleElement],
+        window: Range<Date>
+    ) -> [any TupleElement] {
+        // If endValues is empty (open upper bound), use window's upperBound
+        // SAFETY: window is only set for Range-compatible filters (Date fields)
+        if endValues.isEmpty {
+            return [window.upperBound]
+        }
+
+        // If endValues has a Date value, take the min of (original, window.upperBound)
+        guard let firstValue = endValues.first else {
+            return [window.upperBound]
+        }
+
+        // Extract Date from the first value
+        let originalDate: Date
+        if let date = firstValue as? Date {
+            originalDate = date
+        } else if let double = firstValue as? Double {
+            // Handle case where Date might be encoded as Double
+            originalDate = Date(timeIntervalSince1970: double)
+        } else {
+            // If first value is not a Date, keep original endValues
+            return endValues
+        }
+
+        // Take the minimum (earlier date) to narrow the range
+        let effectiveEnd = min(originalDate, window.upperBound)
+
+        // Reconstruct endValues with the narrowed bound
+        var result = endValues
+        result[0] = effectiveEnd
+        return result
     }
 }
 
@@ -502,5 +749,28 @@ public struct TypedInJoinPlan<Record: Sendable>: TypedQueryPlan {
         }
 
         return AnyTypedRecordCursor(ArrayCursor(sequence: stream))
+    }
+}
+
+// MARK: - Empty Plan
+
+/// Empty plan that returns no records
+///
+/// Used for optimization when query conditions guarantee zero results.
+/// For example, when Range intersection window is empty.
+public struct TypedEmptyPlan<Record: Sendable>: TypedQueryPlan {
+    public init() {}
+
+    public func execute(
+        subspace: Subspace,
+        recordAccess: any RecordAccess<Record>,
+        context: RecordContext,
+        snapshot: Bool
+    ) async throws -> AnyTypedRecordCursor<Record> {
+        // Return empty async throwing sequence
+        let emptyStream = AsyncThrowingStream<Record, Error> { continuation in
+            continuation.finish()
+        }
+        return AnyTypedRecordCursor(ArrayCursor(sequence: emptyStream))
     }
 }

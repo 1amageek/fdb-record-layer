@@ -42,6 +42,19 @@ struct RangeIndexEndToEndTests {
         var title: String
     }
 
+    /// Test model with multiple Range fields for multi-field intersection tests
+    @Recordable
+    struct MultiRangeEvent {
+        #PrimaryKey<MultiRangeEvent>([\.id])
+        #Index<MultiRangeEvent>([\.period])
+        #Index<MultiRangeEvent>([\.availability])
+
+        var id: Int64
+        var period: Range<Date>      // Event duration (e.g., Jan 1-15)
+        var availability: Range<Date> // Availability window (e.g., Morning 9am-12pm)
+        var title: String
+    }
+
     // /// Test model with PartialRangeFrom field (start only, unbounded end)
     // @Recordable
     // struct OpenEndEvent {
@@ -677,6 +690,105 @@ struct RangeIndexEndToEndTests {
             .execute()
 
         #expect(subs.count == 1, "ClosedRange with inclusive upper bound should overlap at boundary")
+    }
+
+    // MARK: - Multi-Field Range Intersection Tests
+
+    @Test("Disjoint ranges on one field with valid range on another field returns EmptyPlan")
+    func testDisjointRangesOnOneFieldWithValidRangeOnAnotherField() async throws {
+        let db = try FDBClient.openDatabase()
+        let testSubspace = Subspace(prefix: Array("test_disjoint_multi_field_\(UUID().uuidString)".utf8))
+        let schema = Schema([MultiRangeEvent.self])
+        let store = RecordStore<MultiRangeEvent>(
+            database: db,
+            subspace: testSubspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: db, subspace: testSubspace.subspace("stats"))
+        )
+
+        // Save test event
+        // Event: Jan 10-20, available 9am-12pm
+        let jan10 = Date(timeIntervalSince1970: 1704873600)  // 2024-01-10 00:00:00 UTC
+        let jan20 = Date(timeIntervalSince1970: 1705737600)  // 2024-01-20 00:00:00 UTC
+        let am9 = Date(timeIntervalSince1970: 1704873600 + 9 * 3600)   // 2024-01-10 09:00:00 UTC
+        let pm12 = Date(timeIntervalSince1970: 1704873600 + 12 * 3600) // 2024-01-10 12:00:00 UTC
+
+        let event = MultiRangeEvent(
+            id: 1,
+            period: jan10..<jan20,
+            availability: am9..<pm12,
+            title: "Test Event"
+        )
+        try await store.save(event)
+
+        // Query: period overlaps with DISJOINT ranges (Feb 1-10 AND Feb 15-20)
+        //        AND availability overlaps with VALID range (am9-pm12)
+        // Expected: EmptyPlan (0 results) because period conditions are contradictory
+        let feb1 = Date(timeIntervalSince1970: 1706745600)   // 2024-02-01 00:00:00 UTC
+        let feb10 = Date(timeIntervalSince1970: 1707523200)  // 2024-02-10 00:00:00 UTC
+        let feb15 = Date(timeIntervalSince1970: 1707955200)  // 2024-02-15 00:00:00 UTC
+        let feb20 = Date(timeIntervalSince1970: 1708387200)  // 2024-02-20 00:00:00 UTC
+
+        let results = try await store.query()
+            .overlaps(\.period, with: feb1..<feb10)      // Disjoint range 1
+            .overlaps(\.period, with: feb15..<feb20)     // Disjoint range 2 (no overlap with range 1)
+            .overlaps(\.availability, with: am9..<pm12)  // Valid range
+            .execute()
+
+        #expect(results.isEmpty, """
+            Query with disjoint ranges on 'period' field should return EmptyPlan (0 results), \
+            even though 'availability' field has a valid range. \
+            The contradictory 'period' conditions make the query logically unsatisfiable.
+            """)
+    }
+
+    @Test("Non-disjoint ranges on one field with valid range on another field returns results")
+    func testNonDisjointRangesOnOneFieldWithValidRangeOnAnotherField() async throws {
+        let db = try FDBClient.openDatabase()
+        let testSubspace = Subspace(prefix: Array("test_non_disjoint_multi_field_\(UUID().uuidString)".utf8))
+        let schema = Schema([MultiRangeEvent.self])
+        let store = RecordStore<MultiRangeEvent>(
+            database: db,
+            subspace: testSubspace,
+            schema: schema,
+            statisticsManager: StatisticsManager(database: db, subspace: testSubspace.subspace("stats"))
+        )
+
+        // Save test event
+        // Event: Jan 10-20, available 9am-12pm
+        let jan10 = Date(timeIntervalSince1970: 1704873600)  // 2024-01-10 00:00:00 UTC
+        let jan20 = Date(timeIntervalSince1970: 1705737600)  // 2024-01-20 00:00:00 UTC
+        let am9 = Date(timeIntervalSince1970: 1704873600 + 9 * 3600)   // 2024-01-10 09:00:00 UTC
+        let pm12 = Date(timeIntervalSince1970: 1704873600 + 12 * 3600) // 2024-01-10 12:00:00 UTC
+
+        let event = MultiRangeEvent(
+            id: 1,
+            period: jan10..<jan20,
+            availability: am9..<pm12,
+            title: "Test Event"
+        )
+        try await store.save(event)
+
+        // Query: period overlaps with OVERLAPPING ranges (Jan 5-15 AND Jan 12-25)
+        //        AND availability overlaps with VALID range (am9-pm12)
+        // Expected: 1 result (intersection of period ranges: Jan 12-15)
+        let jan5 = Date(timeIntervalSince1970: 1704441600)   // 2024-01-05 00:00:00 UTC
+        let jan12 = Date(timeIntervalSince1970: 1705046400)  // 2024-01-12 00:00:00 UTC
+        let jan15 = Date(timeIntervalSince1970: 1705305600)  // 2024-01-15 00:00:00 UTC
+        let jan25 = Date(timeIntervalSince1970: 1706169600)  // 2024-01-25 00:00:00 UTC
+
+        let results = try await store.query()
+            .overlaps(\.period, with: jan5..<jan15)      // Overlapping range 1 (Jan 5-15)
+            .overlaps(\.period, with: jan12..<jan25)     // Overlapping range 2 (Jan 12-25)
+            .overlaps(\.availability, with: am9..<pm12)  // Valid range
+            .execute()
+
+        #expect(results.count == 1, """
+            Query with overlapping ranges on 'period' field (intersection: Jan 12-15) \
+            should return 1 result. Event period (Jan 10-20) overlaps with intersection window.
+            """)
+        #expect(results.first?.id == 1)
+        #expect(results.first?.title == "Test Event")
     }
 
     // TODO: PartialRange tests will be added after macro is fixed
