@@ -6,7 +6,7 @@ import Foundation
 /// End-to-end tests for Range type index support
 ///
 /// Tests the complete flow from macro expansion to query execution for Range type fields.
-@Suite("Range Index End-to-End Tests")
+@Suite("Range Index End-to-End Tests", .tags(.e2e))
 struct RangeIndexEndToEndTests {
 
     // MARK: - Test Models

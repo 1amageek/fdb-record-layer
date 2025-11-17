@@ -88,7 +88,7 @@ enum LightweightSchemaV2: VersionedSchema {
 }
 
 /// Tests for Migration Manager with Store Registry
-@Suite("MigrationManager with StoreRegistry")
+@Suite("MigrationManager with StoreRegistry", .tags(.slow, .integration))
 struct MigrationManagerTests {
     let database: any DatabaseProtocol
     let subspace: Subspace

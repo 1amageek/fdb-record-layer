@@ -35,10 +35,6 @@ let package = Package(
             branch: "feature/directory-layer"
         ),
         .package(
-            url: "https://github.com/apple/swift-protobuf.git",
-            from: "1.33.3"
-        ),
-        .package(
             url: "https://github.com/apple/swift-collections.git",
             from: "1.3.0"
         ),
@@ -75,7 +71,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "SwiftPrometheus", package: "SwiftPrometheus"),
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Collections", package: "swift-collections"),
                 "FDBRecordCore",
                 "FDBRecordLayerMacros",

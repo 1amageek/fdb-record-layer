@@ -11,7 +11,7 @@ import Synchronization
 /// 2. Index statistics collection
 /// 3. Selectivity estimation with filters
 /// 4. Statistics persistence across store reopening
-@Suite("Metrics Integration Tests", .serialized)
+@Suite("Metrics Integration Tests", .serialized, .tags(.integration))
 struct MetricsIntegrationTests {
 
     // MARK: - Initialization

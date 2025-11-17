@@ -16,7 +16,7 @@ struct StaticDirRecord {
 }
 
 /// Test that @Recordable generates openDirectory() and store() methods when #Directory is present
-@Suite("Directory Integration Tests")
+@Suite("Directory Integration Tests", .tags(.integration))
 struct DirectoryIntegrationTests {
 
     // MARK: - Compilation Tests

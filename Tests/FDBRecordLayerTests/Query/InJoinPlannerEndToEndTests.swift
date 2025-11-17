@@ -26,7 +26,7 @@ struct E2EProduct {
 /// 2. Generates TypedInJoinPlan for IN queries
 /// 3. Builds correct remaining filters
 /// 4. Handles multiple IN predicates on the same field correctly
-@Suite("IN Join Planner End-to-End Tests")
+@Suite("IN Join Planner End-to-End Tests", .tags(.e2e, .slow))
 struct InJoinPlannerEndToEndTests {
 
     // MARK: - Helper Methods

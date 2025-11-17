@@ -110,6 +110,49 @@ public protocol Recordable: Sendable, Codable {
     /// - Parameter fieldName: Field name to query
     /// - Returns: EnumMetadata if field is a CaseIterable enum, nil otherwise
     static func enumMetadata(for fieldName: String) -> EnumMetadata?
+
+    /// Get PartialKeyPath for a spatial coordinate field
+    ///
+    /// Returns a type-erased PartialKeyPath to access spatial coordinate values without using Mirror reflection.
+    /// This method is typically implemented by @Recordable macro for types with @Spatial fields.
+    ///
+    /// **Purpose**: Eliminates Mirror-based reflection in SpatialIndexMaintainer
+    /// by providing compile-time type-safe KeyPath accessors via composition.
+    ///
+    /// **Default Implementation**:
+    /// Returns nil for all fields (no spatial coordinate metadata available).
+    /// @Recordable macro will generate a switch statement that returns composed PartialKeyPaths
+    /// for each @Spatial field's coordinates.
+    ///
+    /// **Example (macro-generated)**:
+    /// ```swift
+    /// // For: @Spatial(type: .geo(latitude: \.latitude, longitude: \.longitude, level: 17)) var location: Location
+    /// // Macro auto-detects field name "location" and field type "Location"
+    /// // Relative KeyPaths: \.latitude, \.longitude (from Location type)
+    /// // Composed absolute KeyPaths: \Self.location.latitude, \Self.location.longitude
+    ///
+    /// static func spatialKeyPath(field: String, coordinate: String) -> PartialKeyPath<Self>? {
+    ///     switch (field, coordinate) {
+    ///     case ("location", "latitude"): return \Self.location.latitude
+    ///     case ("location", "longitude"): return \Self.location.longitude
+    ///     default: return nil
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Usage in SpatialIndexMaintainer**:
+    /// ```swift
+    /// if let partialKeyPath = Record.spatialKeyPath(field: "location", coordinate: "latitude") {
+    ///     // Type erasure: cast Any to Double
+    ///     let value = record[keyPath: partialKeyPath] as! Double
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - field: Spatial field name (e.g., "location")
+    ///   - coordinate: Coordinate name (e.g., "latitude", "longitude", "x", "y", "z")
+    /// - Returns: PartialKeyPath to the coordinate value, or nil if not found
+    static func spatialKeyPath(field: String, coordinate: String) -> PartialKeyPath<Self>?
 }
 
 // MARK: - EnumMetadata
@@ -156,6 +199,19 @@ extension Recordable {
         }
 
         return description
+    }
+
+    /// Default implementation of spatial coordinate accessor
+    ///
+    /// Returns nil for all fields (no spatial coordinates available).
+    /// @Recordable macro will override this for types with @Spatial fields.
+    ///
+    /// - Parameters:
+    ///   - field: Spatial field name
+    ///   - coordinate: Coordinate name
+    /// - Returns: nil (no spatial metadata by default)
+    public static func spatialKeyPath(field: String, coordinate: String) -> PartialKeyPath<Self>? {
+        return nil
     }
 
     /// Convert PartialKeyPath to field name string

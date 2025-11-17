@@ -24,9 +24,15 @@ import FoundationDB
 /// - `.cartesian`: Morton Code (UInt64)
 /// - `.cartesian3D`: Morton Code (UInt64)
 ///
-/// **KeyPath Extraction**:
-/// This maintainer uses reflection (Mirror API) to extract coordinate values
-/// from nested structures using KeyPath strings stored in SpatialType.
+/// **KeyPath Extraction (Relative KeyPath Composition)**:
+/// This maintainer uses compile-time generated type-safe PartialKeyPath accessors
+/// via @dynamicMemberLookup subscript to extract coordinate values.
+/// No reflection (Mirror API) is used.
+///
+/// **Design**:
+/// - User specifies **relative KeyPaths** from field type (e.g., `\.latitude` from `Location` type)
+/// - @Recordable macro auto-detects field name and composes absolute KeyPaths
+/// - PartialKeyPath enables type erasure for generic coordinate extraction
 ///
 /// **Example**:
 /// ```swift
@@ -34,11 +40,38 @@ import FoundationDB
 /// struct Restaurant {
 ///     @Spatial(
 ///         type: .geo(
-///             latitude: \.address.location.latitude,
+///             latitude: \.latitude,      // Relative to Location type
+///             longitude: \.longitude,
+///             level: 17
+///         )
+///     )
+///     var location: Location  // Macro auto-detects "location"
+/// }
+///
+/// struct Location {
+///     var latitude: Double
+///     var longitude: Double
+/// }
+///
+/// // Macro generates:
+/// // public static func spatialKeyPath(field: "location", coordinate: "latitude") -> PartialKeyPath<Self>? {
+/// //     return \Self.location.latitude  // Composed from \Self.location + \.latitude
+/// // }
+///
+/// // Runtime (in extractCoordinates):
+/// let partialKeyPath = Record.spatialKeyPath(field: "location", coordinate: "latitude")
+/// let value = record[keyPath: partialKeyPath!] as! Double
+/// ```
+///
+/// **Legacy Example (deprecated)**:
+/// ```swift
+/// struct OldRestaurant {
+///     @Spatial(
+///         type: .geo(
+///             latitude: \.address.location.latitude,   // ❌ Redundant field path
 ///             longitude: \.address.location.longitude,
 ///             level: 17
-///         ),
-///         name: "by_location"
+///         )
 ///     )
 ///     var address: Address
 ///
@@ -52,7 +85,7 @@ import FoundationDB
 ///     }
 /// }
 /// ```
-public struct SpatialIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
+public struct SpatialIndexMaintainer<Record: Recordable>: GenericIndexMaintainer {
 
     // MARK: - Properties
 
@@ -133,11 +166,8 @@ public struct SpatialIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
         // Extract primary key using Recordable protocol (same pattern as ValueIndex)
         let primaryKeyTuple: Tuple
-        if let recordableRecord = record as? any Recordable {
-            primaryKeyTuple = recordableRecord.extractPrimaryKey()
-        } else {
-            throw RecordLayerError.internalError("Record does not conform to Recordable")
-        }
+        // Record: Recordable constraint guarantees conformance
+        primaryKeyTuple = record.extractPrimaryKey()
         let primaryKey = try Tuple.unpack(from: primaryKeyTuple.pack())
 
         // Build index key: <indexSubspace> + <indexName> + <spatialCode> + <primaryKey>
@@ -182,11 +212,8 @@ public struct SpatialIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
         // Extract primary key using Recordable protocol (same pattern as ValueIndex)
         let primaryKeyTuple: Tuple
-        if let recordableRecord = record as? any Recordable {
-            primaryKeyTuple = recordableRecord.extractPrimaryKey()
-        } else {
-            throw RecordLayerError.internalError("Record does not conform to Recordable")
-        }
+        // Record: Recordable constraint guarantees conformance
+        primaryKeyTuple = record.extractPrimaryKey()
         let primaryKey = try Tuple.unpack(from: primaryKeyTuple.pack())
 
         // Build index key
@@ -203,111 +230,104 @@ public struct SpatialIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
 
     // MARK: - Coordinate Extraction
 
-    /// Extract coordinate values from record using KeyPath reflection
+    /// Extract coordinate values from record using type-safe KeyPath accessors
     ///
     /// - Parameters:
     ///   - record: Record to extract from
-    ///   - spatialType: Spatial type with KeyPath strings
+    ///   - spatialType: Spatial type with coordinate metadata
     /// - Returns: Array of coordinate values (2 or 3 elements)
     ///
     /// **Process**:
-    /// 1. Parse KeyPath strings (e.g., "\.address.location.latitude")
-    /// 2. Use Mirror API to traverse nested structure
-    /// 3. Extract Double values for each coordinate
+    /// 1. Get field name from index.rootExpression
+    /// 2. Get coordinate names from spatialType (latitude/longitude or x/y/z)
+    /// 3. Use Recordable subscript to get PartialKeyPath for each coordinate
+    /// 4. Extract values using PartialKeyPath subscript and cast to Double
+    ///
+    /// **No Mirror Reflection**: Uses compile-time generated PartialKeyPath accessors via composition
+    ///
+    /// **Design**:
+    /// - User specifies relative KeyPaths in @Spatial (e.g., `\.latitude` from field type)
+    /// - @Recordable macro composes absolute KeyPaths (e.g., `\Self.location.latitude`)
+    /// - PartialKeyPath enables type erasure for generic coordinate extraction
+    ///
+    /// **Example**:
+    /// ```swift
+    /// @Spatial(type: .geo(latitude: \.latitude, longitude: \.longitude, level: 17))
+    /// var location: Location
+    ///
+    /// // Macro generates:
+    /// // public static func spatialKeyPath(field: "location", coordinate: "latitude") -> PartialKeyPath<Self>? {
+    /// //     return \Self.location.latitude
+    /// // }
+    ///
+    /// // Runtime:
+    /// let partialKeyPath = Record.spatialKeyPath(field: "location", coordinate: "latitude")
+    /// let value = record[keyPath: partialKeyPath!] as! Double
+    /// ```
     private func extractCoordinates(
         from record: Record,
         spatialType: SpatialType
     ) throws -> [Double] {
-        let keyPathStrings = spatialType.keyPathStrings
+        // Get field name from index rootExpression
+        guard let fieldExpression = index.rootExpression as? FieldKeyExpression else {
+            throw RecordLayerError.internalError(
+                "Spatial index '\(index.name)' rootExpression is not a FieldKeyExpression. " +
+                "Expected: FieldKeyExpression(fieldName: \"...\"), " +
+                "Got: \(type(of: index.rootExpression))"
+            )
+        }
 
+        let fieldName = fieldExpression.fieldName
+
+        // Get coordinate names based on spatial type
+        let coordinateNames = getCoordinateNames(for: spatialType)
+
+        // Note: Record is constrained to Recordable, so static subscript is available
         var coordinates: [Double] = []
 
-        for keyPathString in keyPathStrings {
-            // Parse KeyPath string: "\.field1.field2.field3" → ["field1", "field2", "field3"]
-            let components = parseKeyPath(keyPathString)
-
-            // Extract value using reflection
-            let value = try extractValue(from: record, components: components)
-
-            // Convert to Double
-            guard let doubleValue = convertToDouble(value) else {
+        for coordinateName in coordinateNames {
+            // Get PartialKeyPath using static method (Record: Recordable guarantees this exists)
+            guard let partialKeyPath = Record.spatialKeyPath(field: fieldName, coordinate: coordinateName) else {
                 throw RecordLayerError.invalidArgument(
-                    "Spatial coordinate at KeyPath '\(keyPathString)' is not a numeric type (got \(type(of: value))). " +
-                    "Expected Double, Float, Int, or Int64."
+                    "Spatial coordinate accessor not found for field '\(fieldName)', coordinate '\(coordinateName)'. " +
+                    "Ensure @Spatial attribute matches record structure:\n" +
+                    "Expected: @Spatial(type: .\(spatialType), ...)\n" +
+                    "Available coordinates: \(coordinateNames.joined(separator: ", "))"
                 )
             }
 
-            coordinates.append(doubleValue)
+            // Extract value using PartialKeyPath subscript (returns Any due to type erasure)
+            let anyValue = record[keyPath: partialKeyPath]
+
+            // Cast to Double (safe: @Spatial macro validates coordinate types)
+            guard let value = anyValue as? Double else {
+                throw RecordLayerError.internalError(
+                    "Spatial coordinate '\(coordinateName)' for field '\(fieldName)' is not a Double. " +
+                    "Got type: \(type(of: anyValue)). " +
+                    "Ensure @Spatial coordinates point to Double properties."
+                )
+            }
+
+            coordinates.append(value)
         }
 
         return coordinates
     }
 
-    /// Parse KeyPath string into field name components
+    /// Get coordinate names for a spatial type
     ///
-    /// - Parameter keyPath: KeyPath string (e.g., "\.address.location.latitude")
-    /// - Returns: Array of field names ["address", "location", "latitude"]
-    private func parseKeyPath(_ keyPath: String) -> [String] {
-        // Remove leading "\." if present
-        var cleaned = keyPath
-        if cleaned.hasPrefix("\\.") {
-            cleaned = String(cleaned.dropFirst(2))
-        } else if cleaned.hasPrefix(".") {
-            cleaned = String(cleaned.dropFirst(1))
-        }
-
-        // Split by "."
-        return cleaned.split(separator: ".").map { String($0) }
-    }
-
-    /// Extract value from record using field name components
-    ///
-    /// - Parameters:
-    ///   - value: Current value (starts with record)
-    ///   - components: Remaining field names to traverse
-    /// - Returns: Final value at the KeyPath
-    private func extractValue(from value: Any, components: [String]) throws -> Any {
-        guard !components.isEmpty else {
-            return value
-        }
-
-        let fieldName = components[0]
-        let remainingComponents = Array(components.dropFirst())
-
-        // Use Mirror to find the field
-        let mirror = Mirror(reflecting: value)
-
-        for child in mirror.children {
-            if child.label == fieldName {
-                // Recursive traversal
-                return try extractValue(from: child.value, components: remainingComponents)
-            }
-        }
-
-        throw RecordLayerError.invalidArgument(
-            "Field '\(fieldName)' not found in \(type(of: value)). " +
-            "Check that KeyPath in @Spatial matches the actual record structure."
-        )
-    }
-
-    /// Convert Any value to Double
-    ///
-    /// - Parameter value: Value to convert (Double, Float, Int, Int64, etc.)
-    /// - Returns: Double value, or nil if conversion fails
-    private func convertToDouble(_ value: Any) -> Double? {
-        switch value {
-        case let d as Double:
-            return d
-        case let f as Float:
-            return Double(f)
-        case let i as Int:
-            return Double(i)
-        case let i64 as Int64:
-            return Double(i64)
-        case let i32 as Int32:
-            return Double(i32)
-        default:
-            return nil
+    /// - Parameter spatialType: Spatial type (.geo, .geo3D, .cartesian, .cartesian3D)
+    /// - Returns: Array of coordinate names in order
+    private func getCoordinateNames(for spatialType: SpatialType) -> [String] {
+        switch spatialType {
+        case .geo:
+            return ["latitude", "longitude"]
+        case .geo3D:
+            return ["latitude", "longitude", "altitude"]
+        case .cartesian:
+            return ["x", "y"]
+        case .cartesian3D:
+            return ["x", "y", "z"]
         }
     }
 

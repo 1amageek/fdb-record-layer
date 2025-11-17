@@ -66,12 +66,23 @@ public enum MortonCode {
 
     /// Decode a Morton code into 2D coordinates
     ///
-    /// - Parameter code: Morton code
+    /// - Parameters:
+    ///   - code: Morton code
+    ///   - level: Precision level used during encoding (0-30, default 18)
     /// - Returns: Tuple of (x, y) coordinates in [0, 1]
-    public static func decode2D(_ code: UInt64) -> (x: Double, y: Double) {
-        let (xi, yi) = deinterleave2D(code)
-        let x = Double(xi) / Double(UInt32.max)
-        let y = Double(yi) / Double(UInt32.max)
+    public static func decode2D(_ code: UInt64, level: Int = 18) -> (x: Double, y: Double) {
+        precondition(level >= 0 && level <= 30, "level must be 0-30")
+
+        // Undo the shift applied during encoding
+        let shift = (30 - level) * 2
+        let unshiftedCode = code >> shift
+
+        let (xi, yi) = deinterleave2D(unshiftedCode)
+
+        // Use the same maxValue as encoding
+        let maxValue = Double((1 << level) - 1)
+        let x = Double(xi) / maxValue
+        let y = Double(yi) / maxValue
         return (x, y)
     }
 
@@ -209,11 +220,21 @@ public enum MortonCode {
 
     /// Decode a Morton code into 3D coordinates
     ///
-    /// - Parameter code: Morton code
+    /// - Parameters:
+    ///   - code: Morton code
+    ///   - level: Precision level used during encoding (0-20, default 16)
     /// - Returns: Tuple of (x, y, z) coordinates in [0, 1]
-    public static func decode3D(_ code: UInt64) -> (x: Double, y: Double, z: Double) {
-        let (xi, yi, zi) = deinterleave3D(code)
-        let maxValue: Double = Double((1 << 21) - 1)
+    public static func decode3D(_ code: UInt64, level: Int = 16) -> (x: Double, y: Double, z: Double) {
+        precondition(level >= 0 && level <= 20, "level must be 0-20")
+
+        // Undo the shift applied during encoding
+        let shift = (20 - level) * 3
+        let unshiftedCode = code >> shift
+
+        let (xi, yi, zi) = deinterleave3D(unshiftedCode)
+
+        // Use the same maxValue as encoding
+        let maxValue = Double((1 << level) - 1)
         let x = Double(xi) / maxValue
         let y = Double(yi) / maxValue
         let z = Double(zi) / maxValue

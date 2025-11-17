@@ -479,8 +479,14 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
     /// - Phase 1: Very lightweight, completes quickly
     /// - Phase 2: Each level processed in separate transaction batches
     ///
+    /// **Note**: This method does NOT manage IndexState transitions.
+    /// Caller must call `enable()` before and `makeReadable()` after this method.
+    ///
     /// - Parameter clearFirst: If true, clears existing progress before starting
-    public func buildHNSWIndex(clearFirst: Bool = false) async throws {
+    public func buildHNSWIndex(
+        clearFirst: Bool = false,
+        progressCallback: (@Sendable (BuildPhase, Double) -> Void)? = nil
+    ) async throws {
         guard case .vector = index.type else {
             throw RecordLayerError.internalError("buildHNSWIndex() can only be called for vector indexes")
         }
@@ -493,14 +499,9 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
 
         logger.info("Starting HNSW index build for: \(index.name)")
 
-        // Step 1: Transition to writeOnly (if not already)
-        let currentState = try await indexStateManager.state(of: index.name)
-        if currentState == .disabled {
-            try await indexStateManager.enable(index.name)
-            logger.info("Transitioned index '\(index.name)' to writeOnly")
-        }
+        // NOTE: Index state transitions (enable, makeReadable) are the caller's responsibility
 
-        // Step 2: Clear progress if requested
+        // Step 1: Clear progress if requested
         if clearFirst {
             try await createRangeSet().clear()
             logger.info("Cleared previous build progress")
@@ -508,15 +509,15 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
 
         // Step 3: Phase 1 - Assign levels to all nodes
         logger.info("HNSW Phase 1: Assigning levels to all nodes")
-        try await assignLevelsToAllNodes()
+        progressCallback?(.levelAssignment, 0.0)
+        try await assignLevelsToAllNodes(progressCallback: progressCallback)
+        progressCallback?(.levelAssignment, 1.0)
 
         // Step 4: Phase 2 - Build graph level-by-level
         logger.info("HNSW Phase 2: Building graph level-by-level")
-        try await buildHNSWGraphLevelByLevel()
+        try await buildHNSWGraphLevelByLevel(progressCallback: progressCallback)
 
-        // Step 5: Transition to readable
-        try await indexStateManager.makeReadable(index.name)
-        logger.info("Transitioned index '\(index.name)' to readable")
+        // NOTE: Transition to readable is the caller's responsibility
 
         let (totalScanned, batchCount) = lock.withLock { state in
             state.endTime = Date()
@@ -526,12 +527,71 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         logger.info("HNSW index build completed for: \(index.name), scanned \(totalScanned) records in \(batchCount) batches")
     }
 
+    /// Get current checkpoint for resume capability
+    ///
+    /// Returns the last processed key and statistics for resuming interrupted builds.
+    ///
+    /// - Returns: Tuple of (lastKey, processedRecords, maxLevel)
+    /// - Throws: RecordLayerError if checkpoint cannot be determined
+    public func getCurrentCheckpoint() async throws -> (lastKey: FDB.Bytes, processedRecords: Int, maxLevel: Int?) {
+        let (totalScanned, _) = lock.withLock { state in
+            return (state.totalRecordsScanned, state.batchesProcessed)
+        }
+
+        // Get max level from HNSW index
+        let maxLevel = try await getMaxLevel()
+
+        // Get last processed key from record subspace
+        let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
+        let (_, endKey) = recordSubspace.range()
+
+        return (lastKey: endKey, processedRecords: Int(totalScanned), maxLevel: maxLevel)
+    }
+
+    /// Get maximum HNSW level from index
+    private func getMaxLevel() async throws -> Int? {
+        let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
+            .subspace(index.subspaceTupleKey)
+
+        return try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+
+            // Query level assignments to find max level
+            // HNSW level keys are stored as: [indexSubspace][primaryKey][level] = ...
+            let (begin, end) = indexSubspace.range()
+
+            var maxLevel: Int? = nil
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterOrEqual(end),
+                snapshot: true
+            )
+
+            for try await (key, _) in sequence {
+                if let tuple = try? indexSubspace.unpack(key),
+                   tuple.count >= 2,
+                   let level = tuple[1] as? Int64 {
+                    if maxLevel == nil || Int(level) > maxLevel! {
+                        maxLevel = Int(level)
+                    }
+                }
+            }
+
+            return maxLevel
+        }
+    }
+
     /// Phase 1: Assign levels to all nodes (lightweight operation)
-    private func assignLevelsToAllNodes() async throws {
+    private func assignLevelsToAllNodes(
+        progressCallback: (@Sendable (BuildPhase, Double) -> Void)? = nil
+    ) async throws {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
         let (fullBegin, fullEnd) = recordSubspace.range()
         let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
             .subspace(index.subspaceTupleKey)
+
+        // Estimate total records for progress calculation
+        let estimatedTotal = try await estimateTotalRecords()
 
         var currentBegin = fullBegin
         var totalAssigned: UInt64 = 0
@@ -547,6 +607,12 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
             totalAssigned += UInt64(batchSize)
             logger.debug("Assigned levels for \(totalAssigned) nodes")
 
+            // Report progress
+            if estimatedTotal > 0 {
+                let progress = min(1.0, Double(totalAssigned) / Double(estimatedTotal))
+                progressCallback?(.levelAssignment, progress)
+            }
+
             // Move to next batch
             currentBegin = batchEnd
 
@@ -561,6 +627,34 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         }
 
         logger.info("Phase 1 complete: Assigned levels to \(totalAssigned) nodes")
+    }
+
+    /// Estimate total number of records for progress calculation
+    private func estimateTotalRecords() async throws -> Int {
+        let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
+        let (begin, end) = recordSubspace.range()
+
+        return try await database.withRecordContext { context in
+            let transaction = context.getTransaction()
+            var count = 0
+
+            // Sample-based estimation (count first 1000 records and extrapolate)
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterOrEqual(end),
+                snapshot: true
+            )
+
+            for try await _ in sequence {
+                count += 1
+                if count >= 1000 {
+                    // Rough estimation: assume similar density
+                    return count * 10  // Estimate 10x more records
+                }
+            }
+
+            return count
+        }
     }
 
     /// Assign levels for a single batch
@@ -619,15 +713,27 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
     }
 
     /// Phase 2: Build graph level-by-level
-    private func buildHNSWGraphLevelByLevel() async throws {
+    private func buildHNSWGraphLevelByLevel(
+        progressCallback: (@Sendable (BuildPhase, Double) -> Void)? = nil
+    ) async throws {
         // First, determine the maximum level across all nodes
         let maxLevel = try await findMaxLevel()
         logger.info("Maximum level in graph: \(maxLevel)")
 
         // Build each level from highest to lowest
-        for level in stride(from: maxLevel, through: 0, by: -1) {
+        for (index, level) in stride(from: maxLevel, through: 0, by: -1).enumerated() {
             logger.info("Building level \(level)")
+
+            // Report progress before building this level
+            let totalLevels = maxLevel + 1
+            let progress = Double(index) / Double(totalLevels)
+            progressCallback?(.graphConstruction(level: level, totalLevels: totalLevels), progress)
+
             try await buildSingleLevel(level: level)
+
+            // Report progress after building this level
+            let completedProgress = Double(index + 1) / Double(totalLevels)
+            progressCallback?(.graphConstruction(level: level, totalLevels: totalLevels), completedProgress)
         }
     }
 

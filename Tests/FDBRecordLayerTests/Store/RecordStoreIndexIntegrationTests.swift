@@ -12,7 +12,7 @@ import Synchronization
 /// 3. Multiple indexes maintained simultaneously
 /// 4. Index state transitions (disabled → writeOnly → readable)
 /// 5. Direct index entry verification
-@Suite("RecordStore Index Integration Tests", .serialized)
+@Suite("RecordStore Index Integration Tests", .serialized, .tags(.integration))
 struct RecordStoreIndexIntegrationTests {
 
     // MARK: - Initialization

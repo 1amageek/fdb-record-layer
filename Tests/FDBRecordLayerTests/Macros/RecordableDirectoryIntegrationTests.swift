@@ -91,7 +91,7 @@ struct MultiTenantUser {
 
 // MARK: - Integration Tests
 
-@Suite("@Recordable + #Directory Integration Tests")
+@Suite("@Recordable + #Directory Integration Tests", .tags(.integration))
 struct RecordableDirectoryIntegrationTests {
 
     init() {

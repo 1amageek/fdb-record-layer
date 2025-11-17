@@ -11,7 +11,7 @@ import Foundation
 /// 3. RecordStore creates physical indexes in FDB
 /// 4. Planner uses these indexes to generate optimal query plans
 /// 5. Query execution returns correct results
-@Suite("Macro → Schema → Planner E2E Tests")
+@Suite("Macro → Schema → Planner E2E Tests", .tags(.e2e, .integration))
 struct MacroSchemaPlannerE2ETests {
 
     // MARK: - Test Models

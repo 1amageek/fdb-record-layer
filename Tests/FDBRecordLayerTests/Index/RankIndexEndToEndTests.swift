@@ -10,7 +10,7 @@ import Foundation
 /// 2. RankIndexAPI provides correct rank queries
 /// 3. O(log n) performance with Range Tree algorithm
 /// 4. Leaderboard scenarios (top players, rank lookup, etc.)
-@Suite("RANK Index End-to-End Tests")
+@Suite("RANK Index End-to-End Tests", .tags(.slow, .e2e))
 struct RankIndexEndToEndTests {
 
     // MARK: - Test Record Types

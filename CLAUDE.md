@@ -5,6 +5,9 @@
 
 ## 目次
 
+### 開発ガイド
+- テスト実行方法
+
 ### Part 0: モジュール分離（SSOT）
 - アーキテクチャ概要
 - FDBRecordCore vs FDBRecordLayer
@@ -61,6 +64,166 @@
 - OnlineIndexer統合（バッチ構築）
 - 安全機構（allowInlineIndexing）
 - パフォーマンス特性（O(log n) vs O(n)）
+
+---
+
+## 開発ガイド
+
+### テスト実行方法
+
+このプロジェクトでは、Swift Testingフレームワークを使用してテストを実装しています。テストは実行時間や特性によってタグ付けされており、状況に応じて実行するテストを選択できます。
+
+#### テストタグの種類
+
+テストは以下のタグで分類されています（`Tests/FDBRecordLayerTests/TestTags.swift`）：
+
+| タグ | 説明 | 用途 |
+|------|------|------|
+| **`.slow`** | 実行に時間がかかるテスト（5秒以上） | 大量データ操作、1000件以上のレコード挿入 |
+| **`.integration`** | 複数コンポーネントの統合テスト | RecordStore、IndexManager、QueryPlannerの連携テスト |
+| **`.e2e`** | エンドツーエンドテスト | マクロ→スキーマ→プランナー→実行の全体フロー |
+| **`.unit`** | 高速なユニットテスト（1秒未満） | 単一クラス・関数のテスト |
+
+#### テスト実行コマンド
+
+**基本的な実行**:
+
+```bash
+# 全てのテストを実行
+swift test
+
+# 特定のテストスイートを実行
+swift test --filter "RankIndexEndToEndTests"
+
+# 特定のテストケースを実行
+swift test --filter "testInsertPlayersAndVerifyIndex"
+```
+
+**タグを使った実行**:
+
+```bash
+# 高速テストのみ実行（遅いテストを除外）- 開発中推奨
+swift test --filter-out "\.slow"
+
+# 統合テストのみ実行
+swift test --filter "\.integration"
+
+# E2Eテストのみ実行
+swift test --filter "\.e2e"
+
+# 遅いテストと統合テストを除外（最速）
+swift test --filter-out "\.slow" --filter-out "\.integration"
+```
+
+**並列実行とシリアル実行**:
+
+```bash
+# 並列実行（デフォルト、高速）
+swift test --parallel
+
+# シリアル実行（デバッグ時）
+swift test --no-parallel
+
+# ワーカー数を指定
+swift test --num-workers 4
+```
+
+**詳細な出力**:
+
+```bash
+# 詳細なログを表示
+swift test --verbose
+
+# 失敗したテストのみ表示
+swift test --quiet
+```
+
+#### タグ付けされた主要テストスイート
+
+**`.slow`タグ（時間がかかるテスト）**:
+- `RankIndexEndToEndTests` - 1000件のプレイヤーレコード挿入、ランキング操作
+- `OnlineIndexScrubberTests` - 大量データのスキャンと修復
+- `MigrationManagerTests` - スキーママイグレーション操作
+- `InJoinPlannerEndToEndTests` - IN句での大量データJoin
+- `RecordStoreEdgeCaseTests` - 1000件のエッジケーステスト
+
+**`.integration`タグ（統合テスト）**:
+- `RecordStoreIndexIntegrationTests` - RecordStoreとIndexManagerの統合
+- `DirectoryIntegrationTests` - Directory Layerとマクロの統合
+- `MetricsIntegrationTests` - 統計情報収集の統合テスト
+- `PartialRangeIntegrationTests` - Range型のシリアライズとインデックス統合
+
+**`.e2e`タグ（E2Eテスト）**:
+- `MacroSchemaPlannerE2ETests` - マクロ→スキーマ→プランナー→実行の全体フロー
+- `RankIndexEndToEndTests` - RANKインデックスの完全な動作確認
+- `InJoinPlannerEndToEndTests` - IN Join最適化の完全な動作確認
+- `RangeIndexEndToEndTests` - Range型インデックスの完全な動作確認
+
+#### 推奨ワークフロー
+
+**開発中（頻繁に実行）**:
+```bash
+# 高速テストのみ実行（数秒で完了）
+swift test --filter-out "\.slow" --filter-out "\.integration"
+```
+
+**コミット前（ローカル検証）**:
+```bash
+# 統合テストを含めて実行（1-2分）
+swift test --filter-out "\.slow"
+```
+
+**CI環境（完全な検証）**:
+```bash
+# 全てのテストを実行（5-10分）
+swift test
+```
+
+**特定機能のデバッグ**:
+```bash
+# 特定のタグとフィルタを組み合わせ
+swift test --filter "RankIndex" --verbose
+```
+
+#### テストの書き方
+
+新しいテストを追加する場合は、適切なタグを付けてください：
+
+```swift
+import Testing
+
+// 高速なユニットテスト
+@Suite("My Fast Tests")
+struct MyFastTests {
+    @Test func testSomething() { ... }
+}
+
+// 統合テスト
+@Suite("My Integration Tests", .tags(.integration))
+struct MyIntegrationTests {
+    @Test func testIntegration() { ... }
+}
+
+// 遅いテスト（大量データ操作）
+@Suite("My Slow Tests", .tags(.slow))
+struct MySlowTests {
+    @Test func testWithLargeData() {
+        for i in 1...1000 { ... }
+    }
+}
+
+// E2Eテスト
+@Suite("My E2E Tests", .tags(.e2e, .integration))
+struct MyE2ETests {
+    @Test func testEndToEnd() { ... }
+}
+```
+
+**タグ付けの基準**:
+- **`.slow`**: ループで100件以上のレコードを操作、または実行時間が5秒以上
+- **`.integration`**: 2つ以上のコンポーネント（RecordStore、IndexManager、QueryPlannerなど）を組み合わせる
+- **`.e2e`**: マクロ生成→スキーマ→プランナー→実行まで、システム全体のフローをテスト
+- タグなし: 単一クラス・関数の高速なユニットテスト
 
 ---
 

@@ -13,7 +13,7 @@ import Synchronization
 /// 4. Boundary values (max/min Int64)
 /// 5. Repeated operations (idempotency)
 /// 6. Schema edge cases
-@Suite("RecordStore Edge Case Tests", .serialized)
+@Suite("RecordStore Edge Case Tests", .serialized, .tags(.slow))
 struct RecordStoreEdgeCaseTests {
 
     // MARK: - Initialization

@@ -5,6 +5,44 @@ import SwiftSyntaxMacros
 import SwiftDiagnostics
 import Foundation
 
+/// Information for generating type-safe spatial coordinate accessors
+///
+/// **Purpose**: Eliminates Mirror-based reflection in SpatialIndexMaintainer
+/// by generating compile-time KeyPath accessors for each @Spatial property.
+///
+/// **Example**:
+/// ```swift
+/// @Spatial(type: .geo(latitude: \.lat, longitude: \.lon))
+/// var location: Location
+/// ```
+/// Generates:
+/// ```swift
+/// static subscript(spatialField field: String, coordinate: String) -> KeyPath<Self, Double>? {
+///     switch (field, coordinate) {
+///     case ("location", "latitude"): return \.location.lat
+///     case ("location", "longitude"): return \.location.lon
+///     default: return nil
+///     }
+/// }
+/// ```
+fileprivate struct SpatialAccessorInfo {
+    /// Field name with @Spatial attribute (e.g., "location")
+    let fieldName: String
+
+    /// Field type name (e.g., "Location")
+    let fieldType: String
+
+    /// Coordinate names in order (e.g., ["latitude", "longitude"] or ["x", "y", "z"])
+    let coordinateNames: [String]
+
+    /// Relative KeyPath strings from field type (e.g., ["\.latitude", "\.longitude"])
+    /// These will be composed with \Self.fieldName to create absolute KeyPaths
+    let relativeKeyPathStrings: [String]
+
+    /// Spatial type for validation
+    let spatialType: String  // ".geo", ".cartesian", etc.
+}
+
 /// Implementation of the @Recordable macro
 ///
 /// This macro generates:
@@ -12,6 +50,7 @@ import Foundation
 /// - Static metadata properties (recordName, primaryKeyFields, allFields)
 /// - Protobuf serialization/deserialization methods
 /// - Field extraction methods
+/// - **Type-safe spatial coordinate accessors** (eliminates Mirror usage)
 public struct RecordableMacro: MemberMacro, ExtensionMacro {
 
     // MARK: - MemberMacro
@@ -132,7 +171,7 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         let attributeUniques = extractUniqueFromAttributes(from: members, typeName: structName)
 
         // Extract vector/spatial indexes from @Vector/@Spatial attributes
-        let vectorSpatialIndexes = extractVectorSpatialIndexes(from: members, typeName: structName)
+        let (vectorSpatialIndexes, spatialAccessors) = extractVectorSpatialIndexes(from: members, typeName: structName)
 
         // Merge all indexes
         let allIndexes = indexInfo + attributeUniques + vectorSpatialIndexes
@@ -151,7 +190,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             primaryKeyFields: primaryKeyFields,
             directoryMetadata: directoryMetadata,
             indexInfo: indexInfo,
-            simpleTypeName: structName  // Pass simple name for recordType
+            simpleTypeName: structName,  // Pass simple name for recordType
+            spatialAccessors: spatialAccessors  // Type-safe spatial coordinate accessors
         )
 
         return [recordableExtension]
@@ -705,8 +745,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
     private static func extractVectorSpatialIndexes(
         from members: MemberBlockItemListSyntax,
         typeName: String
-    ) -> [IndexInfo] {
+    ) -> (indexes: [IndexInfo], spatialAccessors: [SpatialAccessorInfo]) {
         var indexes: [IndexInfo] = []
+        var spatialAccessors: [SpatialAccessorInfo] = []
 
         for member in members {
             guard let varDecl = member.decl.as(VariableDeclSyntax.self),
@@ -716,6 +757,9 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
             }
 
             let fieldName = identifier.identifier.text
+
+            // Extract field type name from type annotation
+            let fieldType = binding.typeAnnotation?.type.trimmedDescription ?? "Unknown"
 
             // Check for @Vector attribute
             for attr in varDecl.attributes {
@@ -853,12 +897,42 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                             scope: .partition,
                             rangeMetadata: nil
                         ))
+
+                        // Create SpatialAccessorInfo for type-safe coordinate extraction
+                        let coordinateNames = extractCoordinateNames(from: spatialType)
+                        if !coordinateNames.isEmpty {
+                            spatialAccessors.append(SpatialAccessorInfo(
+                                fieldName: fieldName,
+                                fieldType: fieldType,
+                                coordinateNames: coordinateNames,
+                                relativeKeyPathStrings: keyPaths,
+                                spatialType: spatialType
+                            ))
+                        }
                     }
                 }
             }
         }
 
-        return indexes
+        return (indexes: indexes, spatialAccessors: spatialAccessors)
+    }
+
+    /// Extract coordinate names from spatial type string
+    ///
+    /// - Parameter spatialType: Spatial type string (e.g., ".geo", ".cartesian3D")
+    /// - Returns: Array of coordinate names in order
+    private static func extractCoordinateNames(from spatialType: String) -> [String] {
+        if spatialType.hasPrefix(".geo3D") {
+            return ["latitude", "longitude", "altitude"]
+        } else if spatialType.hasPrefix(".geo") {
+            return ["latitude", "longitude"]
+        } else if spatialType.hasPrefix(".cartesian3D") {
+            return ["x", "y", "z"]
+        } else if spatialType.hasPrefix(".cartesian") {
+            return ["x", "y"]
+        } else {
+            return []
+        }
     }
 
     /// Extract KeyPath string representation from KeyPathExprSyntax
@@ -1525,6 +1599,107 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
         return methods.joined(separator: "\n")
     }
 
+    /// Generate static method implementation for spatial coordinate accessors
+    ///
+    /// **Purpose**: Eliminates Mirror-based reflection in SpatialIndexMaintainer
+    /// by providing compile-time type-safe PartialKeyPath accessors via KeyPath composition.
+    ///
+    /// **Design**: Relative KeyPath Composition
+    /// - User specifies relative KeyPaths from field type (e.g., `\.latitude` from `Location` type)
+    /// - Macro auto-detects field name (e.g., "location") and field type (e.g., "Location")
+    /// - Macro composes absolute KeyPath: `\Self.location` + `\.latitude` = `\Self.location.latitude`
+    ///
+    /// **Generated code example**:
+    /// ```swift
+    /// // For: @Spatial(type: .geo(latitude: \.latitude, longitude: \.longitude, level: 17)) var location: Location
+    /// // Macro auto-detected: fieldName="location", fieldType="Location"
+    /// // Relative KeyPaths: \.latitude, \.longitude (from Location type)
+    /// // Composed absolute KeyPaths: \Self.location.latitude, \Self.location.longitude
+    ///
+    /// public static func spatialKeyPath(field: String, coordinate: String) -> PartialKeyPath<Self>? {
+    ///     switch (field, coordinate) {
+    ///     case ("location", "latitude"): return \Self.location.latitude
+    ///     case ("location", "longitude"): return \Self.location.longitude
+    ///     default: return nil
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Usage in SpatialIndexMaintainer**:
+    /// ```swift
+    /// if let partialKeyPath = Record.spatialKeyPath(field: "location", coordinate: "latitude") {
+    ///     let value = record[keyPath: partialKeyPath] as! Double
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - typeName: Fully qualified type name for KeyPath type (e.g., "MyModule.MyRecord")
+    ///   - spatialAccessors: Collected spatial accessor metadata from @Spatial attributes
+    /// - Returns: String containing static subscript implementation
+    private static func generateSpatialAccessorProperties(
+        typeName: String,
+        spatialAccessors: [SpatialAccessorInfo]
+    ) -> String {
+        guard !spatialAccessors.isEmpty else {
+            return ""
+        }
+
+        var cases: [String] = []
+
+        for accessor in spatialAccessors {
+            // Generate case for each coordinate
+            for (index, coordinateName) in accessor.coordinateNames.enumerated() {
+                guard index < accessor.relativeKeyPathStrings.count else { continue }
+
+                let relativeKeyPath = accessor.relativeKeyPathStrings[index]
+
+                // Compose absolute KeyPath: \Self.fieldName + relative KeyPath
+                // Example: \Self.location + \.latitude = \Self.location.latitude
+                let absoluteKeyPath = composeAbsoluteKeyPath(
+                    fieldName: accessor.fieldName,
+                    relativeKeyPath: relativeKeyPath
+                )
+
+                // Generate switch case: case ("fieldName", "coordinateName"): return \Self.field.coordinate
+                let caseClause = """
+                case ("\(accessor.fieldName)", "\(coordinateName)"): return \(absoluteKeyPath)
+"""
+                cases.append(caseClause)
+            }
+        }
+
+        // Generate complete static method implementation
+        return """
+
+
+            public static func spatialKeyPath(field: String, coordinate: String) -> PartialKeyPath<Self>? {
+                switch (field, coordinate) {
+                \(cases.joined(separator: "\n                "))
+                default: return nil
+                }
+            }
+"""
+    }
+
+    /// Compose absolute KeyPath from field name and relative KeyPath
+    ///
+    /// **Examples**:
+    /// - `composeAbsoluteKeyPath("location", "\.latitude")` → `\Self.location.latitude`
+    /// - `composeAbsoluteKeyPath("address", "\.location.latitude")` → `\Self.address.location.latitude`
+    ///
+    /// - Parameters:
+    ///   - fieldName: Field name (e.g., "location")
+    ///   - relativeKeyPath: Relative KeyPath string from field type (e.g., "\.latitude")
+    /// - Returns: Absolute KeyPath string (e.g., "\Self.location.latitude")
+    private static func composeAbsoluteKeyPath(fieldName: String, relativeKeyPath: String) -> String {
+        // Remove leading "\." from relative KeyPath
+        let relativeWithoutPrefix = relativeKeyPath.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "^\\\\\\.", with: "", options: .regularExpression)
+
+        // Compose: \Self.fieldName.relativePath
+        return "\\Self.\(fieldName).\(relativeWithoutPrefix)"
+    }
+
     /// Generate extractRangeBoundary method for Range type fields
     private static func generateRangeBoundaryMethod(
         typeName: String,
@@ -1634,7 +1809,8 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
         primaryKeyFields: [FieldInfo],
         directoryMetadata: DirectoryMetadata?,
         indexInfo: [IndexInfo],
-        simpleTypeName: String  // Simple name for recordType identifier
+        simpleTypeName: String,  // Simple name for recordType identifier
+        spatialAccessors: [SpatialAccessorInfo]  // Type-safe spatial coordinate accessors
     ) throws -> ExtensionDeclSyntax {
 
         let fieldNames = fields.map { "\"\($0.name)\"" }.joined(separator: ", ")
@@ -1671,6 +1847,12 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
         // Note: RecordableExtensions.swift has NO default implementation, so this is required
         let rangeBoundaryMethod = generateRangeBoundaryMethod(typeName: typeName, fields: fields)
 
+        // Generate spatial coordinate accessor KeyPaths (type-safe, no Mirror)
+        let spatialAccessorProperties = generateSpatialAccessorProperties(
+            typeName: typeName,
+            spatialAccessors: spatialAccessors
+        )
+
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
             public static var recordName: String { "\(raw: recordName)" }
@@ -1680,7 +1862,7 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
             public static var allFields: [String] { [\(raw: fieldNames)] }
 
             public static var supportsReconstruction: Bool { \(raw: supportsReconstructionValue) }
-            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)\(raw: enumMetadataMethod)
+            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)\(raw: enumMetadataMethod)\(raw: spatialAccessorProperties)
 
             public static func fieldNumber(for fieldName: String) -> Int? {
                 switch fieldName {

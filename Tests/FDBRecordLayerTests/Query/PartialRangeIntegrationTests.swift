@@ -9,7 +9,7 @@ import Foundation
 /// - PartialRangeFrom: only lowerBound extraction
 /// - PartialRangeThrough/UpTo: only upperBound extraction
 /// - Error throwing for invalid boundary access
-@Suite("PartialRange Integration Tests")
+@Suite("PartialRange Integration Tests", .tags(.integration))
 struct PartialRangeIntegrationTests {
 
     init() {

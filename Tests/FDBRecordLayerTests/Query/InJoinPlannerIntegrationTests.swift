@@ -26,7 +26,7 @@ struct InJoinTestUser {
 /// 2. Generates appropriate IN join plans
 /// 3. Builds correct remaining filters
 /// 4. Handles multiple IN predicates on the same field
-@Suite("IN Join Planner Integration Tests")
+@Suite("IN Join Planner Integration Tests", .tags(.integration))
 struct InJoinPlannerIntegrationTests {
 
     // MARK: - Test Setup

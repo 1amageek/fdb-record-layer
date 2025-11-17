@@ -13,7 +13,7 @@ import Foundation
 /// 5. Multi-record type support
 /// 6. Configuration presets (default, conservative, aggressive)
 /// 7. Progress tracking (separate RangeSets for Phase 1/2)
-@Suite("OnlineIndexScrubber Tests", .serialized)
+@Suite("OnlineIndexScrubber Tests", .serialized, .tags(.slow, .integration))
 struct OnlineIndexScrubberTests {
 
     // MARK: - Initialization

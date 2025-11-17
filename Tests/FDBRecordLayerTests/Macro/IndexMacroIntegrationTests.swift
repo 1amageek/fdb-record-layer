@@ -129,7 +129,7 @@ struct IndexMacroNestedModel {
 /// 2. @Recordable correctly detects and references IndexDefinition properties
 /// 3. No circular reference errors occur
 /// 4. IndexDefinitions are properly registered
-@Suite("Index Macro Integration Tests")
+@Suite("Index Macro Integration Tests", .tags(.integration))
 struct IndexMacroIntegrationTests {
 
     // MARK: - Compilation Tests
