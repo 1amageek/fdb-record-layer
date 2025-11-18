@@ -5,13 +5,15 @@
 FoundationDB Record Layer (Swift) は、クライアント・サーバー間でモデル定義を共有できる、型安全でスケーラブルなデータベースレイヤーです。
 
 **主な特徴**:
-- ✅ **3層アーキテクチャ**: クライアント・サーバー間でモデル共有
+- ✅ **モジュール分離**: FDBRecordCore (iOS/macOS) + FDBRecordLayer (サーバー)
 - ✅ **型安全**: KeyPathベースのAPI、コンパイル時型チェック
 - ✅ **ACID保証**: FoundationDBの分散トランザクション
-- ✅ **自動インデックス**: VALUE、COUNT、SUM、MIN/MAX
+- ✅ **完全なインデックス**: VALUE、COUNT、SUM、MIN/MAX、RANK、VERSION、PERMUTED
+- ✅ **Vector Search**: HNSW（O(log n)最近傍探索）
+- ✅ **Spatial Indexing**: S2 Geometry + Morton Code（4空間タイプ）
 - ✅ **コストベース最適化**: クエリプランナーによる自動最適化
-- ✅ **オンラインスキーマ変更**: 無停止でインデックス構築
-- ✅ **Swift 6対応**: Strict concurrency mode準拠
+- ✅ **Migration Manager**: 無停止でスキーマ進化
+- ✅ **Swift 6対応**: Strict concurrency mode準拠、**525テスト全合格**
 
 ---
 
@@ -56,9 +58,12 @@ targets: [
 ```swift
 import FDBRecordCore
 
-@Record
+@Recordable
 struct User {
-    @ID var userID: Int64
+    #PrimaryKey<User>([\.userID])
+    #Index<User>([\.email])
+
+    var userID: Int64
     var email: String
     var name: String
     var age: Int
@@ -260,9 +265,12 @@ print("Total salary: \(total)")
 ### 4. マルチテナント対応
 
 ```swift
-@Record
+@Recordable
 struct Order {
-    @ID var orderID: Int64
+    #PrimaryKey<Order>([\.orderID])
+    #Directory<Order>("tenants", Field(\.tenantID), "orders", layer: .partition)
+
+    var orderID: Int64
     var tenantID: String
     var userID: Int64
     var amount: Double
@@ -601,9 +609,10 @@ MIT License
 
 | バージョン | リリース日 | 主な変更 |
 |-----------|-----------|---------|
-| **2.0.0** | 2025-01-XX | 3層アーキテクチャ、クライアント・サーバー共有 |
+| **3.0.0** | 2025-01-17 | **Vector Search (HNSW)、Spatial Indexing (S2+Morton Code)、525テスト全合格** |
+| **2.0.0** | 2025-01-13 | Migration Manager、スキーマ進化、FDBRecordCore/Layer分離 |
 | **1.0.0** | 2025-01-10 | 初回リリース（VALUE、COUNT、SUM、MIN/MAX インデックス） |
 
 ---
 
-最終更新: 2025-01-12
+最終更新: 2025-01-17

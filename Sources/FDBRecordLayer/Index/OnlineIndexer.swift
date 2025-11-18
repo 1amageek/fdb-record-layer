@@ -684,9 +684,24 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
                 snapshot: true
             )
 
-            for try await (key, _) in sequence {
+            for try await (key, value) in sequence {
                 // Extract primary key
                 let primaryKey = try recordSubspace.unpack(key)
+
+                // ✅ CRITICAL: Deserialize record and extract vector
+                let record = try self.recordAccess.deserialize(value)
+                let vector = try hnswMaintainer.extractVector(
+                    from: record,
+                    recordAccess: self.recordAccess
+                )
+
+                // ✅ CRITICAL: Save vector to flat index
+                // This is Phase 1's PRIMARY responsibility - without this, Phase 2 will fail
+                // because loadVectorFromFlatIndex() will throw "Vector not found" errors
+                let vectorKey = indexSubspace.pack(primaryKey)
+                let tupleElements: [any TupleElement] = vector.map { Float($0) }
+                let vectorValue = Tuple(tupleElements).pack()
+                transaction.setValue(vectorValue, for: vectorKey)
 
                 // Assign level (lightweight: ~10 operations)
                 _ = try await hnswMaintainer.assignLevel(

@@ -61,15 +61,89 @@ This document outlines the design and implementation for optimizing vector simil
 
 ## Table of Contents
 
-1. [Current State Analysis](#current-state-analysis)
-2. [Phase 1: MinHeap Top-K Implementation](#phase-1-minheap-top-k-implementation)
-3. [Phase 2: HNSW Implementation](#phase-2-hnsw-implementation)
-4. [FDB-Specific Design Considerations](#fdb-specific-design-considerations)
-5. [File Structure](#file-structure)
-6. [Implementation Roadmap](#implementation-roadmap)
-7. [Testing Strategy](#testing-strategy)
-8. [Performance Benchmarks](#performance-benchmarks)
-9. [Migration Path](#migration-path)
+1. [Supported Vector Types](#supported-vector-types)
+2. [Current State Analysis](#current-state-analysis)
+3. [Phase 1: MinHeap Top-K Implementation](#phase-1-minheap-top-k-implementation)
+4. [Phase 2: HNSW Implementation](#phase-2-hnsw-implementation)
+5. [FDB-Specific Design Considerations](#fdb-specific-design-considerations)
+6. [File Structure](#file-structure)
+7. [Implementation Roadmap](#implementation-roadmap)
+8. [Testing Strategy](#testing-strategy)
+9. [Performance Benchmarks](#performance-benchmarks)
+10. [Migration Path](#migration-path)
+
+---
+
+## Supported Vector Types
+
+The Record Layer supports a wide range of numeric array types for vector embeddings, providing flexibility for different use cases and memory requirements.
+
+### Floating-Point Arrays (Recommended)
+
+```swift
+// Standard 32-bit floating point (recommended for most ML use cases)
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [Float32]
+
+// 64-bit floating point
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [Float]
+
+// 64-bit double precision
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [Double]
+
+// 16-bit half-precision (iOS 14+/macOS 11+, Apple silicon only)
+@Vector(dimensions: 384, metric: .cosine)
+@available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *)
+var embedding: [Float16]  // 50% memory savings
+```
+
+### Integer Arrays (For Quantized Embeddings)
+
+```swift
+// 8-bit quantized embeddings (recommended for quantization)
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [UInt8]  // Values normalized to 0-255
+
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [Int8]   // Values normalized to -128-127
+
+// Other integer types
+@Vector(dimensions: 384, metric: .cosine)
+var embedding: [Int]    // Platform-dependent size
+var embedding: [Int16]  // 16-bit signed
+var embedding: [Int32]  // 32-bit signed
+var embedding: [Int64]  // 64-bit signed
+var embedding: [UInt16] // 16-bit unsigned
+var embedding: [UInt32] // 32-bit unsigned
+var embedding: [UInt64] // 64-bit unsigned
+```
+
+### Type Selection Guide
+
+| Use Case | Recommended Type | Memory Savings | Trade-offs |
+|----------|-----------------|----------------|------------|
+| **General ML embeddings** | `[Float32]` | Baseline | Standard precision |
+| **Memory-constrained (Apple silicon)** | `[Float16]` | 50% | Apple silicon only, slight precision loss |
+| **Quantized embeddings (8-bit)** | `[UInt8]` or `[Int8]` | 75% | Significant precision loss, requires quantization |
+| **Binary features** | `[UInt8]` | 75% | 0/1 values, extreme memory efficiency |
+| **High precision** | `[Double]` | -100% (2x memory) | Scientific computing only |
+
+### Internal Conversion
+
+**Important**: All numeric types are internally converted to `Float32` for distance calculations. The type system provides flexibility at the storage and validation layer while maintaining consistent computation.
+
+```swift
+// Example: UInt8 quantized vector
+let quantized: [UInt8] = [0, 128, 255]  // Stored as UInt8
+
+// During search:
+// 1. Decoded from FDB as Float values (tuple encoding)
+// 2. Converted to Float32 for distance calculation
+// 3. Distance computed using Float32 arithmetic
+let distance = calculateDistance(queryVector, Float32(quantized[i]))
+```
 
 ---
 
@@ -428,14 +502,23 @@ extension GenericVectorIndexMaintainer {
 
                 let element = vectorTuple[i]
 
+                // Handle numeric types from tuple
+                // Note: TupleElement only supports Int64, Double, Float (not smaller int types)
+                // Vectors are stored as Float values, so we only need to handle those types
                 let floatValue: Float32
                 if let f = element as? Float {
                     floatValue = Float32(f)
+                } else if let f32 = element as? Float32 {
+                    floatValue = f32
                 } else if let d = element as? Double {
                     floatValue = Float32(d)
+                } else if let i = element as? Int {
+                    floatValue = Float32(i)
+                } else if let i64 = element as? Int64 {
+                    floatValue = Float32(i64)
                 } else {
                     throw RecordLayerError.internalError(
-                        "Vector tuple element must be Float or Double, got: \(type(of: element))"
+                        "Vector tuple element must be numeric, got: \(type(of: element))"
                     )
                 }
 

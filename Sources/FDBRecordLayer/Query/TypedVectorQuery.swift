@@ -225,65 +225,71 @@ struct TypedVectorSearchPlan<Record: Recordable>: Sendable {
                 recordSubspace: recordSubspace
             )
 
-            // 🛡️ CRITICAL: Provide context-aware error messages based on indexing strategy
-            //
-            // **Strategy: .hnsw(inlineIndexing: true)**
-            // - Graph should be built via RecordStore.save() for small datasets (<100 nodes)
-            // - If entry point is missing: Possible data corruption or graph exceeds size limit
-            //
-            // **Strategy: .hnsw(inlineIndexing: false)** (aka .hnswBatch)
-            // - Graph MUST be built via OnlineIndexer.buildHNSWIndex()
-            // - If entry point is missing: Expected behavior, user needs to run OnlineIndexer
-            //
-            // Both cases will throw RecordLayerError.hnswGraphNotBuilt with appropriate message.
-            // The HNSW maintainer's search() method will detect missing entry point and throw.
+            if inlineIndexing {
+                // 🛡️ USER SPECIFICATION: Graceful fallback for inline indexing
+                // Try HNSW first (O(log n)), fall back to flat scan only if HNSW fails
+                //
+                // **Behavior**:
+                // 1. Try HNSW search (may fail if graph not built)
+                // 2. If HNSW succeeds → use HNSW results only (O(log n) performance)
+                // 3. If HNSW fails → fall back to flat scan (O(n) performance)
+                //
+                // **Performance**:
+                // - HNSW success: O(log n) - no flat scan overhead
+                // - HNSW failure: O(n) - graceful degradation
+                //
+                // **User Requirement**:
+                // "仕様上ここではエラーを投げるべきではありません。適切にフォールバックを行うのは仕様となります。
+                //  警告となるログは残すものの正確フォールバックしてユーザーの意図に沿って結果を返すことを第一に考えるべきです"
+                // "According to the specification, errors should not be thrown. Proper fallback is the specification.
+                //  While warning logs should remain, the priority should be to accurately fallback and return results
+                //  in line with user intent."
 
-            do {
+                // 1. Try HNSW search first
+                do {
+                    searchResults = try await hnswMaintainer.search(
+                        queryVector: queryVector,
+                        k: fetchK,
+                        transaction: transaction
+                    )
+                    // ✅ HNSW succeeded - use O(log n) results, skip flat scan
+                } catch let error as RecordLayerError {
+                    if case .hnswGraphNotBuilt = error {
+                        // 2. HNSW graph not built - fall back to flat scan (O(n))
+                        Logger(label: "com.fdb.recordlayer.query.vector").warning(
+                            "HNSW graph not found, falling back to flat scan (O(n))",
+                            metadata: [
+                                "index": "\(index.name)",
+                                "recommendation": "Build HNSW graph via OnlineIndexer for O(log n) performance"
+                            ]
+                        )
+
+                        let flatMaintainer = try GenericVectorIndexMaintainer<Record>(
+                            index: index,
+                            subspace: indexNameSubspace,
+                            recordSubspace: recordSubspace
+                        )
+                        searchResults = try await flatMaintainer.search(
+                            queryVector: queryVector,
+                            k: fetchK,
+                            transaction: transaction
+                        )
+                    } else {
+                        // Other errors - re-throw
+                        throw error
+                    }
+                }
+            } else {
+                // 🛡️ Strategy: .hnsw(inlineIndexing: false) (aka .hnswBatch)
+                // - Graph MUST be built via OnlineIndexer.buildHNSWIndex()
+                // - If entry point is missing: Expected behavior, user needs to run OnlineIndexer
+                // - Fail-fast: throw error to force user to build HNSW graph via OnlineIndexer
+
                 searchResults = try await hnswMaintainer.search(
                     queryVector: queryVector,
                     k: fetchK,
                     transaction: transaction
                 )
-            } catch let error as RecordLayerError {
-                // Handle missing graph gracefully: log warning and fallback to flat scan
-                if case .hnswGraphNotBuilt(let indexName, _) = error {
-                    // ⚠️ Log warning and fallback to flat scan
-                    if inlineIndexing {
-                        Logger(label: "com.fdb.recordlayer.query.vector").warning("HNSW graph not built, falling back to flat scan", metadata: [
-                            "index": "\(indexName)",
-                            "strategy": ".hnsw(inlineIndexing: true)",
-                            "behavior": "Falling back to O(n) flat scan instead of O(log n) HNSW",
-                            "causes": "No records saved yet, or graph exceeded size limit (maxLevel >= 2)",
-                            "recommendation": "Switch to .hnswBatch and rebuild via OnlineIndexer for datasets > 100 nodes",
-                            "documentation": "docs/hnsw_inline_indexing_protection.md"
-                        ])
-                    } else {
-                        Logger(label: "com.fdb.recordlayer.query.vector").warning("HNSW graph not built, falling back to flat scan", metadata: [
-                            "index": "\(indexName)",
-                            "strategy": ".hnsw(inlineIndexing: false) (aka .hnswBatch)",
-                            "behavior": "Falling back to O(n) flat scan instead of O(log n) HNSW",
-                            "expected": "Graph NOT built automatically - must run OnlineIndexer.buildHNSWIndex()",
-                            "required_steps": "1) enable index, 2) build via OnlineIndexer, 3) make readable",
-                            "recommendation": "This is EXPECTED if OnlineIndexer hasn't been run yet",
-                            "documentation": "docs/hnsw_inline_indexing_protection.md"
-                        ])
-                    }
-
-                    // ✅ Fallback to flat scan (O(n) brute-force search)
-                    let flatMaintainer = try GenericVectorIndexMaintainer<Record>(
-                        index: index,
-                        subspace: indexNameSubspace,
-                        recordSubspace: recordSubspace
-                    )
-                    searchResults = try await flatMaintainer.search(
-                        queryVector: queryVector,
-                        k: fetchK,
-                        transaction: transaction
-                    )
-                } else {
-                    // Other errors: re-throw as-is
-                    throw error
-                }
             }
         }
 
@@ -320,5 +326,46 @@ struct TypedVectorSearchPlan<Record: Recordable>: Sendable {
         }
 
         return results
+    }
+
+    /// Merge HNSW and flat search results, removing duplicates and sorting by distance
+    ///
+    /// **Deduplication**: Primary keys are used to identify duplicates
+    /// **Distance**: In case of duplicate, use the smaller distance
+    ///
+    /// - Parameters:
+    ///   - hnswResults: Results from HNSW graph search
+    ///   - flatResults: Results from flat index search
+    ///   - k: Maximum number of results to return
+    /// - Returns: Merged, deduplicated, and sorted results (limited to k)
+    private func mergeVectorSearchResults(
+        hnswResults: [(primaryKey: Tuple, distance: Double)],
+        flatResults: [(primaryKey: Tuple, distance: Double)],
+        k: Int
+    ) -> [(primaryKey: Tuple, distance: Double)] {
+        var resultMap: [String: (primaryKey: Tuple, distance: Double)] = [:]
+
+        // Add HNSW results
+        for (primaryKey, distance) in hnswResults {
+            let key = primaryKey.pack().map { String(format: "%02x", $0) }.joined()
+            resultMap[key] = (primaryKey, distance)
+        }
+
+        // Add flat results, keeping better distance if duplicate
+        for (primaryKey, distance) in flatResults {
+            let key = primaryKey.pack().map { String(format: "%02x", $0) }.joined()
+            if let existing = resultMap[key] {
+                // Keep smaller distance
+                if distance < existing.distance {
+                    resultMap[key] = (primaryKey, distance)
+                }
+            } else {
+                resultMap[key] = (primaryKey, distance)
+            }
+        }
+
+        // Sort by distance and limit to k
+        let sorted = resultMap.values.sorted { $0.distance < $1.distance }
+        return Array(sorted.prefix(k))
     }
 }

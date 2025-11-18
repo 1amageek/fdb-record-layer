@@ -181,7 +181,17 @@ public macro Spatial(
 
 ## 型定義
 
-### VectorRepresentableプロトコル
+### ⚠️ VectorRepresentableプロトコル（削除済み）
+
+> **このプロトコルは実装から削除されました** (Removed as of 2025-01-18)
+>
+> **理由**: 実装が複雑になり、混乱を招いたため削除されました。
+>
+> **現在の実装**: ベクトルフィールドは直接配列型（[Float], [Float32], [Double]）を使用します。
+>
+> 詳細は[CLAUDE.md](../../CLAUDE.md)を参照してください。
+
+以下は削除前の設計（参考用）：
 
 ```swift
 /// Protocol for types that can be indexed as vectors

@@ -17,11 +17,19 @@ import Foundation
 ///     #PrimaryKey<Product>([\.productID])
 ///
 ///     @Vector(dimensions: 768)
-///     var embedding: Vector
+///     var embedding: [Float32]
 ///
 ///     var productID: Int64
 /// }
 /// ```
+///
+/// **Supported Types**:
+/// - `[Float]`, `[Float32]`, `[Double]` (floating point arrays)
+/// - `[Float16]` (half-precision, iOS 14+/macOS 11+, **Apple silicon only**)
+/// - `[Int]`, `[Int8]`, `[Int16]`, `[Int32]`, `[Int64]` (signed integer arrays)
+/// - `[UInt8]`, `[UInt16]`, `[UInt32]`, `[UInt64]` (unsigned integer arrays)
+///
+/// **Recommended**: `[Float32]` for most ML use cases, `[Float16]` for memory efficiency (Apple silicon), `[UInt8]` for quantized vectors
 ///
 /// **Parameters**:
 /// - `dimensions`: Number of vector dimensions (required, range: [1, 10000])
@@ -159,26 +167,34 @@ extension VectorMacroDiagnostic: DiagnosticMessage {
         case .notAppliedToProperty:
             return """
             @Vector can only be applied to properties
-            Usage: @Vector(dimensions: 768) var embedding: Vector
+            Usage: @Vector(dimensions: 768) var embedding: [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
             """
 
         case .invalidPropertyDeclaration:
             return """
             @Vector requires a valid property declaration
-            Usage: @Vector(dimensions: 768) var embedding: Vector
+            Usage: @Vector(dimensions: 768) var embedding: [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
             """
 
         case .missingArguments:
             return """
             @Vector requires 'dimensions:' parameter
-            Usage: @Vector(dimensions: 768) var embedding: Vector
+            Usage: @Vector(dimensions: 768) var embedding: [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
             """
 
         case .missingDimensions(let propertyName):
             return """
             @Vector on property '\(propertyName)' requires 'dimensions:' parameter
 
-            Usage: @Vector(dimensions: 768) var \(propertyName): Vector
+            Usage: @Vector(dimensions: 768) var \(propertyName): [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
 
             Common dimensions:
             - 384: all-MiniLM-L6-v2
@@ -190,7 +206,9 @@ extension VectorMacroDiagnostic: DiagnosticMessage {
         case .invalidDimensions:
             return """
             'dimensions:' parameter must be an integer literal
-            Usage: @Vector(dimensions: 768) var embedding: Vector
+            Usage: @Vector(dimensions: 768) var embedding: [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
             """
 
         case .dimensionsOutOfRange(let value):
@@ -207,7 +225,9 @@ extension VectorMacroDiagnostic: DiagnosticMessage {
         case .invalidMetric:
             return """
             'metric:' parameter must be a VectorMetric enum value
-            Usage: @Vector(dimensions: 768, metric: .cosine) var embedding: Vector
+            Usage: @Vector(dimensions: 768, metric: .cosine) var embedding: [Float32]
+
+            Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]
 
             Valid metrics:
             - .cosine (default): Cosine similarity (99% of ML use cases)

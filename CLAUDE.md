@@ -5153,6 +5153,64 @@ public struct HNSWSearchParameters: Sendable {
 - レイテンシ: ~10ms（FDB読み取り含む）
 - スループット: ~100 QPS/コア
 
+### サポートされるベクトル型
+
+ベクトルフィールドは以下の配列型をサポートします：
+
+**浮動小数点型**:
+- `[Float]` (64-bit floating point)
+- `[Float32]` (32-bit floating point、**推奨**）
+- `[Float16]` (16-bit floating point、iOS 14+/macOS 11+、**Apple silicon のみ**)
+- `[Double]` (64-bit floating point)
+
+**整数型**:
+- `[Int]` (プラットフォーム依存、通常64-bit)
+- `[Int8]` (8-bit signed integer、量子化ベクトル用)
+- `[Int16]` (16-bit signed integer)
+- `[Int32]` (32-bit signed integer)
+- `[Int64]` (64-bit signed integer)
+- `[UInt8]` (8-bit unsigned integer、バイナリベクトル・量子化ベクトル用)
+- `[UInt16]` (16-bit unsigned integer)
+- `[UInt32]` (32-bit unsigned integer)
+- `[UInt64]` (64-bit unsigned integer)
+
+**使用例**:
+
+```swift
+@Recordable
+struct Product {
+    #PrimaryKey<Product>([\.productID])
+
+    // 浮動小数点ベクトル（ML埋め込み）
+    @Vector(dimensions: 768)
+    var embedding: [Float32]
+
+    // 半精度浮動小数点ベクトル（メモリ効率重視、Apple silicon のみ）
+    @Vector(dimensions: 768)
+    @available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *)
+    var compactEmbedding: [Float16]
+
+    // 量子化ベクトル（8-bit）
+    @Vector(dimensions: 768)
+    var quantizedEmbedding: [UInt8]
+
+    // バイナリベクトル（0/1）
+    @Vector(dimensions: 1024)
+    var binaryFeatures: [UInt8]
+
+    var productID: Int64
+}
+```
+
+**型変換**: すべての数値型は内部的に`Float32`に変換されて距離計算に使用されます。
+
+**Float16サポート**:
+- `[Float16]` は iOS 14.0+/macOS 11.0+/tvOS 14.0+/watchOS 7.0+ で利用可能
+- **Apple silicon専用**（Intel Mac では利用不可）
+- メモリ効率を重視する場合に推奨（通常の`[Float32]`の半分のサイズ）
+
+**注意**: Float8は現在サポートされていません（Swift標準ライブラリに存在しないため）。
+
 ### 距離メトリック
 
 ```swift

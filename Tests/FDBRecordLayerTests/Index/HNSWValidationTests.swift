@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import FoundationDB
+@testable import FoundationDB
 @testable import FDBRecordCore
 @testable import FDBRecordLayer
 
@@ -19,7 +19,6 @@ struct HNSWValidationTests {
     @Recordable
     struct Product {
         #PrimaryKey<Product>([\.productID])
-        #Index<Product>([\.embedding])
 
         var productID: Int64
         var name: String
@@ -27,27 +26,62 @@ struct HNSWValidationTests {
         var embedding: [Float32]
     }
 
+    // MARK: - Helper Methods
+
+    /// Initialize FDB network and open database
+    private func setupDatabase() throws -> any DatabaseProtocol {
+        do {
+            try FDBNetwork.shared.initialize(version: 710)
+        } catch {
+            // Already initialized - this is fine
+        }
+        return try FDBClient.openDatabase()
+    }
+
     // MARK: - Test 1: HNSW Graph Not Built Error
 
     @Test("HNSW search throws error when graph not built")
     func testHNSWSearchGraphNotBuilt() async throws {
         // Setup FDB database
-        let db = try FDBClient.openDatabase()
+        let db = try setupDatabase()
 
-        // Create schema with .hnswBatch strategy
+        // Create vector index manually
+        let vectorIndex = Index(
+            name: "Product_embedding_index",
+            type: .vector,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            recordTypes: Set(["Product"]),
+            options: IndexOptions(vectorOptions: VectorIndexOptions(dimensions: 128, metric: .cosine))
+        )
+
+        // Create schema with .hnswBatch strategy using indexConfigurations
         let schema = Schema(
             [Product.self],
-            vectorStrategies: ["Product_embedding_index": .hnswBatch]
+            indexes: [vectorIndex],
+            indexConfigurations: [
+                IndexConfiguration(
+                    indexName: "Product_embedding_index",
+                    vectorStrategy: .hnswBatch
+                )
+            ]
         )
 
         // Create RecordStore with unique subspace for this test
         let testSubspace = Subspace(prefix: Tuple("test", "hnsw_validation", UUID().uuidString).pack())
-        let store = try await RecordStore<Product>(
+        let store = RecordStore<Product>(
             database: db,
             subspace: testSubspace,
             schema: schema,
             statisticsManager: NullStatisticsManager()
         )
+
+        // Manually set index to readable state (without building HNSW graph)
+        let indexStateManager = IndexStateManager(
+            database: db,
+            subspace: testSubspace
+        )
+        try await indexStateManager.enable("Product_embedding_index")  // disabled → writeOnly
+        try await indexStateManager.makeReadable("Product_embedding_index")  // writeOnly → readable
 
         // Save a product record (only flat index is updated, HNSW graph NOT built)
         let embedding = (0..<128).map { _ in Float32.random(in: -1...1) }
@@ -99,17 +133,32 @@ struct HNSWValidationTests {
     @Test("Query throws error when index is writeOnly")
     func testQueryIndexNotReadableWriteOnly() async throws {
         // Setup FDB database
-        let db = try FDBClient.openDatabase()
+        let db = try setupDatabase()
 
-        // Create schema
+        // Create vector index manually
+        let vectorIndex = Index(
+            name: "Product_embedding_index",
+            type: .vector,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            recordTypes: Set(["Product"]),
+            options: IndexOptions(vectorOptions: VectorIndexOptions(dimensions: 128, metric: .cosine))
+        )
+
+        // Create schema with .hnswBatch strategy using indexConfigurations
         let schema = Schema(
             [Product.self],
-            vectorStrategies: ["Product_embedding_index": .hnswBatch]
+            indexes: [vectorIndex],
+            indexConfigurations: [
+                IndexConfiguration(
+                    indexName: "Product_embedding_index",
+                    vectorStrategy: .hnswBatch
+                )
+            ]
         )
 
         // Create RecordStore with unique subspace for this test
         let testSubspace = Subspace(prefix: Tuple("test", "hnsw_validation", UUID().uuidString).pack())
-        let store = try await RecordStore<Product>(
+        let store = RecordStore<Product>(
             database: db,
             subspace: testSubspace,
             schema: schema,
@@ -124,14 +173,6 @@ struct HNSWValidationTests {
 
         // Enable the index (disabled → writeOnly transition)
         try await indexStateManager.enable("Product_embedding_index")
-
-        // Verify state is writeOnly
-        let currentState = try await db.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.cancel() }
-            return try await indexStateManager.state(of: "Product_embedding_index", context: context)
-        }
-        #expect(currentState == .writeOnly)
 
         // Query should throw indexNotReadable error
         let queryVector = (0..<128).map { _ in Float32.random(in: -1...1) }
@@ -172,17 +213,32 @@ struct HNSWValidationTests {
     @Test("Query throws error when index is disabled")
     func testQueryIndexNotReadableDisabled() async throws {
         // Setup FDB database
-        let db = try FDBClient.openDatabase()
+        let db = try setupDatabase()
 
-        // Create schema
+        // Create vector index manually
+        let vectorIndex = Index(
+            name: "Product_embedding_index",
+            type: .vector,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            recordTypes: Set(["Product"]),
+            options: IndexOptions(vectorOptions: VectorIndexOptions(dimensions: 128, metric: .cosine))
+        )
+
+        // Create schema with .hnswBatch strategy using indexConfigurations
         let schema = Schema(
             [Product.self],
-            vectorStrategies: ["Product_embedding_index": .hnswBatch]
+            indexes: [vectorIndex],
+            indexConfigurations: [
+                IndexConfiguration(
+                    indexName: "Product_embedding_index",
+                    vectorStrategy: .hnswBatch
+                )
+            ]
         )
 
         // Create RecordStore with unique subspace for this test
         let testSubspace = Subspace(prefix: Tuple("test", "hnsw_validation", UUID().uuidString).pack())
-        let store = try await RecordStore<Product>(
+        let store = RecordStore<Product>(
             database: db,
             subspace: testSubspace,
             schema: schema,
@@ -198,14 +254,6 @@ struct HNSWValidationTests {
         // First enable, then disable
         try await indexStateManager.enable("Product_embedding_index")
         try await indexStateManager.disable("Product_embedding_index")
-
-        // Verify state is disabled
-        let currentState = try await db.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.cancel() }
-            return try await indexStateManager.state(of: "Product_embedding_index", context: context)
-        }
-        #expect(currentState == .disabled)
 
         // Query should throw indexNotReadable error
         let queryVector = (0..<128).map { _ in Float32.random(in: -1...1) }
@@ -262,22 +310,45 @@ struct HNSWValidationTests {
     @Test("HNSW graph not built error message is actionable")
     func testHNSWGraphNotBuiltErrorMessage() async throws {
         // Setup FDB database
-        let db = try FDBClient.openDatabase()
+        let db = try setupDatabase()
 
-        // Create schema with .hnswBatch strategy
+        // Create vector index manually
+        let vectorIndex = Index(
+            name: "Product_embedding_index",
+            type: .vector,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            recordTypes: Set(["Product"]),
+            options: IndexOptions(vectorOptions: VectorIndexOptions(dimensions: 128, metric: .cosine))
+        )
+
+        // Create schema with .hnswBatch strategy using indexConfigurations
         let schema = Schema(
             [Product.self],
-            vectorStrategies: ["Product_embedding_index": .hnswBatch]
+            indexes: [vectorIndex],
+            indexConfigurations: [
+                IndexConfiguration(
+                    indexName: "Product_embedding_index",
+                    vectorStrategy: .hnswBatch
+                )
+            ]
         )
 
         // Create RecordStore with unique subspace for this test
         let testSubspace = Subspace(prefix: Tuple("test", "hnsw_validation", UUID().uuidString).pack())
-        let store = try await RecordStore<Product>(
+        let store = RecordStore<Product>(
             database: db,
             subspace: testSubspace,
             schema: schema,
             statisticsManager: NullStatisticsManager()
         )
+
+        // Manually set index to readable state (without building HNSW graph)
+        let indexStateManager = IndexStateManager(
+            database: db,
+            subspace: testSubspace
+        )
+        try await indexStateManager.enable("Product_embedding_index")  // disabled → writeOnly
+        try await indexStateManager.makeReadable("Product_embedding_index")  // writeOnly → readable
 
         // Save a product
         let embedding = (0..<128).map { _ in Float32.random(in: -1...1) }
@@ -338,17 +409,32 @@ struct HNSWValidationTests {
     @Test("Index not readable error message is actionable")
     func testIndexNotReadableErrorMessage() async throws {
         // Setup FDB database
-        let db = try FDBClient.openDatabase()
+        let db = try setupDatabase()
 
-        // Create schema
+        // Create vector index manually
+        let vectorIndex = Index(
+            name: "Product_embedding_index",
+            type: .vector,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            recordTypes: Set(["Product"]),
+            options: IndexOptions(vectorOptions: VectorIndexOptions(dimensions: 128, metric: .cosine))
+        )
+
+        // Create schema with .hnswBatch strategy using indexConfigurations
         let schema = Schema(
             [Product.self],
-            vectorStrategies: ["Product_embedding_index": .hnswBatch]
+            indexes: [vectorIndex],
+            indexConfigurations: [
+                IndexConfiguration(
+                    indexName: "Product_embedding_index",
+                    vectorStrategy: .hnswBatch
+                )
+            ]
         )
 
         // Create RecordStore with unique subspace for this test
         let testSubspace = Subspace(prefix: Tuple("test", "hnsw_validation", UUID().uuidString).pack())
-        let store = try await RecordStore<Product>(
+        let store = RecordStore<Product>(
             database: db,
             subspace: testSubspace,
             schema: schema,

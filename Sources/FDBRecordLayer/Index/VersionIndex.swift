@@ -202,17 +202,17 @@ public struct VersionIndexMaintainer<Record: Sendable>: GenericIndexMaintainer {
         var key = subspace.pack(primaryKey)
         let versionPosition = key.count
 
-        // Validate position fits in UInt16 range (FDB requires 2-byte offset)
-        guard versionPosition <= Int(UInt16.max) - 10 else {
-            throw RecordLayerError.internalError("Version key too long (max \(UInt16.max - 10) bytes)")
+        // Validate position fits in UInt32 range (FDB requires 4-byte offset)
+        guard versionPosition <= Int(UInt32.max) - 10 else {
+            throw RecordLayerError.internalError("Version key too long (max \(UInt32.max - 10) bytes)")
         }
 
         // Append 10-byte versionstamp placeholder
         key.append(contentsOf: [UInt8](repeating: 0xFF, count: 10))
 
-        // Append 2-byte position (little-endian) as required by FDB
-        let position16 = UInt16(versionPosition)
-        let positionBytes = withUnsafeBytes(of: position16.littleEndian) { Array($0) }
+        // Append 4-byte position (little-endian) as required by FDB
+        let position32 = UInt32(versionPosition)
+        let positionBytes = withUnsafeBytes(of: position32.littleEndian) { Array($0) }
         key.append(contentsOf: positionBytes)
 
         // Store current timestamp in value for time-based retention

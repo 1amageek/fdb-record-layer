@@ -83,9 +83,15 @@ struct Product {
         type: .vector(dimensions: 384, metric: .cosine)
         // strategyはモデル定義に含めない！
     )
-    var embedding: [Float32]
+    var embedding: [Float32]  // または [Float16], [Double], [Int8-64], [UInt8-64]
 }
 ```
+
+**サポートされるベクトル型**:
+- **浮動小数点**: `[Float32]` (推奨), `[Float]`, `[Double]`, `[Float16]` (iOS 14+/Apple silicon)
+- **整数**: `[Int]`, `[Int8]`, `[Int16]`, `[Int32]`, `[Int64]`, `[UInt8]`, `[UInt16]`, `[UInt32]`, `[UInt64]`
+
+すべての型は内部的に `Float32` に変換されて距離計算が行われます。
 
 **VectorIndexOptions（簡略化）**:
 

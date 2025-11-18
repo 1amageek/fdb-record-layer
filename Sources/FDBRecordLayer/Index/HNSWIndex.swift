@@ -290,6 +290,38 @@ extension GenericHNSWIndexMaintainer {
         return vectorArray
     }
 
+    /// Save vector to flat index (single source of truth for vector data)
+    ///
+    /// **Storage**: `[indexSubspace][primaryKey] = Tuple(Float32, ...)`
+    ///
+    /// **Critical**: This method MUST be called before any HNSW graph operations
+    /// that will call `loadVectorFromFlatIndex()`. The flat index is the ONLY
+    /// storage location for vector data.
+    ///
+    /// **Directory Layer**: The `subspace` parameter is already integrated with
+    /// Directory Layer if #Directory macro is used, ensuring multi-tenant isolation.
+    ///
+    /// - Parameters:
+    ///   - primaryKey: Primary key of the record
+    ///   - vector: Vector data to save
+    ///   - transaction: FDB transaction
+    private func saveVectorToFlatIndex(
+        primaryKey: Tuple,
+        vector: [Float32],
+        transaction: any TransactionProtocol
+    ) {
+        // Build flat index key: [indexSubspace][primaryKey]
+        // If Directory Layer is used, indexSubspace already contains the directory prefix
+        let vectorKey = subspace.pack(primaryKey)
+
+        // Encode vector as Tuple
+        let tupleElements: [any TupleElement] = vector.map { Float($0) }
+        let vectorValue = Tuple(tupleElements).pack()
+
+        // Save to FDB
+        transaction.setValue(vectorValue, for: vectorKey)
+    }
+
     /// Calculate distance between two vectors based on configured metric
     ///
     /// **Supported Metrics**:
@@ -1189,6 +1221,10 @@ extension GenericHNSWIndexMaintainer {
         if let oldRecord = oldRecord {
             let oldPrimaryKey = oldRecord.extractPrimaryKey()
             try await deleteNode(primaryKey: oldPrimaryKey, transaction: transaction)
+
+            // ✅ CRITICAL: Delete vector from flat index
+            let vectorKey = subspace.pack(oldPrimaryKey)
+            transaction.clear(key: vectorKey)
         }
 
         // ⚠️ Insertions: CONDITIONAL SUPPORT - Small graphs only (<100 nodes)
@@ -1229,7 +1265,14 @@ extension GenericHNSWIndexMaintainer {
                 "recommendation": "Switch to .hnsw(inlineIndexing: false) and rebuild via OnlineIndexer"
             ])
 
-            // Skip insertion and return early (graceful degradation)
+            // ✅ CRITICAL: Still save vector for flat scan fallback
+            // Even though we skip HNSW graph construction, the vector data must be saved
+            // so that queries can fall back to flat scan if needed
+            let primaryKey = newRecord.extractPrimaryKey()
+            let vector = try extractVector(from: newRecord, recordAccess: recordAccess)
+            saveVectorToFlatIndex(primaryKey: primaryKey, vector: vector, transaction: transaction)
+
+            // Skip HNSW graph insertion and return early (graceful degradation)
             return
         }
 
@@ -1238,7 +1281,11 @@ extension GenericHNSWIndexMaintainer {
             let primaryKey = newRecord.extractPrimaryKey()
             let vector = try extractVector(from: newRecord, recordAccess: recordAccess)
 
-            // Perform inline insertion
+            // ✅ CRITICAL: Save vector to flat index BEFORE graph construction
+            // This is the ONLY place where vector data is stored
+            saveVectorToFlatIndex(primaryKey: primaryKey, vector: vector, transaction: transaction)
+
+            // Perform inline insertion (graph construction only)
             try await insert(
                 primaryKey: primaryKey,
                 queryVector: vector,
@@ -1281,29 +1328,8 @@ extension GenericHNSWIndexMaintainer {
         // **Current Behavior**:
         // Throws error for graphs > level 2 due to transaction budget exceeded.
 
-        // Extract vector field
-        let indexedValues = try recordAccess.evaluate(
-            record: record,
-            expression: index.rootExpression
-        )
-
-        guard let vectorField = indexedValues.first else {
-            throw RecordLayerError.invalidArgument("Vector index requires exactly one field")
-        }
-
-        guard let vector = vectorField as? any VectorRepresentable else {
-            throw RecordLayerError.invalidArgument(
-                "Vector index field must conform to VectorRepresentable protocol"
-            )
-        }
-
-        let floatArray = vector.toFloatArray()
-
-        guard floatArray.count == dimensions else {
-            throw RecordLayerError.invalidArgument(
-                "Vector dimension mismatch. Expected: \(dimensions), Got: \(floatArray.count)"
-            )
-        }
+        // Extract vector using extractVector() method
+        let floatArray = try extractVector(from: record, recordAccess: recordAccess)
 
         // Insert into HNSW graph (WARNING: May timeout for large graphs)
         try await insert(primaryKey: primaryKey, queryVector: floatArray, transaction: transaction)
@@ -1499,25 +1525,52 @@ extension GenericHNSWIndexMaintainer {
         let fieldValues = record.extractField(fieldExpr.fieldName)
 
         // Convert to Float32 array
+        // Note: TupleElement only supports Int64, Double, not smaller int types
+        // Arrays of smaller int types ([Int8], [UInt8], etc.) are supported through array casts
         var result: [Float32] = []
         for element in fieldValues {
+            // Individual TupleElement values (Int64, Double, etc.)
             if let floatValue = element as? Float32 {
                 result.append(floatValue)
+            } else if let floatValue = element as? Float {
+                result.append(Float32(floatValue))
             } else if let doubleValue = element as? Double {
                 result.append(Float32(doubleValue))
-            } else if let intValue = element as? Int64 {
-                result.append(Float32(intValue))
             } else if let intValue = element as? Int {
                 result.append(Float32(intValue))
+            } else if let intValue = element as? Int64 {
+                result.append(Float32(intValue))
+            // Array types (primary use case for vectors)
             } else if let array = element as? [Float32] {
-                // Handle array of Float32
                 result.append(contentsOf: array)
+            } else if let array = element as? [Float] {
+                result.append(contentsOf: array.map { Float32($0) })
             } else if let array = element as? [Double] {
-                // Handle array of Double
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if #available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *),
+                      let array = element as? [Float16] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [Int] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [Int8] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [Int16] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [Int32] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [Int64] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [UInt8] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [UInt16] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [UInt32] {
+                result.append(contentsOf: array.map { Float32($0) })
+            } else if let array = element as? [UInt64] {
                 result.append(contentsOf: array.map { Float32($0) })
             } else {
                 throw RecordLayerError.invalidArgument(
-                    "Vector field must contain numeric values, got: \(type(of: element))"
+                    "Vector field must contain numeric arrays or values, got: \(type(of: element))"
                 )
             }
         }

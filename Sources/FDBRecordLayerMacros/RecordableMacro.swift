@@ -1534,25 +1534,50 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
                 if case .vector(let dimensions, _) = indexDef.indexType {
                     let validation = """
 // Validate field '\(fieldName)' with @Vector attribute
-                guard let vectorField = self.\(fieldName) as? any VectorRepresentable else {
+                let vectorCount: Int
+                if let floatArray = self.\(fieldName) as? [Float] {
+                    vectorCount = floatArray.count
+                } else if let float32Array = self.\(fieldName) as? [Float32] {
+                    vectorCount = float32Array.count
+                } else if let doubleArray = self.\(fieldName) as? [Double] {
+                    vectorCount = doubleArray.count
+                } else if #available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *),
+                          let float16Array = self.\(fieldName) as? [Float16] {
+                    vectorCount = float16Array.count
+                } else if let intArray = self.\(fieldName) as? [Int] {
+                    vectorCount = intArray.count
+                } else if let int8Array = self.\(fieldName) as? [Int8] {
+                    vectorCount = int8Array.count
+                } else if let int16Array = self.\(fieldName) as? [Int16] {
+                    vectorCount = int16Array.count
+                } else if let int32Array = self.\(fieldName) as? [Int32] {
+                    vectorCount = int32Array.count
+                } else if let int64Array = self.\(fieldName) as? [Int64] {
+                    vectorCount = int64Array.count
+                } else if let uint8Array = self.\(fieldName) as? [UInt8] {
+                    vectorCount = uint8Array.count
+                } else if let uint16Array = self.\(fieldName) as? [UInt16] {
+                    vectorCount = uint16Array.count
+                } else if let uint32Array = self.\(fieldName) as? [UInt32] {
+                    vectorCount = uint32Array.count
+                } else if let uint64Array = self.\(fieldName) as? [UInt64] {
+                    vectorCount = uint64Array.count
+                } else {
                     throw RecordLayerError.invalidArgument(
-                        "Field '\(fieldName)' with @Vector attribute must conform to VectorRepresentable protocol.\\n" +
-                        "Expected type: Vector or any custom type conforming to VectorRepresentable\\n" +
+                        "Field '\(fieldName)' with @Vector attribute must be an array type.\\n" +
+                        "Supported types: [Float], [Float32], [Float16] (iOS 14+/Apple silicon), [Double], [Int], [Int8-64], [UInt8-64]\\n" +
                         "Actual type: \\(type(of: self.\(fieldName)))"
                     )
                 }
 
                 // Validate dimensions
-                guard vectorField.dimensions == \(dimensions) else {
+                guard vectorCount == \(dimensions) else {
                     throw RecordLayerError.invalidArgument(
-                        "Field '\(fieldName)' dimension mismatch: expected \(dimensions), got \\(vectorField.dimensions).\\n" +
+                        "Field '\(fieldName)' dimension mismatch: expected \(dimensions), got \\(vectorCount).\\n" +
                         "Ensure that the vector data matches the dimensions specified in @Vector macro:\\n" +
-                        "  @Vector(dimensions: \(dimensions)) var \(fieldName): Vector"
+                        "  @Vector(dimensions: \(dimensions)) var \(fieldName): [Float32]"
                     )
                 }
-
-                // Validate toFloatArray() can be called
-                let _ = vectorField.toFloatArray()
 """
                     validationCases.append(validation)
                 }

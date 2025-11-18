@@ -803,8 +803,9 @@ internal struct RankIndexMaintainer<Record: Sendable, Score: RankScore>: Generic
 
         var totalCount = 0
 
-        // Use count nodes for efficient counting (O(log n))
-        for level in stride(from: maxLevel, through: 1, by: -1) {
+        // ✅ FIX: Use count nodes for levels > 1 only to avoid double-counting
+        // Level 1's target bucket will be counted by scoreSequence below
+        for level in stride(from: maxLevel, through: 2, by: -1) {
             let beginKey: FDB.Bytes
             let endKey: FDB.Bytes
 
@@ -833,6 +834,36 @@ internal struct RankIndexMaintainer<Record: Sendable, Score: RankScore>: Generic
                 let nodeCount = value.withUnsafeBytes { $0.load(as: Int64.self).littleEndian }
                 totalCount += Int(nodeCount)
             }
+        }
+
+        // ✅ FIX: For level 1, count only "better" buckets using _count nodes
+        // Target bucket's count is handled by scoreSequence below to avoid double-counting
+        let level1BeginKey: FDB.Bytes
+        let level1EndKey: FDB.Bytes
+
+        if rankOrder == .descending {
+            // Better scores are HIGHER - count buckets above target bucket
+            let targetBucket = score.bucketBoundary(bucketSize: bucketSize, level: 1)
+            let startBoundary = targetBucket.nextBucketBoundary(bucketSize: bucketSize, level: 1)
+            level1BeginKey = subspace.pack(Tuple(groupingElements + ["_count", Int64(1), startBoundary]))
+            level1EndKey = subspace.pack(Tuple(groupingElements + ["_count", Int64(1)])) + [0xFF]
+        } else {
+            // Better scores are LOWER - count buckets below target bucket
+            level1BeginKey = subspace.pack(Tuple(groupingElements + ["_count", Int64(1)]))
+            let targetBucket = score.bucketBoundary(bucketSize: bucketSize, level: 1)
+            level1EndKey = subspace.pack(Tuple(groupingElements + ["_count", Int64(1), targetBucket]))
+        }
+
+        let level1Sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(level1BeginKey),
+            endSelector: .firstGreaterOrEqual(level1EndKey),
+            snapshot: true
+        )
+
+        for try await (_, value) in level1Sequence {
+            guard !value.isEmpty else { continue }
+            let nodeCount = value.withUnsafeBytes { $0.load(as: Int64.self).littleEndian }
+            totalCount += Int(nodeCount)
         }
 
         // Count remaining scores not covered by count nodes

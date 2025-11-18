@@ -108,7 +108,7 @@ struct GeohashTests {
 
     @Test("Encode coordinates at prime meridian")
     func testPrimeMeridianEncoding() throws {
-        let hash1 = Geohash.encode(latitude: 51.4778, longitude: 0.0, precision: 7)
+        let _ = Geohash.encode(latitude: 51.4778, longitude: 0.0, precision: 7)
         let hash2 = Geohash.encode(latitude: 51.4778, longitude: -0.001, precision: 7)
         let hash3 = Geohash.encode(latitude: 51.4778, longitude: 0.001, precision: 7)
 
@@ -118,7 +118,7 @@ struct GeohashTests {
 
     @Test("Encode coordinates at equator")
     func testEquatorEncoding() throws {
-        let hash1 = Geohash.encode(latitude: 0.0, longitude: 100.0, precision: 7)
+        let _ = Geohash.encode(latitude: 0.0, longitude: 100.0, precision: 7)
         let hash2 = Geohash.encode(latitude: 0.001, longitude: 100.0, precision: 7)
         let hash3 = Geohash.encode(latitude: -0.001, longitude: 100.0, precision: 7)
 

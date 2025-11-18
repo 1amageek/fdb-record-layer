@@ -347,7 +347,7 @@ struct TypedSpatialIndexScanPlan<Record: Recordable>: Sendable {
 
         // MARK: - Cartesian Queries (.cartesian, .cartesian3D)
 
-        case (.cartesianBoundingBox(let minX, let maxX, let minY, let maxY), .cartesian(_, _, let level)):
+        case (.cartesianBoundingBox(let minX, let maxX, let minY, let maxY), .cartesian(_, _, _)):
             // Use MortonCode for 2D Cartesian bounding box
             let (minCode, maxCode) = MortonCode.boundingBox2D(
                 minX: minX,
@@ -362,7 +362,7 @@ struct TypedSpatialIndexScanPlan<Record: Recordable>: Sendable {
 
             return [(begin: beginKey, end: endKey)]
 
-        case (.cartesian3DBoundingBox(let minX, let maxX, let minY, let maxY, let minZ, let maxZ), .cartesian3D(_, _, _, let level)):
+        case (.cartesian3DBoundingBox(let minX, let maxX, let minY, let maxY, let minZ, let maxZ), .cartesian3D(_, _, _, _)):
             // Use MortonCode for 3D Cartesian bounding box
             let (minCode, maxCode) = MortonCode.boundingBox3D(
                 minX: minX,

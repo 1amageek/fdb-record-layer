@@ -125,26 +125,64 @@ public struct GenericVectorIndexMaintainer<Record: Sendable>: GenericIndexMainta
         record: Record,
         recordAccess: any RecordAccess<Record>
     ) throws -> FDB.Bytes {
-        // Evaluate index expression to get vector field
-        let indexedValues = try recordAccess.evaluate(
-            record: record,
-            expression: index.rootExpression
-        )
-
-        guard let vectorField = indexedValues.first else {
-            throw RecordLayerError.invalidArgument("Vector index requires exactly one field")
+        // Get the field name from the index expression
+        guard let fieldExpr = index.rootExpression as? FieldKeyExpression else {
+            throw RecordLayerError.internalError("Vector index must use FieldKeyExpression")
         }
 
-        // Convert to VectorRepresentable
-        guard let vector = vectorField as? any VectorRepresentable else {
-            throw RecordLayerError.invalidArgument(
-                "Vector index field must conform to VectorRepresentable protocol. " +
-                "Got: \(type(of: vectorField))"
-            )
-        }
+        // Extract field values from record directly (like HNSW does)
+        let fieldValues = try recordAccess.extractField(from: record, fieldName: fieldExpr.fieldName)
 
-        // Get float array representation
-        let floatArray = vector.toFloatArray()
+        // Convert to Float array
+        // Note: Vectors are always defined as arrays (e.g., var embedding: [Float32])
+        // TupleElement only supports Int64, Double, Float for individual values
+        var floatArray: [Float] = []
+        for element in fieldValues {
+            // Individual TupleElement values (only types supported by TupleElement)
+            if let floatValue = element as? Float {
+                floatArray.append(floatValue)
+            } else if let float32Value = element as? Float32 {
+                floatArray.append(Float(float32Value))
+            } else if let doubleValue = element as? Double {
+                floatArray.append(Float(doubleValue))
+            } else if let intValue = element as? Int {
+                floatArray.append(Float(intValue))
+            } else if let intValue = element as? Int64 {
+                floatArray.append(Float(intValue))
+            // Array types (primary use case for vectors)
+            } else if let array = element as? [Float32] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Float] {
+                floatArray.append(contentsOf: array)
+            } else if let array = element as? [Double] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if #available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *),
+                      let array = element as? [Float16] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Int] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Int8] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Int16] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Int32] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [Int64] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [UInt8] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [UInt16] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [UInt32] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else if let array = element as? [UInt64] {
+                floatArray.append(contentsOf: array.map { Float($0) })
+            } else {
+                throw RecordLayerError.invalidArgument(
+                    "Vector field must contain numeric values, got: \(type(of: element))"
+                )
+            }
+        }
 
         // Validate dimensions
         guard floatArray.count == dimensions else {
@@ -287,15 +325,23 @@ extension GenericVectorIndexMaintainer {
 
                 let element = vectorTuple[i]
 
-                // Handle both Float and Double from tuple
+                // Handle numeric types from tuple
+                // Note: TupleElement only supports Int64, Double, Float (not smaller int types)
+                // Vectors are stored as Float values, so we only need to handle those types
                 let floatValue: Float32
                 if let f = element as? Float {
                     floatValue = Float32(f)
+                } else if let f32 = element as? Float32 {
+                    floatValue = f32
                 } else if let d = element as? Double {
                     floatValue = Float32(d)
+                } else if let i = element as? Int {
+                    floatValue = Float32(i)
+                } else if let i64 = element as? Int64 {
+                    floatValue = Float32(i64)
                 } else {
                     throw RecordLayerError.internalError(
-                        "Vector tuple element must be Float or Double, got: \(type(of: element))"
+                        "Vector tuple element must be numeric, got: \(type(of: element))"
                     )
                 }
 
@@ -312,23 +358,5 @@ extension GenericVectorIndexMaintainer {
         // Return sorted results (ascending order by distance)
         // MinHeap.sorted() always returns ascending order
         return heap.sorted()
-    }
-}
-
-// MARK: - Vector Wrapper Helper
-
-/// Internal wrapper for [Float32] to conform to VectorRepresentable
-///
-/// This allows QueryBuilder.nearestNeighbors() to accept both VectorRepresentable
-/// types and raw [Float32] arrays.
-internal struct VectorWrapper: VectorRepresentable {
-    let vector: [Float32]
-
-    var dimensions: Int {
-        return vector.count
-    }
-
-    func toFloatArray() -> [Float32] {
-        return vector
     }
 }

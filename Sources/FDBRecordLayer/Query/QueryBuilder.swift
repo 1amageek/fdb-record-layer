@@ -874,14 +874,14 @@ public final class QueryBuilder<T: Recordable> {
     ///
     /// - Parameters:
     ///   - k: Number of nearest neighbors to return (must be > 0)
-    ///   - queryVector: Query vector conforming to VectorRepresentable
+    ///   - queryVector: Query vector as Float32 array
     ///   - vectorIndex: Index name
     /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
     /// - Throws: RecordLayerError.invalidArgument if k <= 0 or dimensions mismatch
     /// - Returns: TypedVectorQuery for further refinement
-    public func nearestNeighbors<V: VectorRepresentable>(
+    public func nearestNeighbors(
         k: Int,
-        to queryVector: V,
+        to queryVector: [Float32],
         using vectorIndex: String
     ) throws -> TypedVectorQuery<T> {
         // Validate k
@@ -903,9 +903,6 @@ public final class QueryBuilder<T: Recordable> {
             )
         }
 
-        // Convert to Float32 array
-        let queryVectorArray = queryVector.toFloatArray()
-
         // Validate dimensions
         guard let vectorOptions = index.options.vectorOptions else {
             throw RecordLayerError.internalError(
@@ -913,9 +910,9 @@ public final class QueryBuilder<T: Recordable> {
             )
         }
 
-        guard queryVectorArray.count == vectorOptions.dimensions else {
+        guard queryVector.count == vectorOptions.dimensions else {
             throw RecordLayerError.invalidArgument(
-                "Query vector dimension mismatch. Expected: \(vectorOptions.dimensions), Got: \(queryVectorArray.count)"
+                "Query vector dimension mismatch. Expected: \(vectorOptions.dimensions), Got: \(queryVector.count)"
             )
         }
 
@@ -926,7 +923,7 @@ public final class QueryBuilder<T: Recordable> {
 
         return TypedVectorQuery(
             k: k,
-            queryVector: queryVectorArray,
+            queryVector: queryVector,
             index: index,
             recordAccess: recordAccess,
             recordSubspace: subspace.subspace("R"),
@@ -934,28 +931,6 @@ public final class QueryBuilder<T: Recordable> {
             rootSubspace: subspace,
             database: database,
             schema: schema
-        )
-    }
-
-    /// Overload for [Float32] directly
-    ///
-    /// Convenience method for passing raw Float32 arrays without wrapping in VectorRepresentable.
-    ///
-    /// - Parameters:
-    ///   - k: Number of nearest neighbors to return
-    ///   - queryVector: Query vector as Float32 array
-    ///   - vectorIndex: Index name
-    /// - Returns: TypedVectorQuery for further refinement
-    public func nearestNeighbors(
-        k: Int,
-        to queryVector: [Float32],
-        using vectorIndex: String
-    ) throws -> TypedVectorQuery<T> {
-        // Wrap in VectorWrapper to reuse VectorRepresentable logic
-        return try nearestNeighbors(
-            k: k,
-            to: VectorWrapper(vector: queryVector),
-            using: vectorIndex
         )
     }
 

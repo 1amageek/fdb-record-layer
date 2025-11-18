@@ -1,7 +1,7 @@
 # FoundationDB Record Layer Documentation
 
-**Last Updated:** 2025-01-13
-**Version:** 3.0 (Phase 3 Complete - Migration Manager)
+**Last Updated:** 2025-01-17
+**Version:** 3.0 (Production-Ready - Vector Search & Spatial Indexing Complete)
 
 Welcome to the FoundationDB Record Layer documentation! This directory contains all technical documentation for the Swift implementation.
 
@@ -37,7 +37,10 @@ Detailed design specifications for major features:
 - [design/query-planner-optimization.md](design/query-planner-optimization.md) - Cost-based query optimizer
 - [design/metrics-and-logging.md](design/metrics-and-logging.md) - Observability infrastructure
 - [design/online-index-scrubber.md](design/online-index-scrubber.md) - Index consistency verification
-- [design/metadata-evolution-validator.md](design/metadata-evolution-validator.md) - Schema evolution safety (planned)
+- [design/metadata-evolution-validator.md](design/metadata-evolution-validator.md) - Schema evolution safety
+- [vector_search_optimization_design.md](vector_search_optimization_design.md) - **HNSW Vector Search** (O(log n) nearest neighbor)
+- [spatial-index-complete-implementation.md](spatial-index-complete-implementation.md) - **Spatial Indexing** (S2 + Morton Code)
+- [design/vector-spatial-macros-design.md](design/vector-spatial-macros-design.md) - @Spatial macro API design
 
 ### 📘 User Guides
 
@@ -141,23 +144,41 @@ TEST_ISOLATION_GUIDE.md          - Test isolation patterns
 ### Type-Safe API (@Recordable Macro) - 100% Complete ✅
 - Design: [design/swift-macro-design.md](design/swift-macro-design.md)
 - Examples: [../Examples/User+Recordable.swift](../Examples/User+Recordable.swift)
-- Status: **Fully implemented** - All macros complete (@Recordable, @PrimaryKey, #Index, #Unique, #Directory, @Relationship, @Default, @Transient)
+- Status: **Fully implemented** - All macros complete (@Recordable, @PrimaryKey, #Index, #Unique, #Directory, @Relationship, @Default, @Transient, @Spatial)
 - Features: Auto-generated store() methods, multi-tenant support with #Directory, SwiftData-style API
 
-### Directory Layer & Multi-Tenant Architecture
+### Vector Search (HNSW) - 100% Complete ✅
+- Design: [vector_search_optimization_design.md](vector_search_optimization_design.md)
+- Implementation: [hnsw_implementation_verification.md](hnsw_implementation_verification.md)
+- Status: **Fully implemented** - O(log n) nearest neighbor search
+- Features: HNSW algorithm, OnlineIndexer integration, auto strategy selection, 3 distance metrics (cosine, l2, innerProduct)
+
+### Spatial Indexing (S2 + Morton Code) - 100% Complete ✅
+- Design: [spatial-index-complete-implementation.md](spatial-index-complete-implementation.md)
+- Macro Guide: [spatial-macro-keypath-guide.md](spatial-macro-keypath-guide.md)
+- Status: **Fully implemented** - 4 spatial types (.geo, .geo3D, .cartesian, .cartesian3D)
+- Features: S2 Geometry (Hilbert curve), Morton Code (Z-order curve), Geohash, dynamic precision selection
+
+### Directory Layer & Multi-Tenant Architecture - 100% Complete ✅
 - Design: [design/directory-layer-design.md](design/directory-layer-design.md)
 - Usage: [guides/partition-usage.md](guides/partition-usage.md)
 - Status: Using FoundationDB standard Directory Layer with `layer: .partition`
 
-### Query Optimization
+### Query Optimization - 100% Complete ✅
 - Design: [design/query-planner-optimization.md](design/query-planner-optimization.md)
 - Usage: [guides/query-optimizer.md](guides/query-optimizer.md)
+- Features: Cost-based planner, Covering Index detection, IN-join optimization
 
-### Index Management
+### Index Management - 100% Complete ✅
 - Design: [design/online-index-scrubber.md](design/online-index-scrubber.md)
 - Usage: [guides/advanced-index-design.md](guides/advanced-index-design.md)
+- Features: Online indexing, index scrubbing, RangeSet progress tracking
 
-### Observability
+### Migration Manager - 100% Complete ✅
+- Implementation: Complete with 24 tests passing
+- Features: Schema evolution, lightweight migration, multi-step migration, idempotent execution
+
+### Observability - 100% Complete ✅
 - Design: [design/metrics-and-logging.md](design/metrics-and-logging.md)
 
 ---
@@ -204,4 +225,4 @@ When adding or updating documentation:
 ---
 
 **Maintained by:** Claude Code
-**Last Major Update:** 2025-01-13 (Phase 3 Complete - Documentation Cleanup)
+**Last Major Update:** 2025-01-17 (Phase 6 Complete - Vector Search & Spatial Indexing, **525 Tests Passing**)

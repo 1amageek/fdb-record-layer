@@ -266,7 +266,7 @@ public macro Unique<T>(_ constraints: [PartialKeyPath<T>]...) = #externalMacro(m
 /// - Memory: O(N * M * dimensions * 4 bytes)
 ///
 /// **Important**:
-/// - Property type MUST conform to `VectorRepresentable` protocol
+/// - Property type MUST be an array type: [Float], [Float32], or [Double]
 /// - Dimensions must match vector data at runtime
 /// - Metric cannot be changed after index creation (affects HNSW graph structure)
 /// - HNSW parameters (m, efConstruction, efSearch) are determined by the index implementation

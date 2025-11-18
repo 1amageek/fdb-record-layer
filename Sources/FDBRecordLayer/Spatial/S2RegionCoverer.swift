@@ -316,7 +316,6 @@ fileprivate struct PriorityQueue<Element: Comparable> {
 
     private mutating func siftDown(_ index: Int) {
         var parentIndex = index
-        let parent = heap[parentIndex]
 
         while true {
             let leftChild = 2 * parentIndex + 1

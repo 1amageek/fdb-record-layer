@@ -125,62 +125,96 @@ HNSWは**多層のスキップリスト風グラフ**を構築します：
 
 ## Swift実装設計
 
-### 1. Vector型とDistance
+### 1. ベクトル型とDistance
+
+**現在の実装**: ベクトルは直接配列型として定義されます（Vector structは使用しません）
+
+**サポートされる型**:
 
 ```swift
-/// ベクトル型（型安全）
-public struct Vector: Sendable, Equatable {
-    public let elements: [Float]
-    public let dimensions: Int
+// 浮動小数点型（推奨）
+var embedding: [Float32]  // 32ビット浮動小数点（推奨）
+var embedding: [Float]    // 64ビット浮動小数点
+var embedding: [Double]   // 64ビット倍精度浮動小数点
 
-    public init(_ elements: [Float]) {
-        self.elements = elements
-        self.dimensions = elements.count
-    }
+// 半精度浮動小数点（メモリ効率重視、Apple silicon のみ）
+@available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *)
+var embedding: [Float16]  // 16ビット半精度（50%メモリ削減）
 
-    /// ベクトルを正規化（単位ベクトルに）
-    public func normalized() -> Vector {
-        let magnitude = sqrt(elements.reduce(0) { $0 + $1 * $1 })
-        return Vector(elements.map { $0 / magnitude })
-    }
+// 整数型（量子化ベクトル用）
+var embedding: [Int]      // 符号付き整数
+var embedding: [Int8]     // 8ビット符号付き整数（-128〜127）
+var embedding: [Int16]    // 16ビット符号付き整数
+var embedding: [Int32]    // 32ビット符号付き整数
+var embedding: [Int64]    // 64ビット符号付き整数
 
-    /// 内積
-    public func dot(_ other: Vector) -> Float {
-        precondition(dimensions == other.dimensions)
-        return zip(elements, other.elements).reduce(0) { $0 + $1.0 * $1.1 }
-    }
+var embedding: [UInt8]    // 8ビット符号なし整数（0〜255）
+var embedding: [UInt16]   // 16ビット符号なし整数
+var embedding: [UInt32]   // 32ビット符号なし整数
+var embedding: [UInt64]   // 64ビット符号なし整数
+```
 
-    /// L2距離（ユークリッド距離）
-    public func l2Distance(to other: Vector) -> Float {
-        precondition(dimensions == other.dimensions)
-        let diff = zip(elements, other.elements).map { $0 - $1 }
-        return sqrt(diff.reduce(0) { $0 + $1 * $1 })
-    }
+**型の選択ガイド**:
 
-    /// コサイン類似度（正規化ベクトルなら内積と同じ）
-    public func cosineSimilarity(to other: Vector) -> Float {
-        normalized().dot(other.normalized())
-    }
-}
+| 用途 | 推奨型 | 理由 |
+|------|--------|------|
+| **一般的なML埋め込み** | `[Float32]` | 標準的な精度とメモリのバランス |
+| **メモリ効率重視（Apple silicon）** | `[Float16]` | 50%メモリ削減、Apple silicon のみ |
+| **量子化埋め込み（8ビット）** | `[UInt8]` または `[Int8]` | 大幅なメモリ削減（75%削減）、精度低下 |
+| **バイナリ特徴量** | `[UInt8]` | 0/1の特徴量、極限のメモリ効率 |
+| **高精度計算** | `[Double]` | 科学計算、高精度が必要な場合 |
 
-/// 距離メトリック
-public enum DistanceMetric: Sendable {
+**距離メトリック**:
+
+```swift
+/// 距離メトリック（VectorMetric）
+public enum VectorMetric: String, Sendable {
+    case cosine       // コサイン類似度（デフォルト、ML埋め込み向け）
     case l2           // L2距離（ユークリッド距離）
-    case cosine       // コサイン類似度（内積ベース）
     case innerProduct // 内積（正規化済みベクトル用）
-
-    func distance(_ a: Vector, _ b: Vector) -> Float {
-        switch self {
-        case .l2:
-            return a.l2Distance(to: b)
-        case .cosine:
-            return 1.0 - a.cosineSimilarity(to: b)  // 距離に変換
-        case .innerProduct:
-            return -a.dot(b)  // 負の内積（小さいほど近い）
-        }
-    }
 }
 ```
+
+**使用例**:
+
+```swift
+@Recordable
+struct Product {
+    #PrimaryKey<Product>([\.productID])
+
+    // 標準的な32ビット浮動小数点ベクトル
+    @Vector(dimensions: 384, metric: .cosine)
+    var embedding: [Float32]
+
+    var productID: Int64
+    var name: String
+}
+
+@Recordable
+struct CompactProduct {
+    #PrimaryKey<CompactProduct>([\.productID])
+
+    // 半精度浮動小数点ベクトル（Apple silicon のみ、50%メモリ削減）
+    @Vector(dimensions: 384, metric: .cosine)
+    @available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *)
+    var embedding: [Float16]
+
+    var productID: Int64
+}
+
+@Recordable
+struct QuantizedProduct {
+    #PrimaryKey<QuantizedProduct>([\.productID])
+
+    // 8ビット量子化ベクトル（75%メモリ削減）
+    @Vector(dimensions: 384, metric: .cosine)
+    var embedding: [UInt8]  // 0-255に正規化された値
+
+    var productID: Int64
+}
+```
+
+**内部変換**: すべての数値型は内部的に `Float32` に変換されて距離計算が行われます。
 
 ### 2. VectorIndexDefinition
 
