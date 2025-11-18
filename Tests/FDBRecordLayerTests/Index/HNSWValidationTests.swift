@@ -98,14 +98,14 @@ struct HNSWValidationTests {
 
         await #expect(throws: RecordLayerError.self) {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
         }
 
         // Verify the specific error type
         do {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
             Issue.record("Expected hnswGraphNotBuilt error but query succeeded")
         } catch let error as RecordLayerError {
@@ -179,14 +179,14 @@ struct HNSWValidationTests {
 
         await #expect(throws: RecordLayerError.self) {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
         }
 
         // Verify the specific error type
         do {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
             Issue.record("Expected indexNotReadable error but query succeeded")
         } catch let error as RecordLayerError {
@@ -260,14 +260,14 @@ struct HNSWValidationTests {
 
         await #expect(throws: RecordLayerError.self) {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
         }
 
         // Verify the specific error type
         do {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
             Issue.record("Expected indexNotReadable error but query succeeded")
         } catch let error as RecordLayerError {
@@ -365,7 +365,7 @@ struct HNSWValidationTests {
 
         do {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
             Issue.record("Expected error but query succeeded")
         } catch let error as RecordLayerError {
@@ -453,7 +453,7 @@ struct HNSWValidationTests {
 
         do {
             let _ = try await store.query()
-                .nearestNeighbors(k: 10, to: queryVector, using: "Product_embedding_index")
+                .nearestNeighbors(k: 10, to: queryVector, using: \.embedding)
                 .execute()
             Issue.record("Expected error but query succeeded")
         } catch let error as RecordLayerError {

@@ -258,6 +258,39 @@ public final class RecordContainer: Sendable {
     public func cacheSize() -> Int {
         return storeCache.withLock { $0.count }
     }
+
+    // MARK: - Transaction Support
+
+    /// Execute a block within a single atomic transaction
+    ///
+    /// All operations within the block are executed in a single FDB transaction,
+    /// ensuring all-or-nothing semantics.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// try await container.withTransaction { context in
+    ///     let userStore = container.store(for: User.self, path: "users")
+    ///     try await userStore.saveInternal(user1, context: context)
+    ///     try await userStore.saveInternal(user2, context: context)
+    ///     // Both saves commit together
+    /// }
+    /// ```
+    ///
+    /// - Parameter block: Transaction block to execute
+    /// - Returns: Result of the block
+    /// - Throws: RecordLayerError if transaction fails
+    public func withTransaction<T>(
+        _ block: (RecordContext) async throws -> T
+    ) async throws -> T {
+        let transaction = try database.createTransaction()
+        let context = RecordContext(transaction: transaction)
+        defer { context.cancel() }
+
+        let result = try await block(context)
+        try await context.commit()
+
+        return result
+    }
 }
 
 // MARK: - CustomDebugStringConvertible

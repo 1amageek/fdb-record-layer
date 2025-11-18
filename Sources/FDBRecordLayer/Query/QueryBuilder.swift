@@ -855,58 +855,60 @@ public final class QueryBuilder<T: Recordable> {
 
     // MARK: - Vector Search
 
-    /// Perform k-nearest neighbors search using a vector index
+    /// Find K nearest neighbors using vector similarity search (KeyPath-based, type-safe)
     ///
-    /// Searches for the k most similar records based on vector distance.
+    /// **Recommended API**: Uses KeyPath for type-safe index selection.
     ///
-    /// **Distance Metrics**:
-    /// - Cosine: `1 - cosine_similarity` (range: [0, 2], 0 = identical)
-    /// - L2: Euclidean distance (range: [0, ∞))
-    /// - Inner Product: `-dot_product` (range: (-∞, ∞))
+    /// Automatically selects the best vector search algorithm:
+    /// - **HNSW**: O(log n) search for large datasets (if index built with OnlineIndexer)
+    /// - **Flat Scan**: O(n) search for small datasets or when HNSW unavailable
     ///
     /// **Example**:
     /// ```swift
-    /// let results = try await store.query(Product.self)
-    ///     .nearestNeighbors(k: 10, to: queryEmbedding, using: "product_embedding_vector")
-    ///     .filter(\.category == "Electronics")
+    /// // Type-safe: KeyPath automatically resolves to index name
+    /// let similar = try await store.query(Product.self)
+    ///     .nearestNeighbors(k: 10, to: queryEmbedding, using: \.embedding)
     ///     .execute()
     /// ```
     ///
     /// - Parameters:
     ///   - k: Number of nearest neighbors to return (must be > 0)
     ///   - queryVector: Query vector as Float32 array
-    ///   - vectorIndex: Index name
-    /// - Throws: RecordLayerError.indexNotFound if index doesn't exist
+    ///   - fieldKeyPath: KeyPath to the vector field (e.g., \.embedding)
+    /// - Throws: RecordLayerError.indexNotFound if no vector index exists for field
     /// - Throws: RecordLayerError.invalidArgument if k <= 0 or dimensions mismatch
     /// - Returns: TypedVectorQuery for further refinement
-    public func nearestNeighbors(
+    public func nearestNeighbors<Field>(
         k: Int,
         to queryVector: [Float32],
-        using vectorIndex: String
+        using fieldKeyPath: KeyPath<T, Field>
     ) throws -> TypedVectorQuery<T> {
         // Validate k
         guard k > 0 else {
             throw RecordLayerError.invalidArgument("k must be positive, got: \(k)")
         }
 
+        // Resolve KeyPath to index name
+        let indexName = try resolveVectorIndexName(for: fieldKeyPath)
+
         // Find index
-        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == vectorIndex }) else {
+        guard let index = schema.indexes(for: T.recordName).first(where: { $0.name == indexName }) else {
             throw RecordLayerError.indexNotFound(
-                "Vector index '\(vectorIndex)' not found in schema for record type '\(T.recordName)'"
+                "Vector index '\(indexName)' not found in schema for record type '\(T.recordName)'"
             )
         }
 
         // Validate index type
         guard index.type == .vector else {
             throw RecordLayerError.invalidArgument(
-                "Index '\(vectorIndex)' is not a vector index (type: \(index.type))"
+                "Index '\(indexName)' is not a vector index (type: \(index.type))"
             )
         }
 
         // Validate dimensions
         guard let vectorOptions = index.options.vectorOptions else {
             throw RecordLayerError.internalError(
-                "Vector index '\(vectorIndex)' missing vectorOptions"
+                "Vector index '\(indexName)' missing vectorOptions"
             )
         }
 
@@ -931,6 +933,50 @@ public final class QueryBuilder<T: Recordable> {
             rootSubspace: subspace,
             database: database,
             schema: schema
+        )
+    }
+
+    // MARK: - Private Helpers
+
+    /// Resolve KeyPath to vector index name
+    ///
+    /// - Parameter fieldKeyPath: KeyPath to the vector field
+    /// - Returns: Index name
+    /// - Throws: RecordLayerError.indexNotFound if no vector index exists for field
+    private func resolveVectorIndexName<Field>(for fieldKeyPath: KeyPath<T, Field>) throws -> String {
+        // Use the macro-generated fieldName method to get field name
+        let fieldName = T.fieldName(for: fieldKeyPath)
+
+        // First check macro-generated index definitions
+        let indexDefs = T.indexDefinitions
+        if let indexDef = indexDefs.first(where: { def in
+            // Check if this is a vector index and uses the field
+            if case .vector = def.indexType {
+                return def.fields.count == 1 && def.fields[0] == fieldName
+            }
+            return false
+        }) {
+            return indexDef.name
+        }
+
+        // If not found in macro definitions, check schema's manually added indexes
+        let schemaIndexes = schema.indexes(for: T.recordName)
+        if let manualIndex = schemaIndexes.first(where: { index in
+            // Check if this is a vector index
+            guard index.type == .vector else { return false }
+
+            // Check if the index uses this field
+            // For vector indexes, rootExpression is typically a FieldKeyExpression
+            if let fieldExpr = index.rootExpression as? FieldKeyExpression {
+                return fieldExpr.fieldName == fieldName
+            }
+            return false
+        }) {
+            return manualIndex.name
+        }
+
+        throw RecordLayerError.indexNotFound(
+            "No vector index found for field '\(fieldName)' in record type '\(T.recordName)'"
         )
     }
 

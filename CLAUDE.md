@@ -4749,10 +4749,16 @@ try await onlineIndexer.buildHNSWIndex()
 // 3. クエリ実行（O(log n) HNSW検索）
 let queryEmbedding: [Float32] = getEmbedding(from: "wireless headphones")
 
+// ✅ 推奨: KeyPathベースAPI（型安全）
 let results = try await store.query(Product.self)
-    .nearestNeighbors(k: 10, to: queryEmbedding, using: "product_embedding_hnsw")
+    .nearestNeighbors(k: 10, to: queryEmbedding, using: \.embedding)
     .filter(\.category == "Electronics")  // ポストフィルタ
     .execute()
+
+// 代替: 文字列ベースAPI（後方互換性）
+// let results = try await store.query(Product.self)
+//     .nearestNeighbors(k: 10, to: queryEmbedding, using: "product_embedding_hnsw")
+//     .execute()
 
 for (product, distance) in results {
     print("\(product.name): distance = \(distance)")
@@ -4760,6 +4766,7 @@ for (product, distance) in results {
 // ✅ GenericHNSWIndexMaintainer.search() が自動的に使用される
 // ✅ O(log n) 計算量
 // ✅ コード変更不要
+// ✅ KeyPathで型安全、インデックス名不要
 ```
 
 ### 自動選択の仕組み
@@ -5265,9 +5272,9 @@ try await onlineIndexer.buildHNSWIndex()
 3. **キャッシング**: 頻繁なクエリは結果をキャッシュ（アプリケーション層）
 
 ```swift
-// ポストフィルタ例
+// ポストフィルタ例（KeyPathベースAPI推奨）
 let results = try await store.query(Product.self)
-    .nearestNeighbors(k: 10, to: queryEmbedding, using: "product_embedding_hnsw")
+    .nearestNeighbors(k: 10, to: queryEmbedding, using: \.embedding)  // ✅ KeyPath
     .filter(\.category == "Electronics")  // k * 2 をフェッチして後処理
     .execute()
 // TypedVectorSearchPlanが自動的に fetchK = k * 2 = 20 を使用
@@ -5295,6 +5302,7 @@ let results = try await store.query(Product.self)
 - **docs/vector_search_optimization_design.md**: HNSW設計ドキュメント
 - **docs/hnsw_inline_indexing_protection.md**: 安全機構の詳細
 - **docs/hnsw_implementation_verification.md**: 実装検証レポート
+- **docs/hnsw_validation_fix_design.md**: Fail-fast検証デザイン（✅ 完了 - 全テスト合格）
 
 ### まとめ
 
@@ -5303,6 +5311,19 @@ let results = try await store.query(Product.self)
 ✅ **安全性**: allowInlineIndexingフラグでトランザクションタイムアウト防止
 ✅ **スケーラビリティ**: OnlineIndexerでバッチ構築、数百万ベクトル対応
 ✅ **テスト**: 4/4ユニットテスト合格
+✅ **Fail-fast検証**: 5/5検証テスト合格（プロダクション対応）
+
+**Fail-fast検証テスト** (HNSWValidationTests.swift):
+1. ✅ `testHNSWSearchGraphNotBuilt`: HNSW グラフ未構築エラー
+2. ✅ `testQueryIndexNotReadableWriteOnly`: インデックスが writeOnly 状態のエラー
+3. ✅ `testQueryIndexNotReadableDisabled`: インデックスが disabled 状態のエラー
+4. ✅ `testHNSWGraphNotBuiltErrorMessage`: hnswGraphNotBuilt エラーメッセージの品質
+5. ✅ `testIndexNotReadableErrorMessage`: indexNotReadable エラーメッセージの品質
+
+**エラーハンドリング**:
+- `RecordLayerError.hnswGraphNotBuilt`: HNSW グラフが構築されていない場合
+- `RecordLayerError.indexNotReadable`: インデックスが readable 状態でない場合
+- 実行可能な修正手順を含むエラーメッセージ
 
 **次のステップ（オプション）**:
 - 統合テスト: HNSW検索の精度・パフォーマンステスト
@@ -5787,9 +5808,9 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 
 ---
 
-**Last Updated**: 2025-01-17
+**Last Updated**: 2025-01-18
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
-**Record Layer (Swift)**: プロダクション対応 | **テスト**: **525合格（50スイート）** | **進捗**: 100%完了
+**Record Layer (Swift)**: プロダクション対応 | **テスト**: **530合格（51スイート）** | **進捗**: 100%完了
 **Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）
 **Phase 3 (Migration Manager)**: ✅ 100%完了（**24テスト全合格**、包括的テストカバレッジ）
 **Phase 4 (PartialRange対応)**: ✅ 100%完了（**Protobufシリアライズ完全対応**、20+テスト合格）
@@ -5797,4 +5818,4 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 **Range Optimization**: ✅ Phase 1 & 3 完了（RangeWindowCalculator、RangeIndexStatistics）
 **Spatial Index**: ✅ 完全実装（SpatialIndexMaintainer、S2Geometry、MortonCode）
 **Phase 5 (Spatial Indexing)**: ✅ **100%完了**（**S2 Geometry + Morton Code統合、すべてのTODO実装済み**）
-**Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、4/4テスト合格、プロダクション対応**）
+**Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、4/4テスト + 5/5検証テスト合格、プロダクション対応**）
