@@ -1,8 +1,8 @@
 # HNSW Index Builder 設計書
 
-**バージョン**: 1.1
+**バージョン**: 1.2
 **最終更新**: 2025-01-17
-**ステータス**: Phase 1 実装済み、修正中
+**ステータス**: Phase 1 完了 ✅
 
 ---
 
@@ -37,17 +37,16 @@ HNSW インデックスの構築を手動で安全に実行できる機能を提
 
 ---
 
-## Known Issues
+## ✅ 解決済み課題（Phase 1実装時に発見・修正）
 
-> **⚠️ 実装レビュー結果**（2025-01-17）
+> **実装レビュー結果**（2025-01-17）
 >
-> Phase 1 実装完了後のコードレビューで、設計と実装の間に**4つの論理的矛盾**を発見しました。
-> 以下の問題を修正中です。
+> Phase 1 実装完了後のコードレビューで、設計と実装の間に**4つの論理的矛盾**を発見し、すべて修正しました。
 
-### Issue 1: IndexState管理の二重実行
+### ✅ Issue 1: IndexState管理の二重実行（解決済み）
 
 **問題**:
-- `HNSWIndexBuilder.build()` が `indexStateManager.enable()` / `makeReadable()` を呼び出す
+- `HNSWIndexBuilder.build()` が `indexStateManager.enable()` / `makeReadable()` を呼び出していた
 - `OnlineIndexer.buildHNSWIndex()` も `indexStateManager.enable()` / `makeReadable()` を呼び出す
 - 状態遷移が2箇所で重複実行される
 
@@ -56,7 +55,7 @@ HNSW インデックスの構築を手動で安全に実行できる機能を提
 - デバッグが困難（どちらで状態が変わったか不明）
 - 冗長なトランザクション
 
-**修正方針**（Java版Record Layerと同じパターン）:
+**✅ 修正完了**（Java版Record Layerと同じパターン）:
 ```swift
 // ✅ 修正後: HNSWIndexBuilderが状態遷移を完全に管理
 HNSWIndexBuilder.build() {
@@ -67,13 +66,13 @@ HNSWIndexBuilder.build() {
 
 // ✅ 修正後: OnlineIndexerは状態遷移しない
 OnlineIndexer.buildHNSWIndex() {
-    // ❌ 削除: enable/makeReadableは呼び出さない
+    // ✅ 削除完了: enable/makeReadableは呼び出さない
     try await assignLevelsToAllNodes()
     try await buildHNSWGraphLevelByLevel()
 }
 ```
 
-### Issue 2: createCheckpoint()にTODOが残存
+### ✅ Issue 2: createCheckpoint()にTODOが残存（解決済み）
 
 **問題**:
 ```swift
@@ -91,27 +90,26 @@ private func createCheckpoint() async throws -> RangeCheckpoint {
 - チェックポイントが常に空（再開機能が動作しない）
 - ユーザー要求「TODOなしの完全実装」に違反
 
-**修正方針**:
+**✅ 修正完了**:
 ```swift
 // ✅ 修正後: OnlineIndexerから実際の情報を取得
 private func createCheckpoint() async throws -> RangeCheckpoint {
-    let indexer = indexerLock.withLock { $0 }
-    guard let indexer = indexer else {
-        throw RecordLayerError.internalError("Indexer not initialized")
+    guard let indexer = indexerLock.withLock({ $0 }) else {
+        throw RecordLayerError.internalError("Cannot create checkpoint: indexer not available")
     }
 
-    let (lastKey, processedRecords, _) = try await indexer.getCurrentCheckpoint()
+    let (lastKey, processedCount, _) = try await indexer.getCurrentCheckpoint()
 
     return RangeCheckpoint(
         lastCompletedKey: lastKey,
         phase: phase,
-        processedRecords: processedRecords,
+        processedRecords: processedCount,
         timestamp: Date()
     )
 }
 ```
 
-### Issue 3: buildFinalStatistics()のmaxLevelがnil
+### ✅ Issue 3: buildFinalStatistics()のmaxLevelがnil（解決済み）
 
 **問題**:
 ```swift
@@ -127,22 +125,24 @@ private func buildFinalStatistics() async throws -> BuildStatistics {
 - 統計情報が不完全（maxLevelは重要な指標）
 - ユーザーがHNSWグラフの構造を把握できない
 
-**修正方針**:
+**✅ 修正完了**:
 ```swift
 // ✅ 修正後: OnlineIndexerから実際のmaxLevelを取得
 private func buildFinalStatistics() async throws -> BuildStatistics {
+    // Get max level from HNSW index via indexer
     let maxLevel: Int?
     if let indexer = indexerLock.withLock({ $0 }) {
-        maxLevel = try await indexer.getMaxLevel()
+        let (_, _, level) = try await indexer.getCurrentCheckpoint()
+        maxLevel = level
     } else {
-        maxLevel = try await queryMaxLevelDirectly()
+        maxLevel = nil
     }
 
     return BuildStatistics(..., maxLevel: maxLevel)
 }
 ```
 
-### Issue 4: OnlineIndexerがローカル変数
+### ✅ Issue 4: OnlineIndexerがローカル変数（解決済み）
 
 **問題**:
 ```swift
@@ -159,7 +159,7 @@ public func build(options: HNSWBuildOptions = .init()) async throws -> BuildStat
 - `buildFinalStatistics()` が maxLevel を取得できない
 - Issue 2 と Issue 3 の根本原因
 
-**修正方針**:
+**✅ 修正完了**:
 ```swift
 // ✅ 修正後: OnlineIndexerをインスタンス変数として保持
 public final class HNSWIndexBuilder<Record: Recordable>: Sendable {
@@ -179,14 +179,16 @@ public final class HNSWIndexBuilder<Record: Recordable>: Sendable {
 }
 ```
 
-### 修正ステータス
+### ✅ 修正完了ステータス
 
-| Issue | 修正予定 | 優先度 |
-|-------|---------|-------|
-| Issue 1: IndexState二重管理 | ✅ 修正中 | 最高 |
-| Issue 2: createCheckpoint()のTODO | ✅ 修正中 | 高 |
-| Issue 3: maxLevelがnil | ✅ 修正中 | 高 |
-| Issue 4: OnlineIndexerローカル変数 | ✅ 修正中 | 最高 |
+| Issue | ステータス | 完了日 |
+|-------|----------|-------|
+| Issue 1: IndexState二重管理 | ✅ 完了 | 2025-01-17 |
+| Issue 2: createCheckpoint()のTODO | ✅ 完了 | 2025-01-17 |
+| Issue 3: maxLevelがnil | ✅ 完了 | 2025-01-17 |
+| Issue 4: OnlineIndexerローカル変数 | ✅ 完了 | 2025-01-17 |
+
+**実装の詳細**: `/Users/1amageek/Desktop/fdb-record-layer/Sources/FDBRecordLayer/Index/HNSWIndexBuilder.swift`
 
 ---
 

@@ -127,6 +127,33 @@ public struct IndexMacro: DeclarationMacro {
                 return
             }
         }
+
+        // 7. Validate covering: parameter if present
+        if let coveringArg = node.arguments.first(where: { $0.label?.text == "covering" }) {
+            // covering: must be an array literal
+            guard let coveringArrayExpr = coveringArg.expression.as(ArrayExprSyntax.self) else {
+                context.diagnose(
+                    Diagnostic(
+                        node: coveringArg,
+                        message: IndexMacroDiagnostic.invalidCoveringParameter
+                    )
+                )
+                return
+            }
+
+            // Validate that all covering elements are KeyPath expressions
+            for element in coveringArrayExpr.elements {
+                guard element.expression.is(KeyPathExprSyntax.self) else {
+                    context.diagnose(
+                        Diagnostic(
+                            node: element,
+                            message: IndexMacroDiagnostic.nonKeyPathCoveringElement
+                        )
+                    )
+                    return
+                }
+            }
+        }
     }
 }
 
@@ -139,6 +166,8 @@ enum IndexMacroDiagnostic {
     case emptyKeyPathArray
     case nonKeyPathElement
     case invalidNameParameter
+    case invalidCoveringParameter
+    case nonKeyPathCoveringElement
 }
 
 extension IndexMacroDiagnostic: DiagnosticMessage {
@@ -179,6 +208,19 @@ extension IndexMacroDiagnostic: DiagnosticMessage {
             return """
             'name:' parameter must be a string literal
             Usage: #Index<YourType>([\\YourType.field], name: "my_index")
+            """
+
+        case .invalidCoveringParameter:
+            return """
+            'covering:' parameter must be an array literal of KeyPaths
+            Usage: #Index<YourType>([\\YourType.city], covering: [\\YourType.name, \\YourType.email])
+            """
+
+        case .nonKeyPathCoveringElement:
+            return """
+            All covering array elements must be KeyPath expressions
+            Invalid: #Index<YourType>([\\YourType.city], covering: ["name"])
+            Correct: #Index<YourType>([\\YourType.city], covering: [\\YourType.name])
             """
         }
     }

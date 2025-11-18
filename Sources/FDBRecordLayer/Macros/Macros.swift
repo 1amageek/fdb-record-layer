@@ -190,7 +190,8 @@ public macro Index<T>(
     _ indices: [PartialKeyPath<T>],
     type: MacroIndexType? = nil,
     scope: MacroIndexScope? = nil,
-    name: String? = nil
+    name: String? = nil,
+    covering: [PartialKeyPath<T>]? = nil
 ) = #externalMacro(module: "FDBRecordLayerMacros", type: "IndexMacro")
 
 /// Defines a unique index on specified fields

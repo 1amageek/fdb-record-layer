@@ -931,6 +931,7 @@ public final class QueryBuilder<T: Recordable> {
             recordAccess: recordAccess,
             recordSubspace: subspace.subspace("R"),
             indexSubspace: baseIndexSubspace,
+            rootSubspace: subspace,
             database: database,
             schema: schema
         )

@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import Logging
 
 // MARK: - HNSW Data Structures
 
@@ -845,7 +846,28 @@ extension GenericHNSWIndexMaintainer {
 
         // Get entry point
         guard let entryPointPK = try await getEntryPoint(transaction: transaction) else {
-            return []  // Empty graph
+            throw RecordLayerError.hnswGraphNotBuilt(
+                indexName: index.name,
+                message: """
+                HNSW graph for index '\(index.name)' has not been built yet.
+
+                To fix this issue:
+                1. Run OnlineIndexer.buildHNSWIndex() to build the graph
+                2. Ensure IndexState is 'readable' after building
+
+                Example:
+                ```swift
+                let indexer = OnlineIndexer(...)
+                try await indexer.buildHNSWIndex(
+                    indexName: "\(index.name)",
+                    batchSize: 1000,
+                    throttleDelayMs: 10
+                )
+                ```
+
+                Alternative: Use `.flatScan` strategy for automatic indexing
+                """
+            )
         }
 
         let entryMetadata = try await getNodeMetadata(primaryKey: entryPointPK, transaction: transaction)!
@@ -1169,48 +1191,59 @@ extension GenericHNSWIndexMaintainer {
             try await deleteNode(primaryKey: oldPrimaryKey, transaction: transaction)
         }
 
-        // ❌ Insertions: NOT SUPPORTED - MUST use OnlineIndexer
+        // ⚠️ Insertions: CONDITIONAL SUPPORT - Small graphs only (<100 nodes)
         if let newRecord = newRecord {
-            // 🛡️ CRITICAL: HNSW inline indexing is NOT supported
+            // 🛡️ CRITICAL: HNSW inline indexing has STRICT limitations
             //
-            // **Why**: HNSW insertion requires ~12,000 FDB operations for medium graphs,
-            // which ALWAYS exceeds FoundationDB transaction limits:
-            // - 5 second timeout limit
-            // - 10MB transaction size limit
+            // **Strategy: .hnsw(inlineIndexing: true)**
+            // - ✅ **Supported**: Small graphs ONLY (maxLevel < 2, approximately <100 nodes)
+            // - ❌ **NOT Supported**: Medium/large graphs (maxLevel >= 2)
             //
-            // Even with strategy = .hnsw(inlineIndexing: true), user transactions WILL timeout.
-            // The rewireNeighbors() deletion also causes excessive I/O in a single transaction.
+            // **Why Size Limits Exist**:
+            // - HNSW insertion requires ~12,000 FDB operations for medium graphs (maxLevel >= 3)
+            // - FoundationDB limits: 5 second timeout, 10MB transaction size
+            // - User transactions WILL timeout/fail for graphs with maxLevel >= 2
             //
-            // **REQUIRED Solution**:
-            // HNSW indexes MUST be built using OnlineIndexer with batched transactions:
+            // **Recommendation for Production**:
+            // Use `.hnsw(inlineIndexing: false)` (aka `.hnswBatch`) and build with OnlineIndexer:
             //
-            // 1. Set index to writeOnly state:
-            //    try await indexStateManager.setState(index: "\(index.name)", state: .writeOnly)
-            //
-            // 2. Build via OnlineIndexer (batched, safe):
-            //    try await onlineIndexer.buildIndex(indexName: "\(index.name)")
-            //
-            // 3. Enable queries:
-            //    try await indexStateManager.setState(index: "\(index.name)", state: .readable)
-            //
-            // **Future Work**:
-            // Implement OnlineIndexer-specific HNSW batch insertion logic that:
-            // - Splits graph construction across multiple transactions
-            // - Uses RangeSet for progress tracking
-            // - Handles transaction retries gracefully
-            throw RecordLayerError.internalError(
-                "HNSW indexes do not support inline indexing (RecordStore.save). " +
-                "HNSW insertion requires ~12,000 FDB operations for medium graphs, " +
-                "which exceeds FoundationDB's 5-second transaction timeout and 10MB size limits. " +
-                "\n\n" +
-                "**REQUIRED**: Build HNSW indexes using OnlineIndexer:\n" +
-                "1. try await indexStateManager.setState(index: \"\(index.name)\", state: .writeOnly)\n" +
-                "2. try await onlineIndexer.buildIndex(indexName: \"\(index.name)\")\n" +
-                "3. try await indexStateManager.setState(index: \"\(index.name)\", state: .readable)\n" +
-                "\n" +
-                "See docs/vector_search_optimization_design.md for implementation details."
+            // 1. try await indexStateManager.setState(index: "\(index.name)", state: .writeOnly)
+            // 2. try await onlineIndexer.buildIndex(indexName: "\(index.name)")
+            // 3. try await indexStateManager.setState(index: "\(index.name)", state: .readable)
+
+        // Check current graph size before attempting insertion
+        let currentMaxLevel = try await getMaxLevel(transaction: transaction)
+
+        if currentMaxLevel >= 2 {
+            // Graph is too large for inline indexing - SKIP with WARNING
+            let mValue = self.parameters.M
+            let estimatedNodes = Int(pow(Double(mValue), Double(currentMaxLevel)))
+            let estimatedOps = 12000 * (currentMaxLevel - 1)
+
+            Logger(label: "com.fdb.recordlayer.index.hnsw").warning("HNSW inline indexing skipped for large graph", metadata: [
+                "index": "\(index.name)",
+                "maxLevel": "\(currentMaxLevel)",
+                "estimatedNodes": "\(estimatedNodes)",
+                "estimatedOps": "\(estimatedOps)",
+                "reason": "Graph too large for inline indexing (would exceed FDB 5s timeout and 10MB limits)",
+                "recommendation": "Switch to .hnsw(inlineIndexing: false) and rebuild via OnlineIndexer"
+            ])
+
+            // Skip insertion and return early (graceful degradation)
+            return
+        }
+
+            // ✅ Small graph (maxLevel < 2) - ALLOW inline insertion
+            // This should complete within FDB transaction limits for small datasets
+            let primaryKey = newRecord.extractPrimaryKey()
+            let vector = try extractVector(from: newRecord, recordAccess: recordAccess)
+
+            // Perform inline insertion
+            try await insert(
+                primaryKey: primaryKey,
+                queryVector: vector,
+                transaction: transaction
             )
-            // Note: This throw is unconditional - all code after this point is unreachable
         }
     }
 

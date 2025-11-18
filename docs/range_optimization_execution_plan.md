@@ -3,15 +3,17 @@
 **目標**: 提案3（Pre-filtering）、提案1（Covering Indexes）、提案5（Range Selectivity統計）を実装し、Range クエリのパフォーマンスを90-97%改善する。
 
 **実装順序**: 3 → 1 → 5（効果とリスクのバランスを考慮）
+**実装状況**: Phase 1 ✅ 完了 | Phase 3 ✅ 完了 | Phase 2 ❌ 未実装
 
 ---
 
-## Phase 1: Proposal 3 - Pre-filtering (Prefix scan)
+## Phase 1: Proposal 3 - Pre-filtering (Prefix scan) ✅ 完了
 
 **期間**: 1-2週間
 **優先度**: 最高 ⭐⭐⭐⭐⭐
 **効果**: 70-90% IO削減
 **リスク**: 低
+**ステータス**: ✅ 実装完了（2025-01-16）
 
 ### 1.1 概要
 
@@ -680,12 +682,13 @@ Phase 2が失敗した場合:
 
 ---
 
-## Phase 3: Proposal 5 - Range Selectivity Statistics
+## Phase 3: Proposal 5 - Range Selectivity Statistics ✅ 完了
 
 **期間**: 2-3週間
 **優先度**: 高 ⭐⭐⭐⭐
 **効果**: 10-30% CPU削減（間接的にIO削減）
 **リスク**: 中（統計精度）
+**ステータス**: ✅ 実装完了（2025-01-16）
 
 ### 3.1 概要
 

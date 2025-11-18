@@ -4944,38 +4944,70 @@ public enum VectorIndexStrategy: Sendable, Equatable {
 
 #### Schema初期化時に戦略を指定
 
+**✅ 推奨: KeyPath-based API（型安全）**
+
 ```swift
-// パターン1: IndexConfiguration配列で指定
+// パターン1: KeyPath形式（型安全、推奨）
+let schema = Schema(
+    [Product.self, User.self],
+    vectorStrategies: [
+        \Product.embedding: .hnswBatch,      // ← KeyPathで指定
+        \User.profileVector: .flatScan
+    ]
+)
+
+// パターン2: IndexConfiguration配列で指定（低レベルAPI）
 let schema = Schema(
     [Product.self],
     indexConfigurations: [
         IndexConfiguration(
-            indexName: "product_embedding",
+            indexName: "product_embedding_vector",  // 自動生成名を手動指定
             vectorStrategy: .hnswBatch
         )
     ]
 )
+```
 
-// パターン2: Dictionary形式（簡潔）
-let schema = Schema(
-    [Product.self],
-    vectorStrategies: [
-        "product_embedding": .hnswBatch
-    ]
-)
+**KeyPath-based APIの利点**:
+
+| 利点 | 説明 |
+|------|------|
+| **型安全** | コンパイル時に型チェック、存在しないフィールドはエラー |
+| **自動補完** | Xcodeで`\Product.`と入力すると候補が表示される |
+| **リファクタリング安全** | フィールド名を変更してもKeyPathは自動追従 |
+| **インデックス名不要** | マクロが自動生成した名前を知らなくてOK |
+| **複数レコードタイプ** | 異なるレコードタイプのフィールドを明確に区別 |
+
+**内部動作**:
+
+```swift
+// KeyPath → Index名の解決プロセス
+\Product.embedding
+  → String(describing: keyPath) = "\Product.embedding"
+  → recordTypeName = "Product", fieldName = "embedding"
+  → Product.indexDefinitions を検索
+  → vectorインデックスで embedding を使用するものを発見
+  → indexDef.name (= "product_embedding_vector" or カスタム名)
 ```
 
 #### RecordStore初期化時に戦略を指定
 
+**注意**: RecordStoreでの戦略指定はSchema経由で行います。RecordStore自体にvectorStrategiesパラメータはありません。
+
 ```swift
-// RecordStore拡張: 初期化時に戦略を指定
+// ✅ 正しい: Schema初期化時に戦略を指定
+let schema = Schema(
+    [Product.self],
+    vectorStrategies: [
+        \Product.embedding: getVectorStrategy()  // 環境変数から読み込み
+    ]
+)
+
 let store = try await RecordStore(
     database: database,
-    schema: schema,
+    schema: schema,  // ← 戦略が含まれたSchema
     subspace: subspace,
-    vectorStrategies: [
-        "product_embedding": getVectorStrategy()  // 環境変数から読み込み
-    ]
+    statisticsManager: NullStatisticsManager()
 )
 
 func getVectorStrategy() -> VectorIndexStrategy {
@@ -5010,7 +5042,7 @@ func createSchema() -> Schema {
     return Schema(
         [Product.self],
         vectorStrategies: [
-            "product_embedding": vectorStrategy
+            \Product.embedding: vectorStrategy  // ✅ KeyPath使用
         ]
     )
 }
@@ -5030,7 +5062,7 @@ func createSchema(database: any DatabaseProtocol) async throws -> Schema {
     return Schema(
         [Product.self],
         vectorStrategies: [
-            "product_embedding": strategy
+            \Product.embedding: strategy  // ✅ KeyPath使用
         ]
     )
 }
@@ -5041,9 +5073,11 @@ func createSchema(database: any DatabaseProtocol) async throws -> Schema {
 ```swift
 @Recordable
 struct MultiVectorProduct {
-    #Index<MultiVectorProduct>([\.titleEmbedding], type: .vector(384, .cosine))
-    #Index<MultiVectorProduct>([\.imageEmbedding], type: .vector(512, .cosine))
+    #PrimaryKey<MultiVectorProduct>([\.productID])
+    #Index<MultiVectorProduct>([\.titleEmbedding], type: .vector(dimensions: 384, metric: .cosine))
+    #Index<MultiVectorProduct>([\.imageEmbedding], type: .vector(dimensions: 512, metric: .cosine))
 
+    var productID: Int64
     var titleEmbedding: [Float32]   // 小規模（1万件）
     var imageEmbedding: [Float32]   // 大規模（100万件）
 }
@@ -5051,8 +5085,8 @@ struct MultiVectorProduct {
 let schema = Schema(
     [MultiVectorProduct.self],
     vectorStrategies: [
-        "multivectorproduct_titleembedding": .flatScan,   // 小規模
-        "multivectorproduct_imageembedding": .hnswBatch   // 大規模
+        \MultiVectorProduct.titleEmbedding: .flatScan,   // ✅ 小規模: Flat Scan
+        \MultiVectorProduct.imageEmbedding: .hnswBatch   // ✅ 大規模: HNSW
     ]
 )
 ```
@@ -5695,11 +5729,14 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 
 ---
 
-**Last Updated**: 2025-01-16
+**Last Updated**: 2025-01-17
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
 **Record Layer (Swift)**: プロダクション対応 | **テスト**: **525合格（50スイート）** | **進捗**: 100%完了
 **Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）
 **Phase 3 (Migration Manager)**: ✅ 100%完了（**24テスト全合格**、包括的テストカバレッジ）
 **Phase 4 (PartialRange対応)**: ✅ 100%完了（**Protobufシリアライズ完全対応**、20+テスト合格）
+**HNSW Index Builder**: ✅ Phase 1 完了（HNSWIndexBuilder、BuildOptions、状態管理）
+**Range Optimization**: ✅ Phase 1 & 3 完了（RangeWindowCalculator、RangeIndexStatistics）
+**Spatial Index**: ✅ 完全実装（SpatialIndexMaintainer、S2Geometry、MortonCode）
 **Phase 5 (Spatial Indexing)**: ✅ **100%完了**（**S2 Geometry + Morton Code統合、すべてのTODO実装済み**）
 **Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、4/4テスト合格、プロダクション対応**）

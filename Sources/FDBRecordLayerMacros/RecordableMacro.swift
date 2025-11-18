@@ -498,12 +498,21 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                 scope = .partition
             }
 
+            // Extract covering parameter (e.g., covering: [\.name, \.email])
+            let coveringFields: [String]?
+            if let coveringArg = arguments.first(where: { $0.label?.text == "covering" }) {
+                coveringFields = extractFieldNamesFromKeyPaths(coveringArg.expression)
+            } else {
+                coveringFields = nil
+            }
+
             // Process each KeyPath array argument
             for argument in arguments {
-                // Skip named parameters (name, type, scope)
+                // Skip named parameters (name, type, scope, covering)
                 if argument.label?.text == "name" ||
                    argument.label?.text == "type" ||
-                   argument.label?.text == "scope" {
+                   argument.label?.text == "scope" ||
+                   argument.label?.text == "covering" {
                     continue
                 }
 
@@ -517,7 +526,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         typeName: typeName,
                         indexType: indexType,
                         scope: scope,
-                        rangeMetadata: nil
+                        rangeMetadata: nil,
+                        coveringFields: coveringFields
                     ))
                 }
             }
@@ -587,7 +597,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         component: "lowerBound",
                         boundaryType: boundaryType,
                         originalFieldName: fieldName
-                    )
+                    ),
+                    coveringFields: index.coveringFields
                 ))
 
                 // End index
@@ -602,7 +613,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         component: "upperBound",
                         boundaryType: boundaryType,
                         originalFieldName: fieldName
-                    )
+                    ),
+                    coveringFields: index.coveringFields
                 ))
 
             case .partialRangeFrom:
@@ -618,7 +630,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         component: "lowerBound",
                         boundaryType: "closed",
                         originalFieldName: fieldName
-                    )
+                    ),
+                    coveringFields: index.coveringFields
                 ))
 
             case .partialRangeThrough, .partialRangeUpTo:
@@ -636,7 +649,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                         component: "upperBound",
                         boundaryType: boundaryType,
                         originalFieldName: fieldName
-                    )
+                    ),
+                    coveringFields: index.coveringFields
                 ))
 
             case .unboundedRange:
@@ -717,7 +731,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                     typeName: typeName,
                     indexType: .value,
                     scope: .partition,
-                    rangeMetadata: nil
+                    rangeMetadata: nil,
+                    coveringFields: nil
                 ))
             }
         }
@@ -803,7 +818,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                             metric: metric
                         ),
                         scope: .partition,
-                        rangeMetadata: nil
+                        rangeMetadata: nil,
+                        coveringFields: nil
                     ))
                 } else if attrName == "Spatial" {
                     // Extract parameters from @Spatial(type: .geo(latitude: \.lat, longitude: \.lon, level: 17), altitudeRange: 0...10000)
@@ -895,7 +911,8 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
                             typeName: typeName,
                             indexType: .spatial(type: spatialType, keyPaths: keyPaths, level: level, altitudeRange: altitudeRange),
                             scope: .partition,
-                            rangeMetadata: nil
+                            rangeMetadata: nil,
+                            coveringFields: nil
                         ))
 
                         // Create SpatialAccessorInfo for type-safe coordinate extraction
@@ -2624,6 +2641,7 @@ struct IndexInfo {
     let indexType: IndexInfoType  // Index type (.value, .vector, .spatial)
     let scope: IndexInfoScope     // Index scope (.partition, .global)
     let rangeMetadata: RangeIndexMetadata?  // nil for non-Range indexes
+    let coveringFields: [String]?  // Covering fields from 'covering:' parameter
 
     /// Generate the index name (e.g., "User_email_unique" or "location_index")
     func indexName() -> String {

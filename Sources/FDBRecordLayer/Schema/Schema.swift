@@ -290,35 +290,111 @@ public final class Schema: Sendable {
         )
     }
 
-    /// Convenience initializer with vector strategies (Dictionary form)
+    /// Convenience initializer with KeyPath-based vector strategies
     ///
-    /// Allows specifying vector index strategies in a concise Dictionary format:
-    /// `["indexName": VectorIndexStrategy]`
+    /// **Type-safe API**: Use KeyPath to specify vector fields instead of string names.
+    /// The index name is automatically resolved from the KeyPath.
     ///
     /// **Example usage**:
     /// ```swift
+    /// @Recordable
+    /// struct Product {
+    ///     #PrimaryKey<Product>([\.productID])
+    ///     #Index<Product>([\.embedding])  // Auto-generated name: "Product_embedding_vector"
+    ///
+    ///     var productID: Int64
+    ///     var embedding: [Float32]
+    /// }
+    ///
+    /// @Recordable
+    /// struct User {
+    ///     #PrimaryKey<User>([\.userID])
+    ///     #Index<User>([\.profileVector])
+    ///
+    ///     var userID: Int64
+    ///     var profileVector: [Float32]
+    /// }
+    ///
     /// let schema = Schema(
-    ///     [Product.self],
+    ///     [Product.self, User.self],
     ///     vectorStrategies: [
-    ///         "product_embedding": .hnswBatch
+    ///         \Product.embedding: .hnswBatch,      // ← KeyPath-based!
+    ///         \User.profileVector: .flatScan
     ///     ]
     /// )
     /// ```
+    ///
+    /// **Advantages**:
+    /// - Type-safe: Compile-time verification of field existence
+    /// - No need to know auto-generated index names
+    /// - Autocomplete support in Xcode
+    /// - Refactoring-safe (rename field → KeyPath updates automatically)
+    ///
+    /// **How it works**:
+    /// 1. KeyPath is converted to string representation (e.g., "\Product.embedding")
+    /// 2. Record type name and field name are extracted
+    /// 3. Matching vector index is found from type's indexDefinitions
+    /// 4. IndexConfiguration is created with the resolved index name
     ///
     /// - Parameters:
     ///   - types: Array of Recordable types
     ///   - version: Schema version
     ///   - indexes: Additional index definitions (optional)
-    ///   - vectorStrategies: Vector index strategies (Dictionary form)
+    ///   - vectorStrategies: KeyPath → VectorIndexStrategy mapping
     public convenience init(
         _ types: [any Recordable.Type],
         version: Version = Version(1, 0, 0),
         indexes: [Index] = [],
-        vectorStrategies: [String: VectorIndexStrategy]
+        vectorStrategies: [AnyKeyPath: VectorIndexStrategy]
     ) {
-        let configs = vectorStrategies.map { (name, strategy) in
-            IndexConfiguration(indexName: name, vectorStrategy: strategy)
+        var configs: [IndexConfiguration] = []
+
+        // Create a map of record type names to types for quick lookup
+        let typesByName: [String: any Recordable.Type] = Dictionary(
+            uniqueKeysWithValues: types.map { ($0.recordName, $0) }
+        )
+
+        for (keyPath, strategy) in vectorStrategies {
+            // Resolve KeyPath to record type name and field name
+            // String format: "\Product.embedding" or "Swift.KeyPath<Product, [Float32]>"
+            let keyPathString = String(describing: keyPath)
+
+            var recordTypeName: String?
+            var fieldName: String?
+
+            if keyPathString.hasPrefix("\\") {
+                // Format: \Product.embedding
+                let components = keyPathString.dropFirst().split(separator: ".")
+                if components.count >= 2 {
+                    recordTypeName = String(components.dropLast().joined(separator: "."))
+                    fieldName = String(components.last!)
+                }
+            }
+
+            guard let typeName = recordTypeName,
+                  let field = fieldName,
+                  let recordType = typesByName[typeName] else {
+                // Skip if we can't resolve KeyPath
+                continue
+            }
+
+            // Find vector index definition that uses this field
+            let indexDefs = recordType.indexDefinitions
+            if let indexDef = indexDefs.first(where: { def in
+                // Check if this is a vector index and uses the field
+                if case .vector = def.indexType {
+                    return def.fields.count == 1 && def.fields[0] == field
+                }
+                return false
+            }) {
+                let config = IndexConfiguration(
+                    indexName: indexDef.name,
+                    vectorStrategy: strategy
+                )
+                configs.append(config)
+            }
         }
+
         self.init(types, version: version, indexes: indexes, indexConfigurations: configs)
     }
 

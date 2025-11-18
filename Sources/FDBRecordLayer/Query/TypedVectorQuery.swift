@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import Logging
 
 /// Type-safe vector similarity search query
 ///
@@ -27,6 +28,7 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
     let recordAccess: any RecordAccess<Record>
     let recordSubspace: Subspace
     let indexSubspace: Subspace
+    let rootSubspace: Subspace
     nonisolated(unsafe) let database: any DatabaseProtocol
     let schema: Schema
 
@@ -40,6 +42,7 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
         recordAccess: any RecordAccess<Record>,
         recordSubspace: Subspace,
         indexSubspace: Subspace,
+        rootSubspace: Subspace,
         database: any DatabaseProtocol,
         schema: Schema,
         postFilter: (any TypedQueryComponent<Record>)? = nil
@@ -50,6 +53,7 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
         self.recordAccess = recordAccess
         self.recordSubspace = recordSubspace
         self.indexSubspace = indexSubspace
+        self.rootSubspace = rootSubspace
         self.database = database
         self.schema = schema
         self.postFilter = postFilter
@@ -79,6 +83,7 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
             recordAccess: recordAccess,
             recordSubspace: recordSubspace,
             indexSubspace: indexSubspace,
+            rootSubspace: rootSubspace,
             database: database,
             schema: schema,
             postFilter: newFilter
@@ -94,6 +99,30 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
         let transaction = try database.createTransaction()
         let context = RecordContext(transaction: transaction)
         defer { context.cancel() }
+
+        // ✅ Check IndexState before executing query
+        let indexStateManager = IndexStateManager(
+            database: database,
+            subspace: rootSubspace
+        )
+
+        let state = try await indexStateManager.state(of: index.name, context: context)
+        guard state == .readable else {
+            throw RecordLayerError.indexNotReadable(
+                indexName: index.name,
+                currentState: state,
+                message: """
+                Index '\(index.name)' is not readable (current state: \(state)).
+
+                - If state is 'disabled': Enable the index first
+                - If state is 'writeOnly': Wait for index build to complete
+                - Only 'readable' indexes can be queried
+
+                Current state: \(state)
+                Expected state: readable
+                """
+            )
+        }
 
         let plan = TypedVectorSearchPlan(
             k: k,
@@ -187,18 +216,75 @@ struct TypedVectorSearchPlan<Record: Recordable>: Sendable {
                 transaction: transaction
             )
 
-        case .hnsw:
+        case .hnsw(let inlineIndexing):
+            // ✅ Extract inlineIndexing flag for better error context
             // Use HNSW for O(log n) search (large-scale datasets)
             let hnswMaintainer = try GenericHNSWIndexMaintainer<Record>(
                 index: index,
                 subspace: indexNameSubspace,
                 recordSubspace: recordSubspace
             )
-            searchResults = try await hnswMaintainer.search(
-                queryVector: queryVector,
-                k: fetchK,
-                transaction: transaction
-            )
+
+            // 🛡️ CRITICAL: Provide context-aware error messages based on indexing strategy
+            //
+            // **Strategy: .hnsw(inlineIndexing: true)**
+            // - Graph should be built via RecordStore.save() for small datasets (<100 nodes)
+            // - If entry point is missing: Possible data corruption or graph exceeds size limit
+            //
+            // **Strategy: .hnsw(inlineIndexing: false)** (aka .hnswBatch)
+            // - Graph MUST be built via OnlineIndexer.buildHNSWIndex()
+            // - If entry point is missing: Expected behavior, user needs to run OnlineIndexer
+            //
+            // Both cases will throw RecordLayerError.hnswGraphNotBuilt with appropriate message.
+            // The HNSW maintainer's search() method will detect missing entry point and throw.
+
+            do {
+                searchResults = try await hnswMaintainer.search(
+                    queryVector: queryVector,
+                    k: fetchK,
+                    transaction: transaction
+                )
+            } catch let error as RecordLayerError {
+                // Handle missing graph gracefully: log warning and fallback to flat scan
+                if case .hnswGraphNotBuilt(let indexName, _) = error {
+                    // ⚠️ Log warning and fallback to flat scan
+                    if inlineIndexing {
+                        Logger(label: "com.fdb.recordlayer.query.vector").warning("HNSW graph not built, falling back to flat scan", metadata: [
+                            "index": "\(indexName)",
+                            "strategy": ".hnsw(inlineIndexing: true)",
+                            "behavior": "Falling back to O(n) flat scan instead of O(log n) HNSW",
+                            "causes": "No records saved yet, or graph exceeded size limit (maxLevel >= 2)",
+                            "recommendation": "Switch to .hnswBatch and rebuild via OnlineIndexer for datasets > 100 nodes",
+                            "documentation": "docs/hnsw_inline_indexing_protection.md"
+                        ])
+                    } else {
+                        Logger(label: "com.fdb.recordlayer.query.vector").warning("HNSW graph not built, falling back to flat scan", metadata: [
+                            "index": "\(indexName)",
+                            "strategy": ".hnsw(inlineIndexing: false) (aka .hnswBatch)",
+                            "behavior": "Falling back to O(n) flat scan instead of O(log n) HNSW",
+                            "expected": "Graph NOT built automatically - must run OnlineIndexer.buildHNSWIndex()",
+                            "required_steps": "1) enable index, 2) build via OnlineIndexer, 3) make readable",
+                            "recommendation": "This is EXPECTED if OnlineIndexer hasn't been run yet",
+                            "documentation": "docs/hnsw_inline_indexing_protection.md"
+                        ])
+                    }
+
+                    // ✅ Fallback to flat scan (O(n) brute-force search)
+                    let flatMaintainer = try GenericVectorIndexMaintainer<Record>(
+                        index: index,
+                        subspace: indexNameSubspace,
+                        recordSubspace: recordSubspace
+                    )
+                    searchResults = try await flatMaintainer.search(
+                        queryVector: queryVector,
+                        k: fetchK,
+                        transaction: transaction
+                    )
+                } else {
+                    // Other errors: re-throw as-is
+                    throw error
+                }
+            }
         }
 
         // Fetch records and apply post-filter

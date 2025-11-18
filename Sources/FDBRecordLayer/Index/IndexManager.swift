@@ -335,15 +335,29 @@ public final class IndexManager: Sendable {
                 )
                 return AnyGenericIndexMaintainer(maintainer)
 
-            case .hnsw:
+            case .hnsw(let inlineIndexing):
                 // HNSW: O(log n) search, higher memory
-                // Note: inlineIndexing is handled by GenericHNSWIndexMaintainer.updateIndex()
-                let maintainer = try GenericHNSWIndexMaintainer<T>(
-                    index: index,
-                    subspace: indexSubspace,
-                    recordSubspace: recordSubspace
-                )
-                return AnyGenericIndexMaintainer(maintainer)
+                // ✅ Check inlineIndexing flag to determine maintainer type
+                if inlineIndexing {
+                    // ⚠️ Inline indexing: WILL timeout for medium-sized graphs (>1000 nodes)
+                    // This path exists only for completeness; NOT recommended for production
+                    let maintainer = try GenericHNSWIndexMaintainer<T>(
+                        index: index,
+                        subspace: indexSubspace,
+                        recordSubspace: recordSubspace
+                    )
+                    return AnyGenericIndexMaintainer(maintainer)
+                } else {
+                    // ✅ Batch-only indexing (recommended): Skip inline updates
+                    // Index MUST be built using OnlineIndexer.buildHNSWIndex()
+                    // This No-op maintainer prevents RecordStore.save() from failing
+                    let maintainer = try VectorIndexNoOpMaintainer<T>(
+                        index: index,
+                        subspace: indexSubspace,
+                        recordSubspace: recordSubspace
+                    )
+                    return AnyGenericIndexMaintainer(maintainer)
+                }
             }
 
         case .spatial:

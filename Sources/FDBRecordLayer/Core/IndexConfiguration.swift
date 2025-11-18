@@ -47,7 +47,6 @@ public struct IndexConfiguration: Sendable, Codable {
     /// **選択基準**:
     /// - `.flatScan`: データ規模 < 10,000 ベクトル、低メモリ環境
     /// - `.hnswBatch`: データ規模 > 10,000 ベクトル、高メモリ環境（推奨）
-    /// - `.hnswInline`: 小規模グラフ（< 1,000 ベクトル）、タイムアウトリスク許容
     public let vectorStrategy: VectorIndexStrategy?
 
     /// 空間インデックスレベル（オプション、将来実装）
@@ -83,17 +82,15 @@ public struct IndexConfiguration: Sendable, Codable {
 /// |------|--------|------------|------|
 /// | `.flatScan` | O(n) | 低（~1.5 GB / 1M vectors） | < 10,000 ベクトル |
 /// | `.hnswBatch` | O(log n) | 高（~15 GB / 1M vectors） | > 10,000 ベクトル（推奨） |
-/// | `.hnswInline` | O(log n) | 高（~15 GB / 1M vectors） | < 1,000 ベクトル（リスク許容） |
 ///
-/// **インライン更新 vs バッチ更新**:
+/// **HNSW インデックスの構築**:
 ///
-/// - **Batch Indexing** (`.hnswBatch`): OnlineIndexer.buildHNSWIndex() で構築
+/// - **Batch Indexing** (`.hnswBatch`): OnlineIndexer.buildHNSWIndex() で構築（推奨）
 ///   - メリット: 安全、再開可能、タイムアウトなし
 ///   - デメリット: 初期構築が必要
 ///
-/// - **Inline Indexing** (`.hnswInline`): RecordStore.save() で自動更新
-///   - メリット: 自動更新、追加コード不要
-///   - デメリット: タイムアウトリスク（5秒制限）、小規模グラフのみ推奨
+/// **注意**: HNSW インデックスはインライン更新（RecordStore.save() での自動更新）をサポートしていません。
+/// 常に OnlineIndexer.buildHNSWIndex() を使用してください。
 ///
 /// **使用例**:
 /// ```swift
@@ -166,33 +163,5 @@ public enum VectorIndexStrategy: Sendable, Equatable, Codable {
     /// ```
     public static var hnswBatch: VectorIndexStrategy {
         .hnsw(inlineIndexing: false)
-    }
-
-    /// HNSW with inline indexing（⚠️ 小規模グラフのみ）
-    ///
-    /// **警告**: トランザクションタイムアウトリスク（5秒制限）
-    ///
-    /// **推奨条件**:
-    /// - グラフサイズ < 1,000 ベクトル
-    /// - 接続数 M <= 8
-    /// - 自動更新が必須
-    ///
-    /// **使用方法**:
-    /// ```swift
-    /// let schema = Schema(
-    ///     [Product.self],
-    ///     vectorStrategies: ["product_embedding": .hnswInline]
-    /// )
-    ///
-    /// // RecordStore.save() で自動更新
-    /// try await store.save(product)
-    /// ```
-    ///
-    /// **タイムアウト対策**:
-    /// - HNSWParameters.M を小さくする（デフォルト 16 → 8）
-    /// - efConstruction を小さくする（デフォルト 200 → 100）
-    /// - データが増えたら `.hnswBatch` に切り替える
-    public static var hnswInline: VectorIndexStrategy {
-        .hnsw(inlineIndexing: true)
     }
 }

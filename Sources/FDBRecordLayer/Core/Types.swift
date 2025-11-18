@@ -43,6 +43,10 @@ public enum RecordLayerError: Error, Sendable {
     case fieldNotFound(String)
     case fieldNotRangeType(fieldName: String, actualType: String)
     case invalidRangeComponent(fieldName: String, requestedComponent: String, availableComponent: String)
+
+    // HNSW Index errors
+    case hnswGraphNotBuilt(indexName: String, message: String)
+    case indexNotReadable(indexName: String, currentState: IndexState, message: String)
 }
 
 extension RecordLayerError: LocalizedError {
@@ -116,6 +120,12 @@ extension RecordLayerError: LocalizedError {
             return "Field '\(fieldName)' is not a Range type (actual type: \(actualType))"
         case .invalidRangeComponent(let fieldName, let requested, let available):
             return "Invalid range component '\(requested)' requested for field '\(fieldName)' (available: \(available))"
+
+        // HNSW Index errors
+        case .hnswGraphNotBuilt(let indexName, let message):
+            return "HNSW graph for index '\(indexName)' has not been built yet: \(message)"
+        case .indexNotReadable(let indexName, let currentState, let message):
+            return "Index '\(indexName)' is not readable (current state: \(currentState)): \(message)"
         }
     }
 }
