@@ -21,7 +21,7 @@ import FoundationDB
 /// // Get user rank
 /// let rank = try await store.rank(of: userScore, in: \.score)
 /// ```
-public struct TypedRankIndexScanPlan<Record: Recordable>: TypedQueryPlan, Sendable {
+internal struct TypedRankIndexScanPlan<Record: Recordable>: TypedQueryPlan, Sendable {
     /// Record access for deserialization
     private let recordAccess: any RecordAccess<Record>
 
@@ -61,7 +61,7 @@ public struct TypedRankIndexScanPlan<Record: Recordable>: TypedQueryPlan, Sendab
     ///   - valueRange: Value range (required for byValue)
     ///   - limit: Maximum number of results
     ///   - ascending: Ascending order flag
-    public init(
+    internal init(
         recordAccess: any RecordAccess<Record>,
         recordSubspace: Subspace,
         indexSubspace: Subspace,
@@ -83,10 +83,10 @@ public struct TypedRankIndexScanPlan<Record: Recordable>: TypedQueryPlan, Sendab
         self.ascending = ascending
     }
 
-    public func execute(
+    internal func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         let transaction = context.getTransaction()

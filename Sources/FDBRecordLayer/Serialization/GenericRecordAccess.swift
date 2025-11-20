@@ -67,11 +67,66 @@ public struct GenericRecordAccess<Record: Recordable>: RecordAccess {
         fieldName: String,
         component: RangeComponent
     ) throws -> [any TupleElement] {
-        // Call macro-generated instance method (type-safe, no Reflection)
-        return try record.extractRangeBoundary(
+        // CRITICAL FIX: Use Mirror-based reflection to extract Range boundaries
+        // The macro-generated method is not accessible through protocol witness table
+        // due to Swift's protocol extension dispatch limitations.
+        return try extractRangeBoundaryUsingReflection(
+            from: record,
             fieldName: fieldName,
             component: component
         )
+    }
+
+    /// Extract Range boundary using Mirror reflection (fallback implementation)
+    private func extractRangeBoundaryUsingReflection(
+        from record: Record,
+        fieldName: String,
+        component: RangeComponent
+    ) throws -> [any TupleElement] {
+        let mirror = Mirror(reflecting: record)
+        guard let child = mirror.children.first(where: { $0.label == fieldName }) else {
+            throw RecordLayerError.fieldNotFound(fieldName)
+        }
+
+        let value = child.value
+        let valueMirror = Mirror(reflecting: value)
+
+        // Handle Optional Range
+        if valueMirror.displayStyle == .optional {
+            guard let unwrapped = valueMirror.children.first?.value else {
+                return []  // Optional is nil
+            }
+            return try extractBoundaryFromRangeValue(unwrapped, component: component, fieldName: fieldName)
+        }
+
+        // Handle non-Optional Range
+        return try extractBoundaryFromRangeValue(value, component: component, fieldName: fieldName)
+    }
+
+    /// Extract boundary value from a Range using Mirror
+    private func extractBoundaryFromRangeValue(
+        _ value: Any,
+        component: RangeComponent,
+        fieldName: String
+    ) throws -> [any TupleElement] {
+        let mirror = Mirror(reflecting: value)
+
+        switch component {
+        case .lowerBound:
+            if let lowerBoundValue = mirror.children.first(where: { $0.label == "lowerBound" })?.value {
+                if let converted = convertToTupleElement(lowerBoundValue) {
+                    return [converted]
+                }
+            }
+        case .upperBound:
+            if let upperBoundValue = mirror.children.first(where: { $0.label == "upperBound" })?.value {
+                if let converted = convertToTupleElement(upperBoundValue) {
+                    return [converted]
+                }
+            }
+        }
+
+        throw RecordLayerError.fieldNotFound("Field '\(fieldName)' does not have \(component) component")
     }
 
     /// Serialize a record to bytes using Protobuf wire format

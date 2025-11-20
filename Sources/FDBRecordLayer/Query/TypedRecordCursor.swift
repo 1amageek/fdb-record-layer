@@ -166,7 +166,8 @@ public struct IndexScanTypedCursor<Record: Sendable>: TypedRecordCursor {
 
                 // Apply filter
                 if let filter = filter {
-                    guard try filter.matches(record: record, recordAccess: recordAccess) else {
+                    let matches = try filter.matches(record: record, recordAccess: recordAccess)
+                    guard matches else {
                         continue
                     }
                 }

@@ -237,7 +237,7 @@ guard let entryPointPK = try await getEntryPoint(transaction: transaction) else 
 public func execute() async throws -> [(record: Record, distance: Double)] {
     // Create transaction for this query execution
     let transaction = try database.createTransaction()
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     defer { context.cancel() }
 
     // ✅ NEW: Check IndexState before executing query

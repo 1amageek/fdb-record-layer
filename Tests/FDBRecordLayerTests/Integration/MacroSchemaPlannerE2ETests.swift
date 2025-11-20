@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FoundationDB
 @testable import FDBRecordLayer
 
@@ -20,7 +21,8 @@ struct MacroSchemaPlannerE2ETests {
     @Recordable
     struct Event {
         #PrimaryKey<Event>([\.id])
-        #Index<Event>([\.period])  // Macro should generate _start and _end indexes
+        #Index<Event>([\.period.lowerBound])  // Explicit lowerBound index
+        #Index<Event>([\.period.upperBound])  // Explicit upperBound index
 
         var id: Int64
         var period: Range<Date>

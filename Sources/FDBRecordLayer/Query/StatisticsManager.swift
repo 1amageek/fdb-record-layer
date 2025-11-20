@@ -11,6 +11,23 @@ public protocol StatisticsManagerProtocol: Sendable {
     func getIndexStatistics(indexName: String) async throws -> IndexStatistics?
     func getRangeStatistics(indexName: String) async throws -> RangeIndexStatistics?
     func estimateSelectivity<Record: Sendable>(filter: any TypedQueryComponent<Record>, recordType: String) async throws -> Double
+
+    /// Estimate selectivity for a Range query based on query width
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the Range index
+    ///   - queryRange: The query range to estimate selectivity for
+    /// - Returns: Estimated selectivity (0.0 to 1.0)
+    func estimateRangeSelectivity(indexName: String, queryRange: Range<Date>) async throws -> Double
+
+    /// Estimate selectivity for a generic Range query (any Comparable type)
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the Range index
+    ///   - lowerBound: The lower bound of the query range
+    ///   - upperBound: The upper bound of the query range
+    /// - Returns: Estimated selectivity (0.0 to 1.0)
+    func estimateRangeSelectivity(indexName: String, lowerBound: any Comparable, upperBound: any Comparable) async throws -> Double
 }
 
 /// Manages statistics for cost-based query optimization
@@ -66,7 +83,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
         }
 
         // Scan records with sampling
-        let (rowCount, totalSize, sampledCount) = try await database.withRecordContext { context in
+        let (rowCount, totalSize, sampledCount) = try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             let recordSubspace = self.subspace.subspace(RecordStoreKeyspace.record.rawValue)
             let (begin, end) = recordSubspace.range()
@@ -166,7 +183,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
         }
 
         // Scan index entries using HyperLogLog and Reservoir Sampling
-        let (hll, sampler, nullCount, minValue, maxValue) = try await database.withRecordContext { context in
+        let (hll, sampler, nullCount, minValue, maxValue) = try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             let (begin, end) = indexSubspace.range()
 
@@ -397,7 +414,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
         let key = statisticsKey(type: .table, name: recordType)
         let data = try JSONEncoder().encode(stats)
 
-        try await database.withRecordContext { context in
+        try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             transaction.setValue(Array(data), for: key)
         }
@@ -414,7 +431,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
     ) async throws -> TableStatistics? {
         let key = statisticsKey(type: .table, name: recordType)
 
-        let stats: TableStatistics? = try await database.withRecordContext { context in
+        let stats: TableStatistics? = try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             guard let bytes = try await transaction.getValue(for: key) else {
                 return nil
@@ -440,7 +457,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
         let key = statisticsKey(type: .index, name: indexName)
         let data = try JSONEncoder().encode(stats)
 
-        try await database.withRecordContext { context in
+        try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             transaction.setValue(Array(data), for: key)
         }
@@ -457,7 +474,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
     ) async throws -> IndexStatistics? {
         let key = statisticsKey(type: .index, name: indexName)
 
-        let stats: IndexStatistics? = try await database.withRecordContext { context in
+        let stats: IndexStatistics? = try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             guard let bytes = try await transaction.getValue(for: key) else {
                 return nil
@@ -491,7 +508,7 @@ public final class StatisticsManager: StatisticsManagerProtocol, Sendable {
     public func clearAllStatistics() async throws {
         clearCache()
 
-        try await database.withRecordContext { context in
+        try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             let statsSubspace = self.subspace.subspace("statistics")
             let (begin, end) = statsSubspace.range()

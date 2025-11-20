@@ -76,7 +76,7 @@ extension StatisticsManager {
         }
 
         // Scan index entries and collect Range metrics
-        let (totalRecords, totalWidth, sampleCount, overlapSamples) = try await database.withRecordContext { context in
+        let (totalRecords, totalWidth, sampleCount, overlapSamples) = try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             let (begin, end) = indexSubspace.range()
 
@@ -186,7 +186,7 @@ extension StatisticsManager {
     internal func loadRangeStatistics(indexName: String) async throws -> RangeIndexStatistics? {
         let key = rangeStatisticsKey(indexName: indexName)
 
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             guard let bytes = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil as RangeIndexStatistics?
@@ -207,7 +207,7 @@ extension StatisticsManager {
         let key = rangeStatisticsKey(indexName: indexName)
         let data = try JSONEncoder().encode(stats)
 
-        try await database.withRecordContext { context in
+        try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             transaction.setValue(Array(data), for: key)
         }
@@ -315,5 +315,107 @@ extension StatisticsManager {
 
         let effectiveWidth = stats.avgRangeWidth * stats.overlapFactor
         return stats.estimateSelectivity(for: effectiveWidth)
+    }
+
+    // MARK: - Generic Comparable Type Support (Phase 4)
+
+    /// Estimate selectivity for a Range<Int> query
+    ///
+    /// Converts Int range to Double width and uses the same estimation logic.
+    ///
+    /// - Parameters:
+    ///   - indexName: The index name
+    ///   - queryRange: The query range (Int)
+    /// - Returns: Estimated selectivity (0.0-1.0)
+    public func estimateRangeSelectivity(
+        indexName: String,
+        queryRange: Range<Int>
+    ) async throws -> Double {
+        guard let stats = try await getRangeStatistics(indexName: indexName) else {
+            return 0.5
+        }
+
+        // Convert Int range width to Double
+        let queryWidth = Double(queryRange.upperBound - queryRange.lowerBound)
+        return stats.estimateSelectivity(for: queryWidth)
+    }
+
+    /// Estimate selectivity for a Range<Int64> query
+    ///
+    /// - Parameters:
+    ///   - indexName: The index name
+    ///   - queryRange: The query range (Int64)
+    /// - Returns: Estimated selectivity (0.0-1.0)
+    public func estimateRangeSelectivity(
+        indexName: String,
+        queryRange: Range<Int64>
+    ) async throws -> Double {
+        guard let stats = try await getRangeStatistics(indexName: indexName) else {
+            return 0.5
+        }
+
+        let queryWidth = Double(queryRange.upperBound - queryRange.lowerBound)
+        return stats.estimateSelectivity(for: queryWidth)
+    }
+
+    /// Estimate selectivity for a Range<Double> query
+    ///
+    /// - Parameters:
+    ///   - indexName: The index name
+    ///   - queryRange: The query range (Double)
+    /// - Returns: Estimated selectivity (0.0-1.0)
+    public func estimateRangeSelectivity(
+        indexName: String,
+        queryRange: Range<Double>
+    ) async throws -> Double {
+        guard let stats = try await getRangeStatistics(indexName: indexName) else {
+            return 0.5
+        }
+
+        let queryWidth = queryRange.upperBound - queryRange.lowerBound
+        return stats.estimateSelectivity(for: queryWidth)
+    }
+
+    /// Estimate selectivity for a generic Range query (any Comparable type)
+    ///
+    /// This method accepts range boundaries as `any Comparable` and calculates selectivity
+    /// based on the numeric width. It handles all supported Comparable types.
+    ///
+    /// - Parameters:
+    ///   - indexName: The index name
+    ///   - lowerBound: The lower bound of the query range
+    ///   - upperBound: The upper bound of the query range
+    /// - Returns: Estimated selectivity (0.0-1.0)
+    public func estimateRangeSelectivity(
+        indexName: String,
+        lowerBound: any Comparable,
+        upperBound: any Comparable
+    ) async throws -> Double {
+        guard let stats = try await getRangeStatistics(indexName: indexName) else {
+            return 0.5
+        }
+
+        // Calculate query width based on type
+        let queryWidth: Double
+
+        if let lower = lowerBound as? Date, let upper = upperBound as? Date {
+            queryWidth = upper.timeIntervalSince(lower)
+        } else if let lower = lowerBound as? Int, let upper = upperBound as? Int {
+            queryWidth = Double(upper - lower)
+        } else if let lower = lowerBound as? Int64, let upper = upperBound as? Int64 {
+            queryWidth = Double(upper - lower)
+        } else if let lower = lowerBound as? Int32, let upper = upperBound as? Int32 {
+            queryWidth = Double(upper - lower)
+        } else if let lower = lowerBound as? Double, let upper = upperBound as? Double {
+            queryWidth = upper - lower
+        } else if let lower = lowerBound as? Float, let upper = upperBound as? Float {
+            queryWidth = Double(upper - lower)
+        } else {
+            // Unsupported type: return conservative default
+            return 0.5
+        }
+
+        // Use statistics to estimate selectivity
+        return stats.estimateSelectivity(for: queryWidth)
     }
 }

@@ -46,6 +46,7 @@ public enum RecordLayerError: Error, Sendable {
 
     // HNSW Index errors
     case hnswGraphNotBuilt(indexName: String, message: String)
+    case hnswInlineIndexingNotSupported(indexName: String, currentMaxLevel: Int, reason: String, recommendation: String)
     case indexNotReadable(indexName: String, currentState: IndexState, message: String)
 }
 
@@ -124,6 +125,15 @@ extension RecordLayerError: LocalizedError {
         // HNSW Index errors
         case .hnswGraphNotBuilt(let indexName, let message):
             return "HNSW graph for index '\(indexName)' has not been built yet: \(message)"
+        case .hnswInlineIndexingNotSupported(let indexName, let currentMaxLevel, let reason, let recommendation):
+            return """
+                HNSW inline indexing not supported for index '\(indexName)'.
+
+                Current graph size: maxLevel = \(currentMaxLevel)
+                Reason: \(reason)
+
+                \(recommendation)
+                """
         case .indexNotReadable(let indexName, let currentState, let message):
             return "Index '\(indexName)' is not readable (current state: \(currentState)): \(message)"
         }

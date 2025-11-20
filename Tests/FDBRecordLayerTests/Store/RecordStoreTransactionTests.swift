@@ -100,8 +100,7 @@ struct RecordStoreTransactionTests {
     }
 
     func cleanupSubspace(_ database: any DatabaseProtocol, _ subspace: Subspace) async throws {
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }

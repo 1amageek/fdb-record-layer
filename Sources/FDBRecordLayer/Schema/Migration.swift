@@ -450,7 +450,7 @@ public struct MigrationContext: Sendable {
 
             // ✅ ATOMIC: Commit batch + update progress in SAME transaction
             try await database.withTransaction { transaction in
-                let context = RecordContext(transaction: transaction)
+                let context = TransactionContext(transaction: transaction)
                 defer { context.cancel() }
 
                 // 1. Save transformed records
@@ -652,7 +652,7 @@ public struct MigrationContext: Sendable {
 
             // Atomic: Delete matching records (if any) + mark progress
             try await database.withTransaction { transaction in
-                let context = RecordContext(transaction: transaction)
+                let context = TransactionContext(transaction: transaction)
                 defer { context.cancel() }
 
                 // Delete matching records (may be empty if predicate matched nothing)

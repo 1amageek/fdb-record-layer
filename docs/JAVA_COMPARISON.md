@@ -34,7 +34,7 @@
 | **delete(record)** | ✅ | ✅ | 🟢 | |
 | **fetch(primaryKey)** | ✅ | ✅ | 🟢 | 複合キー対応済み |
 | **query(filter)** | ✅ | ✅ | 🟢 | KeyPath-basedで型安全 |
-| **Transaction管理** | ✅ | ✅ | 🟢 | RecordContext経由 |
+| **Transaction管理** | ✅ | ✅ | 🟢 | TransactionContext経由 |
 | **並行性制御** | Actor (Java) | final class + Mutex | 🟡 | Swiftは3倍高速 |
 
 **結論**: ✅ **完全互換** （Swiftは型安全性とパフォーマンスで優位）
@@ -483,7 +483,7 @@ struct User {
 
 | 機能 | Java | Swift | 状態 | 備考 |
 |------|------|-------|------|------|
-| RecordContext | ✅ | ✅ | ✅ 100% | |
+| TransactionContext | ✅ | ✅ | ✅ 100% | |
 | Pre-commit Hooks | ✅ | ✅ | ✅ 100% | |
 | Post-commit Hooks | ✅ | ✅ | ✅ 100% | |
 | Transaction Options | ✅ | ✅ | ✅ 100% | |

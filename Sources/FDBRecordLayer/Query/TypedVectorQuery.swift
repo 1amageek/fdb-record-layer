@@ -97,7 +97,7 @@ public struct TypedVectorQuery<Record: Recordable>: Sendable {
     public func execute() async throws -> [(record: Record, distance: Double)] {
         // Create transaction for this query execution
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         // ✅ Check IndexState before executing query
@@ -183,7 +183,7 @@ struct TypedVectorSearchPlan<Record: Recordable>: Sendable {
     func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace
     ) async throws -> [(record: Record, distance: Double)] {
         let transaction = context.getTransaction()

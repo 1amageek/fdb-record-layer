@@ -176,11 +176,11 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
         // Merge all indexes
         let allIndexes = indexInfo + attributeUniques + vectorSpatialIndexes
 
-        // Expand Range type indexes (Range<T> → 2 indexes, PartialRange → 1 index)
-        let expandedIndexes = expandRangeIndexes(indexes: allIndexes, fields: fields)
+        // Process Range type indexes (validate explicit boundary indexes, reject direct Range indexing)
+        let processedIndexes = processRangeIndexes(indexes: allIndexes, fields: fields, context: context, node: declaration)
 
         // Deduplicate (allows @Attribute(.unique), #Unique, @Vector, @Spatial to coexist)
-        indexInfo = deduplicateIndexes(expandedIndexes)
+        indexInfo = deduplicateIndexes(processedIndexes)
 
         // Generate Recordable conformance
         let recordableExtension = try generateRecordableExtension(
@@ -553,118 +553,80 @@ public struct RecordableMacro: MemberMacro, ExtensionMacro {
     /// IndexInfo(fields: ["period"], rangeMetadata: RangeIndexMetadata(component: "lowerBound", boundaryType: "halfOpen", originalFieldName: "period"))
     /// IndexInfo(fields: ["period"], rangeMetadata: RangeIndexMetadata(component: "upperBound", boundaryType: "halfOpen", originalFieldName: "period"))
     /// ```
-    private static func expandRangeIndexes(
+    private static func processRangeIndexes(
         indexes: [IndexInfo],
-        fields: [FieldInfo]
+        fields: [FieldInfo],
+        context: some MacroExpansionContext,
+        node: some SyntaxProtocol
     ) -> [IndexInfo] {
-        var expandedIndexes: [IndexInfo] = []
+        var processedIndexes: [IndexInfo] = []
 
         for index in indexes {
             // Only process VALUE indexes with a single field
             guard index.indexType == .value, index.fields.count == 1 else {
-                expandedIndexes.append(index)
+                processedIndexes.append(index)
                 continue
             }
 
             let fieldName = index.fields[0]
+            let parts = fieldName.split(separator: ".")
+            let lastPart = parts.last.map(String.init)
 
-            // Find the field in FieldInfo
-            guard let fieldInfo = fields.first(where: { $0.name == fieldName }) else {
-                // Field not found - keep original index (error will be caught later)
-                expandedIndexes.append(index)
-                continue
-            }
+            // Check if this is an explicit boundary index (e.g., \.period.lowerBound)
+            if lastPart == "lowerBound" || lastPart == "upperBound" {
+                let baseFieldName = parts.dropLast().joined(separator: ".")
+                guard let fieldInfo = fields.first(where: { $0.name == baseFieldName }) else {
+                    // Field not found - append as is and let other diagnostics handle it
+                    processedIndexes.append(index)
+                    continue
+                }
 
-            // Normalize baseType to remove module prefixes (e.g., "Swift.Range<Date>" -> "Range<Date>")
-            let normalizedType = fieldInfo.typeInfo.baseType.split(separator: ".").last.map(String.init) ?? fieldInfo.typeInfo.baseType
-            // Detect Range type (use normalized baseType to handle Optional wrappers)
-            let rangeInfo = RangeTypeDetector.detectRangeType(normalizedType)
+                // Detect Range type using correct method name
+                guard let rangeInfo = RangeTypeDetector.detectRange(from: fieldInfo.typeInfo.baseType) else {
+                    // Not a Range type - append as is
+                    processedIndexes.append(index)
+                    continue
+                }
 
-            switch rangeInfo {
-            case .range, .closedRange:
-                // Generate 2 indexes: start + end
-                let boundaryType = rangeInfo.boundaryType
-
-                // Start index
-                expandedIndexes.append(IndexInfo(
-                    fields: [fieldName],
+                // Create index with rangeMetadata
+                processedIndexes.append(IndexInfo(
+                    fields: [baseFieldName], // Use the base field name
                     isUnique: index.isUnique,
-                    customName: nil,  // Auto-generated name
+                    customName: index.customName,
                     typeName: index.typeName,
                     indexType: .value,
                     scope: index.scope,
                     rangeMetadata: RangeIndexMetadata(
-                        component: "lowerBound",
-                        boundaryType: boundaryType,
-                        originalFieldName: fieldName
+                        component: lastPart!,
+                        boundaryType: rangeInfo.boundaryType.rawValue,
+                        originalFieldName: baseFieldName
                     ),
                     coveringFields: index.coveringFields
                 ))
+            } else {
+                // Check if this field is a Range type being indexed directly (NOT allowed)
+                guard let fieldInfo = fields.first(where: { $0.name == fieldName }) else {
+                    // Field not found - append as is and let other diagnostics handle it
+                    processedIndexes.append(index)
+                    continue
+                }
 
-                // End index
-                expandedIndexes.append(IndexInfo(
-                    fields: [fieldName],
-                    isUnique: index.isUnique,
-                    customName: nil,
-                    typeName: index.typeName,
-                    indexType: .value,
-                    scope: index.scope,
-                    rangeMetadata: RangeIndexMetadata(
-                        component: "upperBound",
-                        boundaryType: boundaryType,
-                        originalFieldName: fieldName
-                    ),
-                    coveringFields: index.coveringFields
-                ))
+                // Detect if this is a Range type
+                if RangeTypeDetector.detectRange(from: fieldInfo.typeInfo.baseType) != nil {
+                    // Direct Range indexing is not allowed - emit diagnostic
+                    context.diagnose(Diagnostic(
+                        node: node,
+                        message: RecordableMacroDiagnostic.directRangeIndexNotAllowed(fieldName: fieldName)
+                    ))
+                    // Skip this index (don't append to processedIndexes)
+                    continue
+                }
 
-            case .partialRangeFrom:
-                // Generate 1 index: start only
-                expandedIndexes.append(IndexInfo(
-                    fields: [fieldName],
-                    isUnique: index.isUnique,
-                    customName: nil,
-                    typeName: index.typeName,
-                    indexType: .value,
-                    scope: index.scope,
-                    rangeMetadata: RangeIndexMetadata(
-                        component: "lowerBound",
-                        boundaryType: "closed",
-                        originalFieldName: fieldName
-                    ),
-                    coveringFields: index.coveringFields
-                ))
-
-            case .partialRangeThrough, .partialRangeUpTo:
-                // Generate 1 index: end only
-                let boundaryType = rangeInfo.boundaryType
-
-                expandedIndexes.append(IndexInfo(
-                    fields: [fieldName],
-                    isUnique: index.isUnique,
-                    customName: nil,
-                    typeName: index.typeName,
-                    indexType: .value,
-                    scope: index.scope,
-                    rangeMetadata: RangeIndexMetadata(
-                        component: "upperBound",
-                        boundaryType: boundaryType,
-                        originalFieldName: fieldName
-                    ),
-                    coveringFields: index.coveringFields
-                ))
-
-            case .unboundedRange:
-                // TODO: Emit compile error
-                // For now, skip this index (will cause runtime error)
-                continue
-
-            case .notRange:
-                // Not a Range type - keep original index
-                expandedIndexes.append(index)
+                // Standard index - append as-is
+                processedIndexes.append(index)
             }
         }
-
-        return expandedIndexes
+        return processedIndexes
     }
 
     /// Extract unique constraints from @Attribute(.unique) properties
@@ -1389,18 +1351,29 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
 
         if metadata.keyPathFields.isEmpty {
             // Static path - no parameters
+
             methods.append("""
 
             /// Opens or creates the directory for this record type
+            ///
+            /// Uses `database.makeDirectoryLayer()` to create a DirectoryLayer instance.
+            /// This is consistent with RecordContainer's singleton pattern and ensures
+            /// that directory resolution is efficient and cached.
             ///
             /// - Parameter database: The database to use
             /// - Returns: DirectorySubspace for this record type
             public static func openDirectory(
                 database: any DatabaseProtocol
             ) async throws -> DirectorySubspace {
+                // Append layer-specific suffix to make path unique
+                // FoundationDB DirectoryLayer does not allow same path with different layer types
+                \(needsLayerSuffixMutation(layerType: metadata.layerType) ? "var" : "let") pathComponents: [String] = [\(pathArrayElements)]
+                \(generateLayerSuffixCode(layerType: metadata.layerType, pathVariable: "pathComponents"))
+                // Use database.makeDirectoryLayer() (recommended pattern)
+                // This matches RecordContainer's DirectoryLayer initialization approach
                 let directoryLayer = database.makeDirectoryLayer()
                 let dir = try await directoryLayer.createOrOpen(
-                    path: [\(pathArrayElements)],
+                    path: pathComponents,
                     type: \(metadata.directoryTypeExpression)
                 )
                 return dir
@@ -1453,6 +1426,10 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
 
             /// Opens or creates the directory for this record type
             ///
+            /// Uses `database.makeDirectoryLayer()` to create a DirectoryLayer instance.
+            /// This is consistent with RecordContainer's singleton pattern and ensures
+            /// that directory resolution is efficient and cached.
+            ///
             /// - Parameters:
             \(paramDocs)
             ///   - database: The database to use
@@ -1461,9 +1438,15 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
                 \(parameters),
                 database: any DatabaseProtocol
             ) async throws -> DirectorySubspace {
+                // Append layer-specific suffix to make path unique
+                // FoundationDB DirectoryLayer does not allow same path with different layer types
+                \(needsLayerSuffixMutation(layerType: metadata.layerType) ? "var" : "let") pathComponents: [String] = [\(pathArrayElements)]
+                \(generateLayerSuffixCode(layerType: metadata.layerType, pathVariable: "pathComponents"))
+                // Use database.makeDirectoryLayer() (recommended pattern)
+                // This matches RecordContainer's DirectoryLayer initialization approach
                 let directoryLayer = database.makeDirectoryLayer()
                 let dir = try await directoryLayer.createOrOpen(
-                    path: [\(pathArrayElements)],
+                    path: pathComponents,
                     type: \(metadata.directoryTypeExpression)
                 )
                 return dir
@@ -1495,6 +1478,66 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
         }
 
         return methods.joined(separator: "\n")
+    }
+
+    /// Generate directoryPathComponents property
+    ///
+    /// Creates a static property that returns an array of DirectoryPathElement
+    /// representing the directory structure from #Directory macro.
+    ///
+    /// - Parameters:
+    ///   - directoryMetadata: Directory metadata extracted from #Directory macro
+    ///   - typeName: The fully qualified type name
+    /// - Returns: Generated property code as a string
+    private static func generateDirectoryPathComponentsProperty(
+        directoryMetadata: DirectoryMetadata?,
+        typeName: String
+    ) -> String {
+        guard let metadata = directoryMetadata else {
+            // No #Directory macro - use default implementation (empty array)
+            return ""
+        }
+
+        // Build path components array
+        let componentsArray = metadata.pathElements.map { element in
+            switch element {
+            case .literal(let value):
+                return "Path(\"\(value)\")"
+            case .keyPath(let fieldName):
+                // Use fully qualified KeyPath to help type inference
+                return "Field(\\\(typeName).\(fieldName))"
+            }
+        }.joined(separator: ", ")
+
+        return """
+
+            public static var directoryPathComponents: [any DirectoryPathElement] {
+                return [\(componentsArray)]
+            }
+        """
+    }
+
+    /// Generate directoryLayerType property
+    ///
+    /// Creates a static property that returns the DirectoryLayerType
+    /// specified in #Directory macro's layer parameter.
+    ///
+    /// - Parameter directoryMetadata: Directory metadata extracted from #Directory macro
+    /// - Returns: Generated property code as a string
+    private static func generateDirectoryLayerTypeProperty(
+        directoryMetadata: DirectoryMetadata?
+    ) -> String {
+        guard let metadata = directoryMetadata else {
+            // No #Directory macro - use default implementation (.recordStore)
+            return ""
+        }
+
+        return """
+
+            public static var directoryLayerType: DirectoryLayerType {
+                return .\(metadata.layerType)
+            }
+        """
     }
 
     /// Generate validation methods for @Vector and @Spatial fields
@@ -1742,6 +1785,27 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
         return "\\Self.\(fieldName).\(relativeWithoutPrefix)"
     }
 
+    /// Helper to determine if a type needs Int64 conversion
+    private static func needsInt64Conversion(_ typeName: String) -> Bool {
+        let convertibleTypes = ["Int", "Int8", "Int16", "Int32", "UInt", "UInt8", "UInt16", "UInt32"]
+        return convertibleTypes.contains(typeName)
+    }
+
+    /// Generate boundary extraction code based on type
+    private static func generateBoundaryExtraction(
+        boundName: String,
+        boundType: String
+    ) -> String {
+        if needsInt64Conversion(boundType) {
+            // For numeric types that need conversion, directly convert to Int64
+            // No switch needed - the compiler knows the exact type from rangeInfo.boundType
+            return "return [Int64(\(boundName)) as any TupleElement]"
+        } else {
+            // For non-numeric types (Date, String, Int64, UInt64, etc.), directly return the value
+            return "return [\(boundName) as any TupleElement]"
+        }
+    }
+
     /// Generate extractRangeBoundary method for Range type fields
     private static func generateRangeBoundaryMethod(
         typeName: String,
@@ -1767,10 +1831,21 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
 
         for field in rangeFields {
             let typeInfo = analyzeType(field.type)
-            let rangeInfo = RangeTypeDetector.detectRangeType(typeInfo.baseType)
+            guard let rangeInfo = RangeTypeDetector.detectRange(from: typeInfo.baseType) else {
+                continue  // Not a range type
+            }
 
-            switch rangeInfo {
-            case .range, .closedRange:
+            let lowerBoundExtraction = generateBoundaryExtraction(
+                boundName: "rangeValue.lowerBound",
+                boundType: rangeInfo.boundType
+            )
+            let upperBoundExtraction = generateBoundaryExtraction(
+                boundName: "rangeValue.upperBound",
+                boundType: rangeInfo.boundType
+            )
+
+            switch rangeInfo.category {
+            case .full:
                 // For Range and ClosedRange, handle both lowerBound and upperBound
                 let caseClause = """
                 case "\(field.name)":
@@ -1781,14 +1856,14 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
                         """ : "let rangeValue = self.\(field.name)")
                         switch component {
                         case .lowerBound:
-                            return [rangeValue.lowerBound as any TupleElement]
+                            \(lowerBoundExtraction)
                         case .upperBound:
-                            return [rangeValue.upperBound as any TupleElement]
+                            \(upperBoundExtraction)
                         }
                 """
                 caseClauses.append(caseClause)
 
-            case .partialRangeFrom:
+            case .partialFrom:
                 // For PartialRangeFrom, only lowerBound exists
                 let caseClause = """
                 case "\(field.name)":
@@ -1800,12 +1875,12 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
                         guard component == .lowerBound else {
                             throw RecordLayerError.invalidArgument("PartialRangeFrom only supports lowerBound component")
                         }
-                        return [rangeValue.lowerBound as any TupleElement]
+                        \(lowerBoundExtraction)
                 """
                 caseClauses.append(caseClause)
 
-            case .partialRangeUpTo, .partialRangeThrough:
-                // For PartialRange..., only upperBound exists
+            case .partialUpTo:
+                // For PartialRange... (UpTo/Through), only upperBound exists
                 let caseClause = """
                 case "\(field.name)":
                         \(typeInfo.isOptional ? """
@@ -1816,15 +1891,12 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
                         guard component == .upperBound else {
                             throw RecordLayerError.invalidArgument("Partial range only supports upperBound component")
                         }
-                        return [rangeValue.upperBound as any TupleElement]
+                        \(upperBoundExtraction)
                 """
                 caseClauses.append(caseClause)
 
-            case .unboundedRange:
-                // UnboundedRange should have been caught during index expansion
-                continue
-
             case .notRange:
+                // Not a range type, skip
                 continue
             }
         }
@@ -1895,6 +1967,15 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
             spatialAccessors: spatialAccessors
         )
 
+        // Generate directoryPathComponents and directoryLayerType
+        let directoryPathComponentsProperty = generateDirectoryPathComponentsProperty(
+            directoryMetadata: directoryMetadata,
+            typeName: typeName
+        )
+        let directoryLayerTypeProperty = generateDirectoryLayerTypeProperty(
+            directoryMetadata: directoryMetadata
+        )
+
         let extensionCode: DeclSyntax = """
         extension \(raw: typeName): Recordable {
             public static var recordName: String { "\(raw: recordName)" }
@@ -1904,7 +1985,7 @@ indexType: .spatial(SpatialIndexOptions(type: \(spatialTypeInit)))
             public static var allFields: [String] { [\(raw: fieldNames)] }
 
             public static var supportsReconstruction: Bool { \(raw: supportsReconstructionValue) }
-            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)\(raw: enumMetadataMethod)\(raw: spatialAccessorProperties)
+            \(raw: indexStaticProperties)\(raw: indexDefinitionsProperty)\(raw: enumMetadataMethod)\(raw: spatialAccessorProperties)\(raw: directoryPathComponentsProperty)\(raw: directoryLayerTypeProperty)
 
             public static func fieldNumber(for fieldName: String) -> Int? {
                 switch fieldName {
@@ -2711,6 +2792,60 @@ struct IndexInfo {
     }
 }
 
+// MARK: - Helper Functions
+
+/// Generates Swift code to append layer-specific suffix to path array
+///
+/// This ensures unique paths for different layer types, as FoundationDB DirectoryLayer
+/// does not allow creating directories at the same path with different layer types.
+///
+/// - Parameters:
+///   - layerType: Directory layer type string (e.g., "partition", "recordStore")
+///   - pathVariable: Name of the path array variable (e.g., "pathComponents")
+/// - Returns: Swift code string to append layer suffix
+/// Check if layerType requires path component mutation
+fileprivate func needsLayerSuffixMutation(layerType: String) -> Bool {
+    let layerRawValue = layerType
+
+    // partition and unknown types don't need suffix
+    if layerRawValue == "partition" || layerRawValue.isEmpty {
+        return false
+    }
+
+    // All other layer types need suffix appended
+    return layerRawValue == "recordStore" ||
+           layerRawValue == "luceneIndex" ||
+           layerRawValue == "timeSeries" ||
+           layerRawValue == "vectorIndex" ||
+           layerRawValue.hasPrefix("custom:")
+}
+
+fileprivate func generateLayerSuffixCode(
+    layerType: String,
+    pathVariable: String
+) -> String {
+    let layerRawValue = layerType
+
+    if layerRawValue == "partition" {
+        // Partition doesn't need suffix
+        return ""
+    } else if layerRawValue == "recordStore" {
+        return "\(pathVariable).append(\"_recordStore\")"
+    } else if layerRawValue == "luceneIndex" {
+        return "\(pathVariable).append(\"_lucene\")"
+    } else if layerRawValue == "timeSeries" {
+        return "\(pathVariable).append(\"_timeSeries\")"
+    } else if layerRawValue == "vectorIndex" {
+        return "\(pathVariable).append(\"_vector\")"
+    } else if layerRawValue.hasPrefix("custom:") {
+        let name = String(layerRawValue.dropFirst("custom:".count))
+        return "\(pathVariable).append(\"_\(name)\")"
+    } else {
+        // Unknown layer type - no suffix
+        return ""
+    }
+}
+
 // MARK: - Diagnostic Messages
 
 enum RecordableMacroDiagnostic {
@@ -2718,6 +2853,7 @@ enum RecordableMacroDiagnostic {
     case typeAnnotationRequired(fieldName: String)
     case directoryFieldNotFound(fieldName: String, availableFields: [String])
     case invalidFieldSyntax
+    case directRangeIndexNotAllowed(fieldName: String)
 }
 
 extension RecordableMacroDiagnostic: DiagnosticMessage {
@@ -2749,6 +2885,8 @@ extension RecordableMacroDiagnostic: DiagnosticMessage {
             Invalid Field() syntax in #Directory
             Field() requires a KeyPath argument: Field(\\Type.fieldName)
             """
+        case .directRangeIndexNotAllowed(let fieldName):
+            return "Indexing a Range field ('\(fieldName)') directly is not allowed. Use its '.lowerBound' and/or '.upperBound' properties instead (e.g., '#Index<MyRecord>([\\.myRange.lowerBound])')."
         }
     }
 

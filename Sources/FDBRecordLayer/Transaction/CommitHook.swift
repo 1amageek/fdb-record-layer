@@ -1,17 +1,17 @@
 import Foundation
 
-public protocol CommitHook: Sendable {
-    func execute(context: RecordContext) async throws
+internal protocol CommitHook: Sendable {
+    func execute(context: TransactionContext) async throws
 }
 
-public struct ClosureCommitHook: CommitHook {
-    private let closure: @Sendable (RecordContext) async throws -> Void
+internal struct ClosureCommitHook: CommitHook {
+    private let closure: @Sendable (TransactionContext) async throws -> Void
 
-    public init(_ closure: @escaping @Sendable (RecordContext) async throws -> Void) {
+    internal init(_ closure: @escaping @Sendable (TransactionContext) async throws -> Void) {
         self.closure = closure
     }
 
-    public func execute(context: RecordContext) async throws {
+    internal func execute(context: TransactionContext) async throws {
         try await closure(context)
     }
 }

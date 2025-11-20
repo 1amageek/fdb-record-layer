@@ -297,6 +297,102 @@ public final class QueryBuilder<T: Recordable> {
         return self
     }
 
+    /// Query records where Range field overlaps with PartialRangeFrom (X...)
+    ///
+    /// Efficiently finds records where a Range<Bound> field overlaps with a PartialRangeFrom.
+    ///
+    /// **Algorithm**: Single condition with strict comparison
+    /// - field.upperBound > queryRange.lowerBound (strict, excludes exact boundary)
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to Range<Bound> field
+    ///   - range: PartialRangeFrom to check overlap
+    /// - Returns: Self (for method chaining)
+    public func overlaps<Bound: TupleElement & Comparable>(
+        _ keyPath: KeyPath<T, Range<Bound>>,
+        with range: PartialRangeFrom<Bound>
+    ) -> Self {
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Only condition: field.upperBound > queryRange.lowerBound (strict)
+        let upperBoundFilter = TypedKeyExpressionQueryComponent<T>(
+            keyExpression: RangeKeyExpression(
+                fieldName: fieldName,
+                component: .upperBound,
+                boundaryType: .halfOpen
+            ),
+            comparison: .greaterThan,
+            value: range.lowerBound
+        )
+
+        filters.append(upperBoundFilter)
+        return self
+    }
+
+    /// Query records where Range field overlaps with PartialRangeThrough (...X)
+    ///
+    /// Efficiently finds records where a Range<Bound> field overlaps with a PartialRangeThrough.
+    ///
+    /// **Algorithm**: Single condition with strict comparison
+    /// - field.lowerBound < queryRange.upperBound (strict, excludes exact boundary)
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to Range<Bound> field
+    ///   - range: PartialRangeThrough to check overlap
+    /// - Returns: Self (for method chaining)
+    public func overlaps<Bound: TupleElement & Comparable>(
+        _ keyPath: KeyPath<T, Range<Bound>>,
+        with range: PartialRangeThrough<Bound>
+    ) -> Self {
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Only condition: field.lowerBound < queryRange.upperBound (strict)
+        let lowerBoundFilter = TypedKeyExpressionQueryComponent<T>(
+            keyExpression: RangeKeyExpression(
+                fieldName: fieldName,
+                component: .lowerBound,
+                boundaryType: .halfOpen
+            ),
+            comparison: .lessThan,
+            value: range.upperBound
+        )
+
+        filters.append(lowerBoundFilter)
+        return self
+    }
+
+    /// Query records where Range field overlaps with PartialRangeUpTo (..<X)
+    ///
+    /// Efficiently finds records where a Range<Bound> field overlaps with a PartialRangeUpTo.
+    ///
+    /// **Algorithm**: Single condition with strict comparison
+    /// - field.lowerBound < queryRange.upperBound (strict, excludes exact boundary)
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to Range<Bound> field
+    ///   - range: PartialRangeUpTo to check overlap
+    /// - Returns: Self (for method chaining)
+    public func overlaps<Bound: TupleElement & Comparable>(
+        _ keyPath: KeyPath<T, Range<Bound>>,
+        with range: PartialRangeUpTo<Bound>
+    ) -> Self {
+        let fieldName = T.fieldName(for: keyPath)
+
+        // Only condition: field.lowerBound < queryRange.upperBound (strict)
+        let lowerBoundFilter = TypedKeyExpressionQueryComponent<T>(
+            keyExpression: RangeKeyExpression(
+                fieldName: fieldName,
+                component: .lowerBound,
+                boundaryType: .halfOpen
+            ),
+            comparison: .lessThan,
+            value: range.upperBound
+        )
+
+        filters.append(lowerBoundFilter)
+        return self
+    }
+
     /// Query records where Optional Range field overlaps with query range
     ///
     /// Efficiently finds records where an Optional Range<Bound> field overlaps with the provided query range.
@@ -598,7 +694,7 @@ public final class QueryBuilder<T: Recordable> {
 
         // 5. Execute the plan
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let cursor = try await plan.execute(
@@ -670,7 +766,7 @@ public final class QueryBuilder<T: Recordable> {
 
         // Execute the plan
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let recordAccess = GenericRecordAccess<T>()

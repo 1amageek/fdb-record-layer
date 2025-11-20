@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FDBRecordLayer
 
 /// Test record type for IN join planner integration tests
@@ -296,5 +297,13 @@ private final class MockStatisticsManager: StatisticsManagerProtocol {
         recordType: String
     ) async throws -> Double {
         return 0.1
+    }
+
+    func estimateRangeSelectivity(indexName: String, queryRange: Range<Date>) async throws -> Double {
+        return 1.0
+    }
+
+    func estimateRangeSelectivity(indexName: String, lowerBound: any Comparable, upperBound: any Comparable) async throws -> Double {
+        return 1.0
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+ import FDBRecordCore
 import Testing
 @testable import FoundationDB
 @testable import FDBRecordLayer
@@ -54,8 +55,7 @@ struct PredicateTests {
     }
 
     func cleanup(database: any DatabaseProtocol, store: RecordStore<PredicateTestUser>) async throws {
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             // Clear all keys in the store's subspace
             let (beginKey, endKey) = store.subspace.range()
             transaction.clearRange(beginKey: beginKey, endKey: endKey)

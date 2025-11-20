@@ -5,14 +5,10 @@
 
 ## 目次
 
-### 開発ガイド
-- テスト実行方法
-
 ### Part 0: モジュール分離（SSOT）
 - アーキテクチャ概要
 - FDBRecordCore vs FDBRecordLayer
 - マクロ設計の変更
-- 使用例（クライアント・サーバー）
 
 ### Part 1: FoundationDB基礎
 - FoundationDBとは
@@ -591,513 +587,60 @@ try await store.save(user)
 
 #### 例1: iOSアプリ + Vapor サーバー
 
-**プロジェクト構成**:
+**構成**: Shared（共通モデル）、iOSApp（JSON API）、Server（FDB永続化）
 
-```
-MyProject/
-├── Shared/                  # 共通モジュール
-│   └── Sources/
-│       └── Models/
-│           └── User.swift   # @Recordable モデル定義（SSOT）
-├── iOSApp/                  # iOSクライアント
-│   ├── Package.swift        # FDBRecordCoreのみ依存
-│   └── Sources/
-│       └── UserService.swift
-└── Server/                  # Vaporサーバー
-    ├── Package.swift        # FDBRecordLayer依存
-    └── Sources/
-        └── UserRepository.swift
-```
-
-**Shared/Sources/Models/User.swift**（SSOT）:
+**キーポイント**:
+- `Shared/User.swift`: `@Recordable`定義（FDBRecordCoreのみ）
+- `iOSApp/UserService`: URLSession + JSONEncoder/Decoder
+- `Server/UserRepository`: RecordStore経由でFDB永続化
+- SSOT原則: 同じモデル定義をクライアント・サーバーで共有
 
 ```swift
-import FDBRecordCore
-
-/// クライアント・サーバー共通のUser定義
+// Shared - SSOT
 @Recordable
 public struct User: Identifiable {
     #PrimaryKey<User>([\.userID])
-    #Index<User>([\.email], name: "user_by_email")
-    #Index<User>([\.status], name: "user_by_status")
-
+    #Index<User>([\.email])
     public var userID: Int64
-    public var email: String
-    public var name: String
-    public var status: UserStatus
-    public var createdAt: Date
-
-    @Transient
-    public var isLoggedIn: Bool = false
-
-    public enum UserStatus: String, Codable, Sendable {
-        case active
-        case inactive
-        case suspended
-    }
-
-    // Identifiableプロトコル準拠
-    public var id: Int64 { userID }
-
-    public init(userID: Int64, email: String, name: String, status: UserStatus, createdAt: Date) {
-        self.userID = userID
-        self.email = email
-        self.name = name
-        self.status = status
-        self.createdAt = createdAt
-    }
-}
-```
-
-**iOSApp/Sources/UserService.swift**:
-
-```swift
-import Foundation
-import FDBRecordCore  // ✅ FDBRecordCoreのみ
-import Shared
-
-/// iOS側のユーザーサービス（JSON API連携）
-public class UserService {
-    private let baseURL = URL(string: "https://api.example.com")!
-
-    /// ユーザー一覧を取得
-    public func fetchUsers() async throws -> [User] {
-        let url = baseURL.appendingPathComponent("users")
-        let (data, _) = try await URLSession.shared.data(from: url)
-
-        // ✅ Codableでデコード（サーバーと同じ型）
-        return try JSONDecoder().decode([User].self, from: data)
-    }
-
-    /// 新規ユーザーを作成
-    public func createUser(email: String, name: String) async throws -> User {
-        let url = baseURL.appendingPathComponent("users")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let newUser = User(
-            userID: 0,  // サーバー側で採番
-            email: email,
-            name: name,
-            status: .active,
-            createdAt: Date()
-        )
-
-        // ✅ Codableでエンコード
-        request.httpBody = try JSONEncoder().encode(newUser)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 201 else {
-            throw URLError(.badServerResponse)
-        }
-
-        return try JSONDecoder().decode(User.self, from: data)
-    }
-
-    /// メールアドレスでユーザーを検索
-    public func findByEmail(_ email: String) async throws -> User? {
-        let url = baseURL.appendingPathComponent("users/\(email)")
-        let (data, response) = try await URLSession.shared.data(from: url)
-
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            return nil
-        }
-
-        return try JSONDecoder().decode(User.self, from: data)
-    }
-}
-```
-
-**iOSApp/Sources/UserListView.swift**（SwiftUI）:
-
-```swift
-import SwiftUI
-import FDBRecordCore
-import Shared
-
-struct UserListView: View {
-    @State private var users: [User] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    private let service = UserService()
-
-    var body: some View {
-        NavigationView {
-            Group {
-                if isLoading {
-                    ProgressView()
-                } else if let error = errorMessage {
-                    Text("Error: \(error)")
-                        .foregroundColor(.red)
-                } else {
-                    List(users) { user in
-                        VStack(alignment: .leading) {
-                            Text(user.name)
-                                .font(.headline)
-                            Text(user.email)
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                            Label(user.status.rawValue, systemImage: statusIcon(for: user.status))
-                                .font(.caption2)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Users")
-            .task {
-                await loadUsers()
-            }
-        }
-    }
-
-    private func loadUsers() async {
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            users = try await service.fetchUsers()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func statusIcon(for status: User.UserStatus) -> String {
-        switch status {
-        case .active: return "checkmark.circle.fill"
-        case .inactive: return "pause.circle"
-        case .suspended: return "xmark.circle"
-        }
-    }
-}
-```
-
-**Server/Sources/UserRepository.swift**:
-
-```swift
-import Foundation
-import FDBRecordCore   // ✅ モデル定義
-import FDBRecordLayer  // ✅ RecordStore等
-import FoundationDB
-import Shared
-
-/// サーバー側のユーザーリポジトリ（FoundationDB永続化）
-public actor UserRepository {
-    private let store: RecordStore<User>
-    private let database: any DatabaseProtocol
-
-    public init(database: any DatabaseProtocol, schema: Schema) async throws {
-        self.database = database
-        // ✅ RecordStoreを使用（FDB永続化）
-        self.store = try await User.store(database: database, schema: schema)
-    }
-
-    /// ユーザーを保存
-    public func save(_ user: User) async throws {
-        try await store.save(user)
-    }
-
-    /// メールアドレスでユーザーを検索
-    public func findByEmail(_ email: String) async throws -> User? {
-        // ✅ インデックスクエリ（O(log n)）
-        let users = try await store.query()
-            .where(\.email, .equals, email)
-            .execute()
-        return users.first
-    }
-
-    /// ステータスでユーザーをフィルタ
-    public func findByStatus(_ status: User.UserStatus) async throws -> [User] {
-        // ✅ Enumインデックスを使用
-        return try await store.query()
-            .where(\.status, .equals, status)
-            .execute()
-    }
-
-    /// 全ユーザーを取得
-    public func findAll() async throws -> [User] {
-        var result: [User] = []
-        for try await user in store.scan() {
-            result.append(user)
-        }
-        return result
-    }
-
-    /// ユーザーIDでユーザーを取得
-    public func findByID(_ userID: Int64) async throws -> User? {
-        // ✅ プライマリキー検索（O(1)）
-        return try await store.load(primaryKey: Tuple(userID))
-    }
-
-    /// ユーザーを削除
-    public func delete(userID: Int64) async throws {
-        try await store.delete(primaryKey: Tuple(userID))
-    }
-
-    /// アクティブなユーザー数を取得
-    public func countActive() async throws -> Int64 {
-        // ✅ COUNT集約インデックス
-        return try await store.evaluateAggregate(
-            .count(indexName: "user_by_status"),
-            groupBy: [User.UserStatus.active.rawValue]
-        )
-    }
-}
-```
-
-**Server/Sources/UserRoutes.swift**（Vapor）:
-
-```swift
-import Vapor
-import FDBRecordCore
-import FDBRecordLayer
-import Shared
-
-func routes(_ app: Application) throws {
-    let database: any DatabaseProtocol = app.fdb  // Vaporの拡張で設定済み
-    let schema = Schema([User.self])
-    let repo = try await UserRepository(database: database, schema: schema)
-
-    // GET /users - 全ユーザー取得
-    app.get("users") { req async throws -> [User] in
-        return try await repo.findAll()
-    }
-
-    // POST /users - 新規ユーザー作成
-    app.post("users") { req async throws -> User in
-        var user = try req.content.decode(User.self)
-
-        // サーバー側でuserID採番
-        user.userID = try await generateUserID(database)
-
-        try await repo.save(user)
-        return user
-    }
-
-    // GET /users/:email - メールアドレスで検索
-    app.get("users", ":email") { req async throws -> User in
-        guard let email = req.parameters.get("email"),
-              let user = try await repo.findByEmail(email) else {
-            throw Abort(.notFound)
-        }
-        return user
-    }
-
-    // GET /users/status/:status - ステータスでフィルタ
-    app.get("users", "status", ":status") { req async throws -> [User] in
-        guard let statusRaw = req.parameters.get("status"),
-              let status = User.UserStatus(rawValue: statusRaw) else {
-            throw Abort(.badRequest)
-        }
-        return try await repo.findByStatus(status)
-    }
-
-    // DELETE /users/:id - ユーザー削除
-    app.delete("users", ":id") { req async throws -> HTTPStatus in
-        guard let userID = req.parameters.get("id", as: Int64.self) else {
-            throw Abort(.badRequest)
-        }
-        try await repo.delete(userID: userID)
-        return .noContent
-    }
-
-    // GET /users/stats/active - アクティブユーザー数
-    app.get("users", "stats", "active") { req async throws -> [String: Int64] in
-        let count = try await repo.countActive()
-        return ["activeUsers": count]
-    }
+    public var email, name: String
 }
 
-// ヘルパー関数: userID採番（High-Contention Allocatorパターン）
-private func generateUserID(_ database: any DatabaseProtocol) async throws -> Int64 {
-    // 実装省略（High-Contention Allocatorまたはversionstamp使用）
-    return Int64.random(in: 1...Int64.max)
-}
+// iOS - JSON API
+let users = try JSONDecoder().decode([User].self, from: data)
+
+// Server - FDB
+try await store.query().where(\.email, .equals, email).execute()
 ```
 
-#### 例2: マルチプラットフォーム対応（Shared Package）
+#### 例2: マルチプラットフォーム対応
 
-**プロジェクト構成**:
-
-```
-MyMultiPlatformApp/
-├── Package.swift            # Workspace定義
-├── Shared/
-│   ├── Package.swift        # FDBRecordCoreのみ依存
-│   └── Sources/
-│       └── Models/
-│           └── Product.swift
-├── iOS/
-│   └── App.swift
-├── macOS/
-│   └── App.swift
-└── Server/
-    ├── Package.swift        # FDBRecordLayer依存
-    └── Sources/
-        └── App/
-            └── configure.swift
-```
-
-**Shared/Package.swift**:
+**構成**: Shared（FDBRecordCore）→ iOS/macOS/Server
 
 ```swift
-let package = Package(
-    name: "Shared",
-    platforms: [
-        .iOS(.v17),
-        .macOS(.v14),
-    ],
-    products: [
-        .library(name: "Shared", targets: ["Shared"]),
-    ],
-    dependencies: [
-        .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0"),
-    ],
-    targets: [
-        .target(
-            name: "Shared",
-            dependencies: [
-                .product(name: "FDBRecordCore", package: "fdb-record-layer"),
-            ]
-        ),
-    ]
-)
-```
-
-**Shared/Sources/Models/Product.swift**:
-
-```swift
-import FDBRecordCore
-
+// Shared/Product.swift - 全プラットフォーム共通
 @Recordable
 public struct Product {
     #PrimaryKey<Product>([\.productID])
-    #Index<Product>([\.category, \.price], name: "product_by_category_price")
-    #Index<Product>([\.inStock], name: "product_by_stock")
-
+    #Index<Product>([\.category, \.price])
     public var productID: Int64
-    public var name: String
-    public var category: String
-    public var price: Double
-    public var inStock: Bool
-
-    public init(productID: Int64, name: String, category: String, price: Double, inStock: Bool) {
-        self.productID = productID
-        self.name = name
-        self.category = category
-        self.price = price
-        self.inStock = inStock
-    }
+    // ...
 }
 ```
 
-このモデルは **iOS, macOS, サーバー全てで同じコード** を使用できます。
+### エラーと対処法
 
-### よくあるエラーと対処法
-
-#### エラー1: FDBRecordLayerをクライアントでimport
-
-```swift
-// ❌ 間違い: iOSアプリでFDBRecordLayerをimport
-import FDBRecordLayer
-
-// エラー:
-// error: cannot find module 'FoundationDB' in scope
-// error: undefined symbol: _fdb_create_database
-```
-
-**対処法**:
-```swift
-// ✅ 正しい: FDBRecordCoreのみimport
-import FDBRecordCore
-```
-
-#### エラー2: サーバーでFDBRecordCoreのみを依存
-
-```swift
-// Package.swift (Server)
-dependencies: [
-    // ❌ 間違い: FDBRecordCoreのみ依存
-    .product(name: "FDBRecordCore", package: "fdb-record-layer"),
-]
-
-// エラー:
-// error: cannot find 'RecordStore' in scope
-// error: value of type 'User' has no member 'store'
-```
-
-**対処法**:
-```swift
-// ✅ 正しい: FDBRecordLayerを依存
-dependencies: [
-    .product(name: "FDBRecordLayer", package: "fdb-record-layer"),
-]
-```
-
-#### エラー3: マクロ生成コードの古いバージョン使用
-
-```swift
-// ビルドエラー:
-// error: value of type 'User' has no member 'extractField'
-```
-
-**対処法**:
-```bash
-# キャッシュをクリアして再ビルド
-swift package clean
-swift build
-```
-
-または、Xcodeの場合:
-```
-Product > Clean Build Folder (Shift + Cmd + K)
-```
+| エラー | 原因 | 対処法 |
+|--------|------|--------|
+| `cannot find module 'FoundationDB'` | クライアントでFDBRecordLayerをimport | `import FDBRecordCore` のみ |
+| `cannot find 'RecordStore'` | ServerでFDBRecordCoreのみ依存 | FDBRecordLayer を依存 |
+| `no member 'extractField'` | マクロキャッシュ | `swift package clean` |
 
 ### ベストプラクティス
 
-#### 1. モデル定義は共通モジュールに集約
-
-```
-✅ 推奨構成:
-MyProject/
-├── Shared/          # 共通モデル定義（FDBRecordCoreのみ依存）
-├── iOSApp/          # Sharedを依存
-├── macOSApp/        # Sharedを依存
-└── Server/          # Shared + FDBRecordLayerを依存
-```
-
-#### 2. Import文は必要最小限に
-
-```swift
-// クライアント
-import FDBRecordCore  // ✅ 最小限
-
-// サーバー
-import FDBRecordCore   // ✅ モデル定義用
-import FDBRecordLayer  // ✅ 永続化機能用
-```
-
-#### 3. Codableを活用
-
-```swift
-// クライアント・サーバー間のデータ交換
-let jsonData = try JSONEncoder().encode(user)
-let user = try JSONDecoder().decode(User.self, from: jsonData)
-```
-
-#### 4. @Transientで一時フィールドを除外
-
-```swift
-@Recordable
-struct User {
-    var userID: Int64
-    var name: String
-
-    @Transient  // ✅ JSON/FDBに保存されない
-    var isLoggedIn: Bool = false
-}
-```
+- モデルは共通モジュール（FDBRecordCore）に集約
+- クライアント: FDBRecordCoreのみ、サーバー: FDBRecordLayer
+- Codable活用（JSON API）
+- @Transient で一時フィールド除外
 
 ---
 
@@ -1299,451 +842,79 @@ rollback                       # ロールバック
 reset                          # リセット
 ```
 
-**キー・値のエスケープ**:
+**その他の機能**: エスケープ（`\x20`, `\"`）、バージョン取得（`getversion`）、テナント（`usetenant`）、ヘルプ（`help`）
 
-```bash
-# スペースを含むキー
-set "key with spaces" "value"
-set key\ with\ spaces "value"
-set key\x20with\x20spaces "value"
+**実用例**:
+- クラスタ初期化: `fdbcli --exec "configure new single memory"`
+- データ確認: `writemode on; set key value; get key`
+- バッチ操作: `begin` → 複数`set` → `commit`
 
-# バイナリデータ（16進数）
-set "\x01\x02\x03" "\xFF\xFE"
+### ⚠️ CRITICAL: Subspace.pack() vs Subspace.subspace()
 
-# クォーテーション
-set "key\"with\"quotes" "value"
-```
+> **重要**: 誤用するとインデックススキャンが0件を返す。型システムで防げないため、パターン理解が必須。
 
-**設定とノブ**:
-
-```bash
-# ノブ（内部パラメータ）の設定
-setknob <KNOBNAME> <VALUE>
-getknob <KNOBNAME>
-clearknob <KNOBNAME>
-```
-
-**その他**:
-
-```bash
-# バージョン取得
-getversion
-
-# テナント使用
-usetenant myTenant
-defaulttenant
-
-# ヘルプ
-help                # コマンド一覧
-help escaping       # エスケープ方法
-help options        # トランザクションオプション
-
-# 終了
-exit / quit
-```
-
-#### 実用例
-
-**クラスタ初期化**:
-
-```bash
-fdbcli --exec "configure new single memory"
-```
-
-**データの確認**:
-
-```bash
-fdbcli --exec "writemode on; set test_key test_value; get test_key"
-```
-
-**ステータス監視**:
-
-```bash
-watch -n 5 'fdbcli --exec "status json" | jq ".cluster.qos"'
-```
-
-**バッチ操作**:
-
-```bash
-fdbcli <<EOF
-writemode on
-begin
-set user:1 {"name":"Alice"}
-set user:2 {"name":"Bob"}
-commit
-EOF
-```
-
-### ⚠️ CRITICAL: Subspace.pack() vs Subspace.subspace() の設計ガイドライン
-
-> **重要**: この違いは**型システムで防げません**。開発者が正しいパターンを理解し、コードレビューで検証する必要があります。
-
-#### 問題の本質
-
-FoundationDBのSubspace APIには**2つの似たメソッド**があり、どちらもコンパイルが通りますが、**異なるキーエンコーディング**を生成します：
+#### エンコーディングの違い
 
 | メソッド | エンコーディング | 用途 |
 |---------|----------------|------|
-| `subspace.pack(tuple)` | **フラット** | インデックスキー、効率的なRange読み取り |
-| `subspace.subspace(tuple)` | **ネスト**（\x05マーカー付き） | 階層的な論理構造、Directory Layer代替 |
-
-**誤用の影響**:
-- インデックススキャンが0件を返す（最も頻発するバグ）
-- 実行時にしか検出できない
-- テストで気づきにくい（データが少ない場合）
-
----
-
-#### エンコーディングの違い（詳細）
+| `subspace.pack(tuple)` | **フラット** | インデックスキー（Range効率） |
+| `subspace.subspace(tuple)` | **ネスト**（\x05マーカー） | レコードキー（階層構造） |
 
 ```swift
 let subspace = Subspace(prefix: [0x01])
 let tuple = Tuple("category", 123)
 
-// パターン1: pack() - フラットエンコーディング
+// ✅ インデックスキー: フラット
 let flatKey = subspace.pack(tuple)
-// 結果: [0x01, 0x02, 'c','a','t','e','g','o','r','y', 0x00, 0x15, 0x01]
-//       ^prefix  ^String marker  ^String data      ^end  ^Int64  ^value
+// [0x01, 0x02, 'category', 0x00, 0x15, 0x01]
 
-// パターン2: subspace() - ネストエンコーディング
-let nestedSubspace = subspace.subspace(tuple)
-let nestedKey = nestedSubspace.pack(Tuple())
-// 結果: [0x01, 0x05, 0x02, 'c','a','t','e','g','o','r','y', 0x00, 0x15, 0x01, 0x00, 0x00]
-//       ^prefix  ^Nested marker  ^Tuple data                         ^end   ^empty tuple
+// ✅ レコードキー: ネスト
+let nestedKey = subspace.subspace(tuple).pack(Tuple())
+// [0x01, 0x05, 0x02, 'category', 0x00, 0x15, 0x01, 0x00]
+//       ^^^^ Nested Tuple marker
 ```
 
-**FoundationDB Tuple型マーカー**:
-- `\x00`: Null / 終端
-- `\x02`: String
-- `\x05`: **Nested Tuple（重要！）**
-- `\x15`: Int64（0の場合はintZero + value）
-
----
-
-#### なぜインデックスキーはフラットであるべきか
-
-**FoundationDBフォーラムの知見**（[参考](https://forums.foundationdb.org/t/whats-the-purpose-of-the-directory-layer/677/10)）:
-
-> A.J. Beamon氏: "キーはサブスペースのプレフィックスを共有するが、ディレクトリではサブディレクトリのデータは親から分離される"
-
-**インデックスキーの要件**:
-
-1. **効率的なRange読み取り**: インデックス値でソートされ、連続したキー範囲をスキャン
-2. **分散**: 異なるインデックス値が物理的に分散（ホットスポット回避）
-3. **プライマリキーの連結**: `<indexValue><primaryKey>` の自然な順序
-
-**フラットエンコーディングの利点**:
-```
-インデックスキー構造: <indexSubspace><indexValue><primaryKey>
-
-例: category="Electronics", productID=1001
-  キー: ...index_category\x00 + \x02Electronics\x00 + \x15{1001}
-
-Range読み取り: category="Electronics"のすべての製品
-  開始: ...index_category\x00 + \x02Electronics\x00
-  終了: ...index_category\x00 + \x02Electronics\x00\xFF
-  → 自然にソートされた順序で効率的にスキャン
-```
-
-**ネストエンコーディングの問題**:
-```swift
-// ❌ 間違った実装
-let indexSubspace = subspace.subspace("I").subspace("category")
-let categorySubspace = indexSubspace.subspace(Tuple("Electronics"))
-let key = categorySubspace.pack(Tuple(productID))
-
-// 生成されるキー: ...I\x00category\x00\x05\x02Electronics\x00\x00 + \x15{1001}
-//                                      ^^^^^ ← 余計な\x05マーカー
-// → IndexManagerが保存したフラットキーとマッチしない
-```
-
----
-
-#### レコードキーは階層的であるべき
-
-**RecordStoreの設計意図**:
-
-レコードキーは**論理的なグループ化**を目的としており、ネストエンコーディングが適切です：
+#### 正しいパターン
 
 ```swift
-// RecordStore.saveInternal() の実装
-let recordKey = recordSubspace
-    .subspace(Record.recordName)    // レベル1: レコードタイプ
-    .subspace(primaryKey)            // レベル2: プライマリキー
-    .pack(Tuple())                   // 空のTupleで終端
+// ✅ インデックスキー（ValueIndex, CountIndex, SumIndex）
+return indexSubspace.pack(Tuple(indexValue, primaryKey))
 
-// 例: User(id=123)
-// キー: <R-prefix> + \x05User\x00 + \x05\x15{123}\x00 + \x00
-//                    ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^   ^^^
-//                    レコードタイプ  プライマリキー      終端
+// ✅ レコードキー（RecordStore）
+return recordSubspace.subspace(recordName).subspace(primaryKey).pack(Tuple())
+
+// ❌ 間違い: インデックスキーでsubspace()を使用
+// return indexSubspace.subspace(Tuple(indexValue)).pack(Tuple(primaryKey))
+// → \x05マーカーが入り、IndexManagerとマッチしない
 ```
 
-**階層的エンコーディングの利点**:
-1. **レコードタイプごとの分離**: 同じタイプのレコードが論理的にグループ化
-2. **プレフィックススキャン**: 特定タイプのすべてのレコードを効率的に取得
-3. **Directory Layer代替**: 動的ディレクトリ不要の軽量な階層構造
-
----
-
-#### Java版Record Layerとの比較
-
-Java版も同じSubspace APIを持ちますが、**明確な使い分けパターン**が確立されています：
-
-##### StandardIndexMaintainer（Java版）
-
-```java
-// インデックスキー構築
-public void updateIndexKeys(...) {
-    for (IndexEntry entry : indexEntries) {
-        // ✅ 正しい: pack()を使用（フラット）
-        byte[] key = state.indexSubspace.pack(entry.getKey());
-        tr.set(key, entry.getValue().pack());
-    }
-}
-```
-
-##### RankIndexMaintainer（Java版）
-
-```java
-// グループ化されたランキングインデックス
-Subspace rankSubspace = extraSubspace.subspace(prefix);  // グループ化
-byte[] key = rankSubspace.pack(scoreTuple);              // 最終キー生成
-```
-
-**Java版のルール**:
-- `subspace()`: **論理的な階層構造**の作成（グループ化、Directory代替）
-- `pack()`: **最終的なキー生成**（FoundationDBへの書き込み）
-
-**Swift版が誤用した理由**:
-RankIndexの`subspace(prefix)`パターンを見て、ValueIndexにも適用してしまった。しかしStandardIndexMaintainerの基本は**常にpack()を使用**。
-
----
-
-#### 型システムで防げない理由
+#### デバッグ
 
 ```swift
-// どちらもコンパイルが通る
-let key1 = indexSubspace.pack(tuple)              // ✅ 正しい
-let key2 = indexSubspace.subspace(tuple).pack(Tuple())  // ❌ 間違い、でもコンパイル成功
-
-// 型シグネチャが同じ
-func pack(_ tuple: Tuple) -> FDB.Bytes
-func subspace(_ tuple: Tuple) -> Subspace
+// キーを16進数で確認
+print("Key: \(key.map { String(format: "%02x", $0) }.joined(separator: " "))")
+// \x05が含まれていたらネストエンコーディング（インデックスキーなら誤り）
 ```
 
-**なぜ型で防げないか**:
-1. どちらも有効なAPI（用途が異なるだけ）
-2. 戻り値の型が異なるが、最終的に`FDB.Bytes`になる
-3. Swift型システムでは「どのAPIチェーンを使ったか」を追跡できない
-
-**将来的な改善案**（Optional）:
-```swift
-// 専用のビルダーパターンで型安全性を向上
-protocol IndexKeyBuilder {
-    func buildFlatKey(values: [TupleElement]) -> FDB.Bytes
-}
-
-// subspace()の使用を禁止
-struct FlatIndexKeyBuilder: IndexKeyBuilder {
-    let indexSubspace: Subspace
-
-    func buildFlatKey(values: [TupleElement]) -> FDB.Bytes {
-        return indexSubspace.pack(TupleHelpers.toTuple(values))
-    }
-}
-```
-
----
-
-#### 設計原則とベストプラクティス
-
-##### ✅ インデックスキー構築の正しいパターン
-
-```swift
-// ValueIndex, CountIndex, SumIndex など
-class GenericValueIndexMaintainer<Record: Sendable>: IndexMaintainer {
-    func buildIndexKey(record: Record, recordAccess: any RecordAccess<Record>) throws -> FDB.Bytes {
-        let indexedValues = try recordAccess.extractIndexValues(...)
-        let primaryKeyValues = recordAccess.extractPrimaryKey(...)
-        let allValues = indexedValues + primaryKeyValues
-
-        // ✅ MUST: pack()を使用（フラット）
-        return subspace.pack(TupleHelpers.toTuple(allValues))
-
-        // ❌ NEVER: subspace()を使用しない
-        // return subspace.subspace(TupleHelpers.toTuple(allValues)).pack(Tuple())
-    }
-}
-```
-
-```swift
-// TypedIndexScanPlan
-func execute(...) async throws -> AnyTypedRecordCursor<Record> {
-    let indexSubspace = subspace.subspace("I").subspace(indexName)
-
-    // ✅ MUST: pack()を使用
-    let beginKey = indexSubspace.pack(beginTuple)
-    var endKey = indexSubspace.pack(endTuple)
-
-    // 等価クエリの場合のみ0xFFを追加
-    if beginKey == endKey {
-        endKey.append(0xFF)
-    }
-}
-```
-
-##### ✅ レコードキー構築の正しいパターン
-
-```swift
-// RecordStore
-func saveInternal(_ record: Record, context: RecordContext) async throws {
-    let primaryKey = recordAccess.extractPrimaryKey(from: record)
-
-    // ✅ MUST: ネストされたsubspace()を使用
-    let effectiveSubspace = recordSubspace.subspace(Record.recordName)
-    let key = effectiveSubspace.subspace(primaryKey).pack(Tuple())
-
-    // ❌ NEVER: フラットpack()を使用しない
-    // let key = recordSubspace.pack(Tuple(Record.recordName, primaryKey))
-}
-```
-
-```swift
-// IndexScanTypedCursor
-func next() async throws -> Record? {
-    // インデックスキーからプライマリキーを抽出
-    let primaryKeyTuple = // ...
-
-    // ✅ MUST: RecordStoreと同じパターン
-    let effectiveSubspace = recordSubspace.subspace(recordName)
-    let recordKey = effectiveSubspace.subspace(primaryKeyTuple).pack(Tuple())
-}
-```
-
----
-
-#### コードレビューチェックリスト
-
-**インデックス関連コード**:
-
-- [ ] `IndexMaintainer`実装でインデックスキー構築に`subspace.pack(tuple)`を使用しているか？
-- [ ] `TypedQueryPlan`実装でインデックススキャンに`indexSubspace.pack(tuple)`を使用しているか？
-- [ ] `subspace.subspace(tuple)`を使っている場合、本当に階層構造が必要か確認したか？
-- [ ] 等価クエリで0xFF追加、範囲クエリでは追加しないパターンを守っているか？
-- [ ] オープンエンド範囲（empty beginValues/endValues）で`subspace.range()`を使用しているか？
-
-**レコード関連コード**:
-
-- [ ] `RecordStore.save*()`でレコードキー構築に`subspace().subspace().pack(Tuple())`を使用しているか？
-- [ ] `IndexScanTypedCursor`でレコードキー生成がRecordStoreと一致しているか？
-- [ ] レコードタイプ名（recordName）をキーに含めているか？
-
-**デバッグ時**:
-
-- [ ] インデックススキャンが0件を返す場合、まずキーエンコーディングを確認したか？
-- [ ] 実際のキーを16進数で出力して\x05マーカーの有無を確認したか？
-- [ ] `IndexManager`と`TypedQueryPlan`で同じエンコーディングパターンを使用しているか確認したか？
-
----
-
-#### デバッグ時の確認方法
-
-```swift
-// 実際に保存されているキーを16進数で確認
-print("Key hex: \(key.map { String(format: "%02x", $0) }.joined(separator: " "))")
-
-// 期待: ...02 45 6c 65 63 74 72 6f 6e 69 63 73 00 15 03 e9
-//       ^String "Electronics"                   ^Int64 1001
-
-// もし\x05が含まれていたら、ネストエンコーディングが使われている（誤り）
-// 例: ...05 02 45 ... ← この05は間違い
-
-// Tupleをアンパックして内容確認
-if let unpacked = try? indexSubspace.unpack(key) {
-    print("Tuple count: \(unpacked.count)")
-    for i in 0..<unpacked.count {
-        if let element = unpacked[i] {
-            if let str = element as? String {
-                print("[\(i)]: String(\"\(str)\")")
-            } else if let int = element as? Int64 {
-                print("[\(i)]: Int64(\(int))")
-            }
-        }
-    }
-}
-```
-
----
-
-#### まとめ
-
-| 用途 | パターン | エンコーディング | 理由 |
-|------|---------|----------------|------|
-| **インデックスキー** | `subspace.pack(tuple)` | フラット | Range効率、分散、自然なソート順 |
-| **レコードキー** | `subspace().subspace().pack(Tuple())` | ネスト | 論理的グループ化、階層構造 |
-| **Directory代替** | `subspace(tuple)` | ネスト | 階層的な名前空間管理 |
-
-**重要**:
-- この違いは型システムで強制できない
-- コードレビューとドキュメントで品質を保証
-- Java版StandardIndexMaintainerのパターンを常に参照
-- インデックススキャンが0件を返したら、まずエンコーディングを疑う
+**まとめ**: インデックスキーは`pack()`、レコードキーは`subspace().subspace().pack(Tuple())`
 
 ### データモデリングパターン
 
-**パターン1: シンプルインデックス**
-
-プライマリデータに対して属性ベースのインデックスを作成：
-
-```swift
-// プライマリデータ: (main, userID) = (name, zipcode)
-transaction.setValue(Tuple(name, zipcode).pack(), for: mainSubspace.pack(Tuple(userID)))
-
-// インデックス: (index, zipcode, userID) = ''
-transaction.setValue([], for: indexSubspace.pack(Tuple(zipcode, userID)))
-
-// ZIPコードで検索
-let (begin, end) = indexSubspace.range(from: Tuple(zipcode), to: Tuple(zipcode, "\xFF"))
-for try await (key, _) in transaction.getRange(
-    beginSelector: .firstGreaterOrEqual(begin),
-    endSelector: .firstGreaterOrEqual(end),
-    snapshot: false
-) {
-    let tuple = try indexSubspace.unpack(key)
-    let userID = tuple[1]  // 2番目の要素
-}
-```
-
-**パターン2: 複合インデックス**
-
-複数の属性でソート・フィルタリング：
+| パターン | キー構造 | 値 | 用途 |
+|---------|---------|-----|------|
+| **シンプル** | `(index, field, primaryKey)` | `''` | 単一属性検索 |
+| **複合** | `(index, field1, field2, primaryKey)` | `''` | 複数属性ソート |
+| **カバリング** | `(index, field, primaryKey)` | `(data)` | プライマリアクセス不要 |
 
 ```swift
-// インデックスキー: (index, city, age, userID) = ''
-let indexKey = indexSubspace.pack(Tuple("Tokyo", 25, userID))
-transaction.setValue([], for: indexKey)
+// シンプル: ZIPコード検索
+indexSubspace.pack(Tuple(zipcode, userID)) → ''
 
-// 都市と年齢範囲で検索
-let (begin, end) = indexSubspace.range(
-    from: Tuple("Tokyo", 18),
-    to: Tuple("Tokyo", 65)
-)
-```
+// 複合: 都市+年齢範囲
+indexSubspace.range(from: Tuple("Tokyo", 18), to: Tuple("Tokyo", 65))
 
-**パターン3: カバリングインデックス**
-
-インデックスから直接データ取得（プライマリデータへのアクセス不要）：
-
-```swift
-// カバリングインデックス: (index, zipcode, userID) = (name, otherData)
-transaction.setValue(Tuple(name, otherData).pack(),
-                     for: indexSubspace.pack(Tuple(zipcode, userID)))
-
-// 1回のRange読み取りで完結
-for try await (key, value) in transaction.getRange(...) {
-    let data = try Tuple.unpack(from: value)
-    let name = data[0] as? String
-}
+// カバリング: インデックスからデータ取得
+indexSubspace.pack(Tuple(zipcode, userID)) → Tuple(name, otherData)
 ```
 
 ### トランザクション分離レベルと競合制御
@@ -1757,45 +928,14 @@ FoundationDBはOCC（Optimistic Concurrency Control）を使用したStrict Seri
 | **Strictly Serializable** (デフォルト) | 読み取りが競合範囲に追加される | あり | 通常のトランザクション |
 | **Snapshot Read** | 読み取りが競合範囲に追加されない | なし | 読み取り専用、分析クエリ |
 
-**Read-Your-Writes（RYW）動作**:
+**Read-Your-Writes**: トランザクション内の書き込みが同一トランザクション内の読み取りで見える（デフォルト有効）
 
-デフォルトで、トランザクション内の読み取りは同じトランザクション内の書き込みを見ることができます：
+**競合検出フロー**: Read Version → Conflict Range記録 → Commit Version → Conflict Check → 競合時リトライ
 
-```swift
-try await database.withTransaction { transaction in
-    // 書き込み
-    transaction.setValue([0x01], for: key)
-
-    // 同じトランザクション内で読み取り → 書き込んだ値が見える
-    let value = try await transaction.getValue(for: key, snapshot: false)
-    // value == [0x01]
-}
-```
-
-**競合検出の仕組み**:
-
-1. **Read Version**: トランザクションの最初の読み取り時に読み取りバージョンを取得
-2. **Conflict Range**: 読み取り・書き込みしたキー範囲を記録
-3. **Commit Version**: コミット時に新しいバージョンを取得
-4. **Conflict Check**: Resolverが、読み取りバージョンとコミットバージョンの間に他のトランザクションが書き込んだかをチェック
-5. **競合時**: `not_committed`エラーで自動リトライ
-
-**競合回避のテクニック**:
-
-```swift
-// 方法1: Snapshot Readを使用（競合なし）
-let value = try await transaction.getValue(for: key, snapshot: true)
-
-// 方法2: Atomic Operationを使用（読み取り競合なし）
-transaction.atomicOp(
-    key: counterKey,
-    param: withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) },
-    mutationType: .add
-)
-
-// 方法3: Read-Your-Writesを無効化（小さなパフォーマンス向上）
-// transaction.setOption(.readYourWritesDisable)
-```
+**競合回避**:
+- Snapshot Read（`snapshot: true`）
+- Atomic Operation（`atomicOp`）
+- RYW無効化（`.readYourWritesDisable`）
 
 ### アトミック操作（MutationType）
 
@@ -1818,26 +958,9 @@ FoundationDBは読み取り-変更-書き込みサイクルを1つの操作に�
 | **SET_VERSIONSTAMPED_KEY** | キーにversionstampを埋め込む | 一意で順序付けられたキー |
 | **SET_VERSIONSTAMPED_VALUE** | 値にversionstampを埋め込む | タイムスタンプ付きデータ |
 
-**使用例**:
+**使用例**: `atomicOp(key:param:mutationType:)` → ADD（カウンター）、MAX/MIN（追跡）、APPEND_IF_FITS（ログ）
 
-```swift
-// ADDでカウンターをインクリメント
-let incrementBytes = withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) }
-transaction.atomicOp(key: counterKey, param: incrementBytes, mutationType: .add)
-
-// MAXで最大値を更新
-let newMax = withUnsafeBytes(of: Int64(1000).littleEndian) { Array($0) }
-transaction.atomicOp(key: maxValueKey, param: newMax, mutationType: .max)
-
-// APPEND_IF_FITSでログエントリを追加
-let logEntry = "Event: User login at \(Date())".data(using: .utf8)!
-transaction.atomicOp(key: logKey, param: Array(logEntry), mutationType: .appendIfFits)
-```
-
-**重要な特性**:
-- **競合回避**: アトミック操作は読み取り競合範囲を追加しない → 高い並行性
-- **非冪等性**: 一部の操作（ADD、APPEND_IF_FITSなど）は冪等ではないため、`commit_unknown_result`エラー時の対応に注意
-- **パラメータエンコーディング**: paramは適切にエンコードされたバイト列である必要がある
+**特性**: 競合回避（高並行性）、非冪等性（リトライ注意）、パラメータはバイト列
 
 ### Versionstamp
 
@@ -1975,134 +1098,23 @@ for try await (key, value) in transaction.getRange(
 
 **問題**: 単一キーへの頻繁な更新（毎秒10-100回以上）は競合を引き起こす
 
-**解決策**:
-
-1. **キーの分割**: カウンターをN個に分割してランダムに更新
-
-```swift
-// カウンターを10個に分割
-let shardID = Int.random(in: 0..<10)
-let shardKey = counterSubspace.pack(Tuple("counter", shardID))
-transaction.atomicOp(key: shardKey, param: incrementBytes, mutationType: .add)
-
-// 合計を取得
-var total: Int64 = 0
-for shardID in 0..<10 {
-    let key = counterSubspace.pack(Tuple("counter", shardID))
-    if let bytes = try await transaction.getValue(for: key, snapshot: true) {
-        total += bytes.withUnsafeBytes { $0.load(as: Int64.self) }
-    }
-}
-```
-
-2. **アトミック操作の使用**: ADDやMAXなどは読み取り競合を発生させない
-
-3. **Snapshot Readの使用**: 読み取りのみの操作で競合を削減
+**解決策**: キーの分割（カウンターをN個にシャード）、アトミック操作、Snapshot Read
 
 #### トランザクションバッチング
 
-FoundationDBは高い並行性で最大スループットを達成します：
-
-1. **暗黙のバッチング**: Commit ProxyとGRV Proxyが自動的にリクエストをバッチ処理
-2. **クライアント側の並行性**: 多数の並行スレッド/プロセスで十分なリクエストを発行
-3. **並列読み取り**: 単一トランザクション内で複数の読み取りを並列実行
-
-```swift
-// ❌ 悪い例: 順次読み取り
-let value1 = try await transaction.getValue(for: key1, snapshot: false)
-let value2 = try await transaction.getValue(for: key2, snapshot: false)
-let value3 = try await transaction.getValue(for: key3, snapshot: false)
-
-// ✅ 良い例: 並列読み取り
-async let value1 = transaction.getValue(for: key1, snapshot: false)
-async let value2 = transaction.getValue(for: key2, snapshot: false)
-async let value3 = transaction.getValue(for: key3, snapshot: false)
-let results = try await (value1, value2, value3)
-```
+暗黙のバッチング（Proxy自動処理）、高並行性（多数スレッド）、並列読み取り（`async let`使用）
 
 #### モニタリング戦略
 
-**fdbcli status**:
-
-```bash
-$ fdbcli
-fdb> status
-
-# 主要メトリクス:
-# - Read rate: 読み取りスループット
-# - Write rate: 書き込みスループット
-# - Transactions started/committed: トランザクション数
-# - Conflict rate: 競合率（高い場合は最適化が必要）
-```
-
-**status json**（詳細メトリクス）:
-
-```bash
-fdb> status json
-
-# チェック項目:
-# - cluster.workload.operations.reads: 読み取り操作数
-# - cluster.workload.operations.writes: 書き込み操作数
-# - cluster.qos.worst_queue_bytes_storage_server: ストレージサーバーのキュー
-# - cluster.processes[].memory.available_bytes: 利用可能メモリ（4GB以上推奨）
-```
-
-**Swift APIでのメトリクス取得**:
-
-```swift
-// \xff/metrics/ のSpecial Key Spaceを使用
-let metricsSubspace = Subspace(prefix: [0xFF, 0xFF] + "/metrics/".data(using: .utf8)!)
-let (begin, end) = metricsSubspace.range()
-
-try await database.withTransaction { transaction in
-    for try await (key, value) in transaction.getRange(
-        beginSelector: .firstGreaterOrEqual(begin),
-        endSelector: .firstGreaterOrEqual(end),
-        snapshot: true
-    ) {
-        print("Metric: \(String(data: Data(key), encoding: .utf8)!) = \(value)")
-    }
-}
-```
+- **fdbcli status**: Read/Write rate、Transaction数、Conflict rate
+- **status json**: 詳細メトリクス（reads/writes、queue、メモリ）
+- **Swift API**: Special Key Space (`\xff/metrics/`) で取得
 
 ### エラーハンドリング
 
-```swift
-public struct FDBError: Error {
-    public let code: Int32
-    public var isRetryable: Bool
-}
+**主要エラー**: 1007（transaction_too_old）、1020（not_committed、競合）、1021（commit_unknown_result）、1031（timeout）、2101（too_large）
 
-// 主要なエラー
-// 1007: transaction_too_old（5秒超過）
-// 1020: not_committed（競合、自動リトライ）
-// 1021: commit_unknown_result（冪等な場合のみリトライ）
-// 1031: transaction_timed_out（タイムアウト制限）
-// 2101: transaction_too_large（サイズ制限超過）
-```
-
-**冪等性の確保**:
-```swift
-// 悪い例（非冪等）
-func deposit(transaction: TransactionProtocol, accountID: String, amount: Int64) async throws {
-    transaction.atomicOp(key: balanceKey, param: amountBytes, mutationType: .add)
-    // 問題: リトライ時に重複入金の可能性
-}
-
-// 良い例（冪等）
-func deposit(transaction: TransactionProtocol, accountID: String, depositID: String, amount: Int64) async throws {
-    let depositKey = depositSubspace.pack(Tuple(accountID, "deposit", depositID))
-
-    // 既に処理済みかチェック
-    if let _ = try await transaction.getValue(for: depositKey, snapshot: false) {
-        return  // 既に成功済み
-    }
-
-    // 処理を実行
-    transaction.setValue(amountBytes, for: depositKey)
-    transaction.atomicOp(key: balanceKey, param: amountBytes, mutationType: .add)
-}
-```
+**冪等性**: リトライ時の重複防止 → 処理済みキーで既実行チェック（`depositID`等で一意性確保）
 
 ### Subspaceの正しい使い方
 
@@ -2321,6 +1333,28 @@ for try await (k, v) in transaction.getRange(
 
 ### DirectoryLayer
 
+**DirectoryLayer**は階層的ディレクトリ管理システムで、短いプレフィックスへのマッピングとメタデータ管理を提供します。
+
+#### Singleton パターン（推奨）
+
+**重要**: DirectoryLayerインスタンスは**1度だけ作成して再利用**してください。毎回新しいインスタンスを作成すると、内部キャッシュが効かずパフォーマンスが低下します。
+
+```swift
+// ✅ 推奨: database.makeDirectoryLayer() で作成（シングルトン）
+let directoryLayer = database.makeDirectoryLayer()
+
+// DirectoryLayerを再利用
+let userDir = try await directoryLayer.createOrOpen(path: ["users"], type: nil)
+let orderDir = try await directoryLayer.createOrOpen(path: ["orders"], type: nil)
+let productDir = try await directoryLayer.createOrOpen(path: ["products"], type: nil)
+
+// ❌ 非推奨: 毎回新しいインスタンスを作成（キャッシュが効かない）
+let dir1 = try await DirectoryLayer(database: database).createOrOpen(...)
+let dir2 = try await DirectoryLayer(database: database).createOrOpen(...)
+```
+
+#### API
+
 ```swift
 public final class DirectoryLayer: Sendable {
     public func createOrOpen(path: [String], type: DirectoryType?) async throws -> DirectorySubspace
@@ -2338,14 +1372,108 @@ public enum DirectoryType {
 }
 ```
 
-**使用例**:
+#### RecordContainer での使用
+
+RecordContainerは初期化時にDirectoryLayerを作成し、すべてのディレクトリ操作で再利用します：
+
 ```swift
-let dir = try await directoryLayer.createOrOpen(
-    path: ["tenants", accountID, "orders"],
-    type: .partition
-)
-let recordStore = RecordStore(database: database, subspace: dir.subspace, metaData: metaData)
+public final class RecordContainer: Sendable {
+    // DirectoryLayerインスタンス（1度だけ作成、再利用）
+    private let directoryLayer: DirectoryLayer
+
+    public init(
+        configurations: [RecordConfiguration],
+        migrationPlan: (any SchemaMigrationPlan.Type)? = nil,
+        directoryLayer: DirectoryLayer? = nil  // テスト用オプショナル
+    ) throws {
+        // ...
+
+        // DirectoryLayerを初期化（カスタム or デフォルト）
+        if let customLayer = directoryLayer {
+            self.directoryLayer = customLayer  // テスト用カスタムレイヤー
+        } else {
+            self.directoryLayer = database.makeDirectoryLayer()  // デフォルト
+        }
+    }
+
+    // すべてのディレクトリ操作で同じインスタンスを再利用
+    public func getOrOpenDirectory<Record: Recordable>(
+        for type: Record.Type,
+        with record: Record
+    ) async throws -> Subspace {
+        // ...
+        let directorySubspace = try await self.directoryLayer.createOrOpen(
+            path: pathStrings,
+            type: directoryType
+        )
+        // ...
+    }
+}
 ```
+
+#### マクロ生成コード
+
+`@Recordable`マクロが生成する`openDirectory()`メソッドも`database.makeDirectoryLayer()`を使用します：
+
+```swift
+// @Recordableマクロが生成するコード
+extension User {
+    public static func openDirectory(
+        database: any DatabaseProtocol
+    ) async throws -> DirectorySubspace {
+        var pathComponents: [String] = ["users"]
+
+        // ✅ makeDirectoryLayer() を使用（推奨パターン）
+        let directoryLayer = database.makeDirectoryLayer()
+        let dir = try await directoryLayer.createOrOpen(
+            path: pathComponents,
+            type: nil
+        )
+        return dir
+    }
+}
+```
+
+#### デフォルト設定
+
+`database.makeDirectoryLayer()`と`DirectoryLayer(database:)`は同じデフォルト設定を使用します：
+
+```swift
+// 両方とも同じデフォルト:
+// - nodeSubspace: Subspace(prefix: [0xFE])  ← ディレクトリメタデータ
+// - contentSubspace: Subspace(prefix: [])   ← コンテンツデータ
+
+let layer1 = database.makeDirectoryLayer()
+let layer2 = DirectoryLayer(database: database)
+// layer1 と layer2 は同じ設定
+```
+
+#### テストアイソレーション
+
+テストでは`directoryLayer`パラメータでカスタムDirectoryLayerを注入できます：
+
+```swift
+// テスト用の独立したサブスペース
+let testSubspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
+let testDirectoryLayer = DirectoryLayer(
+    database: database,
+    nodeSubspace: testSubspace.subspace(0xFE),
+    contentSubspace: testSubspace
+)
+
+// カスタムDirectoryLayerを注入
+let container = try RecordContainer(
+    configurations: [config],
+    directoryLayer: testDirectoryLayer
+)
+```
+
+#### ベストプラクティス
+
+1. ✅ `database.makeDirectoryLayer()`で作成（推奨）
+2. ✅ インスタンスを再利用（RecordContainerのパターンに従う）
+3. ✅ テストでは独立したサブスペースを使用
+4. ❌ 毎回`DirectoryLayer(database:)`を呼ばない（パフォーマンス低下）
 
 ---
 
@@ -2928,6 +2056,39 @@ let query = QueryBuilder<User>()
 // - Option 3: city_age 複合インデックス → 選択性 = 1%（東京25-35歳: 1,000人）→ コスト = 1,000
 // → city_age インデックスを選択
 ```
+
+### Range Window Optimization（範囲ウィンドウ最適化）
+
+**実装状況**: ✅ Phase 1, 2 & 3 完了（UUID/Versionstamp対応、30テスト全合格）
+
+複数のRange型フィルタ条件の交差を事前計算し、インデックススキャン範囲を狭める最適化技術。**40-50倍のパフォーマンス改善**を実現。
+
+#### サポート型とパフォーマンス
+
+| 型 | Range最適化 | パフォーマンス改善 |
+|------|-------------|------------------|
+| Date, Int64, UInt64, Float, Double, String | ✅ | 40-50倍 |
+| **UUID**, **Versionstamp** | ✅ | 50倍 |
+| Int, Int32, UInt, UInt32 | ✅（Int64変換） | 50倍 |
+
+**使用例**:
+```swift
+// イベント期間でのRange検索
+let jan2025 = Date(2025, 1, 1)..<Date(2025, 2, 1)
+let events = try await store.query(Event.self)
+    .overlaps(\.availability, with: jan2025)
+    .execute()
+// → 交差ウィンドウ計算により40倍高速化
+
+// UUID/Versionstamp型も同様に最適化
+let logs = try await store.query(LogEntry.self)
+    .overlaps(\.logRange, with: startUUID..<endUUID)
+    .execute()
+```
+
+**内部フロー**: extractRangeFilters → RangeWindowCalculator → applyWindow → 狭いインデックススキャン
+
+詳細は [Range Optimization Design](docs/range-optimization-generic-design.md) と `RangeWindowCalculatorTests.swift` (30テスト) を参照。
 
 ### Record Layerアーキテクチャ
 
@@ -5808,14 +4969,14 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 
 ---
 
-**Last Updated**: 2025-01-18
+**Last Updated**: 2025-01-20
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
 **Record Layer (Swift)**: プロダクション対応 | **テスト**: **530合格（51スイート）** | **進捗**: 100%完了
 **Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）
 **Phase 3 (Migration Manager)**: ✅ 100%完了（**24テスト全合格**、包括的テストカバレッジ）
 **Phase 4 (PartialRange対応)**: ✅ 100%完了（**Protobufシリアライズ完全対応**、20+テスト合格）
 **HNSW Index Builder**: ✅ Phase 1 完了（HNSWIndexBuilder、BuildOptions、状態管理）
-**Range Optimization**: ✅ Phase 1 & 3 完了（RangeWindowCalculator、RangeIndexStatistics）
+**Range Optimization**: ✅ Phase 1, 2 & 3 完了（**UUID/Versionstamp対応**、RangeWindowCalculator汎用化、RangeIndexStatistics、**30テスト全合格**）
 **Spatial Index**: ✅ 完全実装（SpatialIndexMaintainer、S2Geometry、MortonCode）
 **Phase 5 (Spatial Indexing)**: ✅ **100%完了**（**S2 Geometry + Morton Code統合、すべてのTODO実装済み**）
 **Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、4/4テスト + 5/5検証テスト合格、プロダクション対応**）

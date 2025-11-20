@@ -66,8 +66,7 @@ struct DebugIndexKeysTests {
             inStock: true
         )
 
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             // Build index key manually (same logic as ValueIndexMaintainer)
             let indexSubspace = subspace.subspace("I")
@@ -87,8 +86,7 @@ struct DebugIndexKeysTests {
         }
 
         // Read back in a new transaction
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             let indexSubspace = subspace.subspace("I")
             let indexNameSubspace = indexSubspace.subspace("product_by_category")
@@ -112,8 +110,7 @@ struct DebugIndexKeysTests {
         }
 
         // Cleanup
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -161,8 +158,7 @@ struct DebugIndexKeysTests {
         print("  Record saved: \(loaded != nil)")
 
         // Check index entries manually
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             let indexSubspace = subspace.subspace("I")
             let indexNameSubspace = indexSubspace.subspace("product_by_category")
@@ -185,8 +181,7 @@ struct DebugIndexKeysTests {
         }
 
         // Cleanup
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }

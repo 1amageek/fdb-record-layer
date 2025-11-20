@@ -146,8 +146,7 @@ struct OnlineIndexScrubberTests {
     }
 
     func cleanup(database: any DatabaseProtocol, subspace: Subspace) async throws {
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -323,8 +322,7 @@ struct OnlineIndexScrubberTests {
         try await indexStateManager.makeReadable(emailIndex.name)
 
         // Insert dangling index entry (no corresponding record)
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(emailIndex.name)  // OK: Use index name directly, not wrapped in Tuple
@@ -370,8 +368,7 @@ struct OnlineIndexScrubberTests {
         try await indexStateManager.makeReadable(emailIndex.name)
 
         // Insert dangling index entry
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(emailIndex.name)
@@ -412,8 +409,7 @@ struct OnlineIndexScrubberTests {
         #expect(result.summary.danglingEntriesRepaired == 1)
 
         // Verify entry was deleted
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(emailIndex.name)
@@ -455,8 +451,7 @@ struct OnlineIndexScrubberTests {
 
         let recordAccess = TestUserAccess()
 
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let recordSubspace = subspace
                 .subspace(RecordStoreKeyspace.record.rawValue)
                 .subspace("TestUser")
@@ -513,8 +508,7 @@ struct OnlineIndexScrubberTests {
 
         let recordAccess = TestUserAccess()
 
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let recordSubspace = subspace
                 .subspace(RecordStoreKeyspace.record.rawValue)
                 .subspace("TestUser")
@@ -555,8 +549,7 @@ struct OnlineIndexScrubberTests {
         #expect(result.summary.missingEntriesRepaired == 1)
 
         // Verify entry was created
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(emailIndex.name)
@@ -598,8 +591,7 @@ struct OnlineIndexScrubberTests {
 
         let recordAccess = TestUserAccess()
 
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let recordSubspace = subspace
                 .subspace(RecordStoreKeyspace.record.rawValue)
                 .subspace("TestUser")
@@ -648,8 +640,7 @@ struct OnlineIndexScrubberTests {
         #expect(result.summary.missingEntriesRepaired == 2)
 
         // Verify all 3 entries exist
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(tagsIndex.name)
@@ -684,8 +675,7 @@ struct OnlineIndexScrubberTests {
         let recordAccess = TestUserAccess()
 
         // Create scenario: 1 dangling entry + 1 missing entry
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let indexSubspace = subspace
                 .subspace(RecordStoreKeyspace.index.rawValue)
                 .subspace(emailIndex.name)

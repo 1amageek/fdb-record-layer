@@ -271,6 +271,279 @@ private struct _ProtobufKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingCon
             return
         }
 
+        // Special handling for Range<Int> - generic integer range
+        if let range = value as? Range<Int> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (as Int64)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = UInt64(bitPattern: Int64(range.lowerBound))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (as Int64)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = UInt64(bitPattern: Int64(range.upperBound))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for Range<Int64> - 64-bit integer range
+        if let range = value as? Range<Int64> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (as Int64)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = UInt64(bitPattern: range.lowerBound)
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (as Int64)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = UInt64(bitPattern: range.upperBound)
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for Range<Double> - floating point range
+        if let range = value as? Range<Double> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (Double as bitPattern)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = range.lowerBound.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (Double as bitPattern)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = range.upperBound.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for ClosedRange<Int> - closed integer range
+        if let range = value as? ClosedRange<Int> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (as Int64)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = UInt64(bitPattern: Int64(range.lowerBound))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (as Int64)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = UInt64(bitPattern: Int64(range.upperBound))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for ClosedRange<Int64> - closed 64-bit integer range
+        if let range = value as? ClosedRange<Int64> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (as Int64)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = UInt64(bitPattern: range.lowerBound)
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (as Int64)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = UInt64(bitPattern: range.upperBound)
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for ClosedRange<Double> - closed floating point range
+        if let range = value as? ClosedRange<Double> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (Double as bitPattern)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = range.lowerBound.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (Double as bitPattern)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = range.upperBound.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
+        // Special handling for ClosedRange<Date> - closed date range
+        if let range = value as? ClosedRange<Date> {
+            let fieldNumber = getFieldNumber(for: key)
+
+            var rangeData = Data()
+
+            // Field 1: lowerBound (Double timestamp)
+            let lowerTag = (1 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(lowerTag)))
+            let lowerBits = range.lowerBound.timeIntervalSince1970.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: lowerBits >> 56))
+
+            // Field 2: upperBound (Double timestamp)
+            let upperTag = (2 << 3) | 1  // 64-bit
+            rangeData.append(contentsOf: encodeVarint(UInt64(upperTag)))
+            let upperBits = range.upperBound.timeIntervalSince1970.bitPattern
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 8))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 16))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 24))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 32))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 40))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 48))
+            rangeData.append(UInt8(truncatingIfNeeded: upperBits >> 56))
+
+            let tag = (fieldNumber << 3) | 2
+            encoder.data.append(contentsOf: encodeVarint(UInt64(tag)))
+            encoder.data.append(contentsOf: encodeVarint(UInt64(rangeData.count)))
+            encoder.data.append(rangeData)
+            return
+        }
+
         // Special handling for PartialRangeFrom<Date> - only lowerBound
         if let range = value as? PartialRangeFrom<Date> {
             let fieldNumber = getFieldNumber(for: key)

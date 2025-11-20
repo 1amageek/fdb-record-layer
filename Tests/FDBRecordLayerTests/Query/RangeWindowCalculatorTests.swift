@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FoundationDB
 @testable import FDBRecordLayer
 
 @Suite("RangeWindowCalculator Tests")
@@ -341,5 +342,129 @@ struct RangeWindowCalculatorTests {
         #expect(window != nil)
         #expect(window?.lowerBound == q2Start)  // max(Apr 1, Jan 1) = Apr 1
         #expect(window?.upperBound == q2End)    // min(Jun 30, Jun 30) = Jun 30
+    }
+
+    // MARK: - Range<UUID> Tests
+
+    @Test("Calculate intersection window for Range<UUID>")
+    func testUUIDRangeIntersection() throws {
+        // UUID v7 (time-ordered UUIDs for testing)
+        let uuid1 = UUID(uuidString: "01234567-89ab-7def-0123-456789abcdef")!
+        let uuid2 = UUID(uuidString: "11234567-89ab-7def-0123-456789abcdef")!
+        let uuid3 = UUID(uuidString: "21234567-89ab-7def-0123-456789abcdef")!
+        let uuid4 = UUID(uuidString: "31234567-89ab-7def-0123-456789abcdef")!
+
+        let range1 = uuid1..<uuid4  // [uuid1, uuid4)
+        let range2 = uuid2..<uuid3  // [uuid2, uuid3)
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range1, range2])
+
+        #expect(window != nil)
+        #expect(window?.lowerBound == uuid2)  // max(uuid1, uuid2) = uuid2
+        #expect(window?.upperBound == uuid3)  // min(uuid4, uuid3) = uuid3
+    }
+
+    @Test("UUID range no intersection returns nil")
+    func testUUIDRangeNoIntersection() throws {
+        let uuid1 = UUID(uuidString: "01234567-89ab-7def-0123-456789abcdef")!
+        let uuid2 = UUID(uuidString: "11234567-89ab-7def-0123-456789abcdef")!
+        let uuid3 = UUID(uuidString: "21234567-89ab-7def-0123-456789abcdef")!
+        let uuid4 = UUID(uuidString: "31234567-89ab-7def-0123-456789abcdef")!
+
+        let range1 = uuid1..<uuid2  // [uuid1, uuid2)
+        let range2 = uuid3..<uuid4  // [uuid3, uuid4)
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range1, range2])
+
+        #expect(window == nil)  // No overlap
+    }
+
+    @Test("UUID single range returns itself")
+    func testUUIDSingleRange() throws {
+        let uuid1 = UUID(uuidString: "01234567-89ab-7def-0123-456789abcdef")!
+        let uuid2 = UUID(uuidString: "11234567-89ab-7def-0123-456789abcdef")!
+        let range = uuid1..<uuid2
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range])
+
+        #expect(window?.lowerBound == uuid1)
+        #expect(window?.upperBound == uuid2)
+    }
+
+    // MARK: - Range<Versionstamp> Tests
+
+    // Helper function to create a versionstamp from an integer for testing
+    private func makeVersionstamp(_ value: UInt64, userVersion: UInt16 = 0) -> Versionstamp {
+        var bytes = [UInt8](repeating: 0, count: 10)
+        withUnsafeBytes(of: value.bigEndian) { buffer in
+            // Copy the 8 bytes to the end of the 10-byte array (pad with 2 zeros at start)
+            for i in 0..<8 {
+                bytes[i + 2] = buffer[i]
+            }
+        }
+        return Versionstamp(transactionVersion: bytes, userVersion: userVersion)
+    }
+
+    @Test("Calculate intersection window for Range<Versionstamp>")
+    func testVersionstampRangeIntersection() throws {
+        // Create versionstamps with different transaction versions
+        let vs1 = makeVersionstamp(1000, userVersion: 0)
+        let vs2 = makeVersionstamp(2000, userVersion: 0)
+        let vs3 = makeVersionstamp(3000, userVersion: 0)
+        let vs4 = makeVersionstamp(4000, userVersion: 0)
+
+        let range1 = vs1..<vs4  // [1000, 4000)
+        let range2 = vs2..<vs3  // [2000, 3000)
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range1, range2])
+
+        #expect(window != nil)
+        #expect(window?.lowerBound == vs2)  // max(vs1, vs2) = vs2
+        #expect(window?.upperBound == vs3)  // min(vs4, vs3) = vs3
+    }
+
+    @Test("Versionstamp range no intersection returns nil")
+    func testVersionstampRangeNoIntersection() throws {
+        let vs1 = makeVersionstamp(1000, userVersion: 0)
+        let vs2 = makeVersionstamp(2000, userVersion: 0)
+        let vs3 = makeVersionstamp(3000, userVersion: 0)
+        let vs4 = makeVersionstamp(4000, userVersion: 0)
+
+        let range1 = vs1..<vs2  // [1000, 2000)
+        let range2 = vs3..<vs4  // [3000, 4000)
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range1, range2])
+
+        #expect(window == nil)  // No overlap
+    }
+
+    @Test("Versionstamp single range returns itself")
+    func testVersionstampSingleRange() throws {
+        let vs1 = makeVersionstamp(1000, userVersion: 0)
+        let vs2 = makeVersionstamp(2000, userVersion: 0)
+        let range = vs1..<vs2
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range])
+
+        #expect(window?.lowerBound == vs1)
+        #expect(window?.upperBound == vs2)
+    }
+
+    @Test("Versionstamp with user version ordering")
+    func testVersionstampUserVersionOrdering() throws {
+        // Same transaction version, different user versions
+        let vs1 = makeVersionstamp(1000, userVersion: 0)
+        let vs2 = makeVersionstamp(1000, userVersion: 100)
+        let vs3 = makeVersionstamp(1000, userVersion: 200)
+        let vs4 = makeVersionstamp(1000, userVersion: 300)
+
+        let range1 = vs1..<vs4  // [userVersion 0, 300)
+        let range2 = vs2..<vs3  // [userVersion 100, 200)
+
+        let window = RangeWindowCalculator.calculateIntersectionWindow([range1, range2])
+
+        #expect(window != nil)
+        #expect(window?.lowerBound == vs2)  // max(0, 100) = 100
+        #expect(window?.upperBound == vs3)  // min(300, 200) = 200
     }
 }

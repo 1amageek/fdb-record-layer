@@ -234,7 +234,7 @@ try await database.withTransaction(timeout: .seconds(10)) { transaction in
 
 // ✅ 拡張機能: トランザクション + コミットフック
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     context.addCommitHook { result in
         print("Commit result: \(result)")
     }
@@ -359,7 +359,7 @@ public enum RecordLayerError: Error {
 ```swift
 // ✅ 良い例: プリコンディションで早期検出
 
-public func save(_ record: Record, context: RecordContext) async throws {
+public func save(_ record: Record, context: TransactionContext) async throws {
     precondition(!context.transaction.isCommitted, "Transaction already committed")
     precondition(context.transaction.isValid, "Transaction is invalid")
 

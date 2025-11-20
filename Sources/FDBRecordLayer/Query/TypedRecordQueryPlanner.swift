@@ -27,7 +27,7 @@ import Logging
 /// let query = TypedRecordQuery<User>(filter: \.email == "test@example.com", limit: 10)
 /// let plan = try await planner.plan(query: query)
 /// ```
-public struct TypedRecordQueryPlanner<Record: Recordable> {
+internal struct TypedRecordQueryPlanner<Record: Recordable> {
     // MARK: - Properties
 
     private let schema: Schema
@@ -49,7 +49,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     ///   - planCache: Optional plan cache (creates default if nil)
     ///   - config: Plan generation configuration (default: .default)
     ///   - logger: Optional logger (creates default if nil)
-    public init(
+    internal init(
         schema: Schema,
         recordName: String,
         statisticsManager: any StatisticsManagerProtocol,
@@ -80,7 +80,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     /// - Parameter query: The typed query to plan
     /// - Returns: The optimal execution plan
     /// - Throws: RecordLayerError if planning fails
-    public func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
+    internal func plan(query: TypedRecordQuery<Record>) async throws -> any TypedQueryPlan<Record> {
         // DEBUG: Log available indexes for this record type
         let applicableIndexes = schema.indexes(for: recordName)
         logger.debug("Available indexes for record type", metadata: [
@@ -590,10 +590,15 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         // Extract Range filters and calculate per-field intersection windows
         // **CRITICAL**: Different Range fields must have separate windows
         let rangeFilters = extractRangeFilters(from: andFilter)
-        var intersectionWindows: [String: Range<Date>] = [:]
+        var intersectionWindows: [String: RangeWindow] = [:]
 
-        // Only apply window optimization if we have Range filters with potential for intersection
-        if rangeFilters.count >= 2 {
+        logger.debug("Range pre-filtering: Extracted Range filters", metadata: [
+            "count": "\(rangeFilters.count)",
+            "fields": "\(rangeFilters.map { $0.fieldName }.joined(separator: ", "))"
+        ])
+
+        // ✅ Apply window optimization for ANY Range filters (including single-sided)
+        if !rangeFilters.isEmpty {
             // Calculate intersection window for each field
             // Returns nil if ANY field has contradictory (disjoint) Range conditions
             guard let windows = calculateRangeIntersectionWindows(rangeFilters) else {
@@ -606,7 +611,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             }
             intersectionWindows = windows
 
-            logger.debug("Range pre-filtering: Intersection windows found", metadata: [
+            logger.debug("Range pre-filtering: Intersection windows calculated", metadata: [
                 "rangeFilters": "\(rangeFilters.count)",
                 "fields": "\(intersectionWindows.keys.sorted().joined(separator: ", "))"
             ])
@@ -627,31 +632,41 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return nil
         }
 
-        // Try to find index for each indexable filter
-        var childPlans: [any TypedQueryPlan<Record>] = []
+        // ✅ Phase 2: Handle Range filters with partial index support
+        // Use specialized method for Range filters to support lowerBound-only or upperBound-only indexes
+        var rangePlans: [any TypedQueryPlan<Record>] = []        // Separate: Range plans (not PK-sorted)
+        var pkSortedPlans: [any TypedQueryPlan<Record>] = []     // Separate: PK-sorted plans
         var unmatchedFilters: [any TypedQueryComponent<Record>] = []
 
-        for filter in allIndexableFilters {
+        if !rangeFilters.isEmpty {
+            // Use planRangeQueryWithPartialIndexes for all Range filters
+            let (rangeChildPlans, rangeUnmatchedFilters) = planRangeQueryWithPartialIndexes(
+                rangeFilters: rangeFilters,
+                availableIndexes: applicableIndexes,
+                intersectionWindows: intersectionWindows
+            )
+
+            rangePlans.append(contentsOf: rangeChildPlans)
+            unmatchedFilters.append(contentsOf: rangeUnmatchedFilters)
+
+            logger.debug("IntersectionPlan: Range filters processed", metadata: [
+                "rangePlans": "\(rangeChildPlans.count)",
+                "rangeUnmatchedFilters": "\(rangeUnmatchedFilters.count)"
+            ])
+        }
+
+        // Process non-Range filters using existing loop
+        let nonRangeFilters = allIndexableFilters.filter { filter in
+            !isRangeCompatibleFilter(filter)
+        }
+
+        for filter in nonRangeFilters {
             // Find matching index
             var found = false
             for index in applicableIndexes {
-                // ✅ Phase 1 implementation: Pass field-specific intersection window
-                // CRITICAL: Each Range field gets its own window to avoid mixing
-                // different fields (e.g., 'period' vs 'availability')
-                var windowToPass: Range<Date>? = nil
-                if isRangeCompatibleFilter(filter),
-                   let fieldName = extractRangeFieldName(filter),
-                   let window = intersectionWindows[fieldName] {
-                    windowToPass = window
-                    logger.trace("Applying window to Range filter", metadata: [
-                        "fieldName": "\(fieldName)",
-                        "window": "[\(window.lowerBound), \(window.upperBound))"
-                    ])
-                }
-
-                if let matchResult = try matchFilterWithIndex(filter: filter, index: index, window: windowToPass) {
-                    childPlans.append(matchResult.plan)
-                    logger.debug("IntersectionPlan: Matched filter with index", metadata: [
+                if let matchResult = try matchFilterWithIndex(filter: filter, index: index, window: nil) {
+                    pkSortedPlans.append(matchResult.plan)
+                    logger.debug("IntersectionPlan: Matched non-Range filter with index", metadata: [
                         "indexName": "\(index.name)"
                     ])
 
@@ -667,34 +682,29 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
             if !found {
                 // Cannot find index for this filter, add to unmatched
-                logger.debug("IntersectionPlan: No index found for filter", metadata: [
+                logger.debug("IntersectionPlan: No index found for non-Range filter", metadata: [
                     "filterType": "\(type(of: filter))"
                 ])
                 unmatchedFilters.append(filter)
             }
         }
 
+        let totalChildPlans = rangePlans.count + pkSortedPlans.count
+
         logger.debug("IntersectionPlan: Matching complete", metadata: [
-            "childPlans": "\(childPlans.count)",
+            "rangePlans": "\(rangePlans.count)",
+            "pkSortedPlans": "\(pkSortedPlans.count)",
+            "totalChildPlans": "\(totalChildPlans)",
             "unmatchedFilters": "\(unmatchedFilters.count)"
         ])
 
         // Create intersection plan if we have at least 2 indexes
-        guard childPlans.count >= 2 else {
+        guard totalChildPlans >= 2 else {
             logger.debug("IntersectionPlan: Not enough child plans", metadata: [
-                "count": "\(childPlans.count)"
+                "count": "\(totalChildPlans)"
             ])
             return nil
         }
-
-        // OPTIMIZATION (Phase 3): Selectivity-based plan ordering
-        // Estimate selectivity for each child plan and sort by selectivity (highest first)
-        // This ensures that the most selective (smallest result set) plan executes first,
-        // reducing the number of records to check in subsequent plans.
-        let sortedChildPlans = try await sortPlansBySelectivity(
-            childPlans: childPlans,
-            filters: allIndexableFilters
-        )
 
         // Get entity and build primary key expression
         guard let entity = schema.entity(named: recordName) else {
@@ -702,11 +712,69 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             return nil
         }
 
-        // Use canonical primary key expression from entity
-        let intersectionPlan = TypedIntersectionPlan(
-            childPlans: sortedChildPlans,
-            primaryKeyExpression: entity.primaryKeyExpression
+        // OPTIMIZATION (Phase 3): Selectivity-based plan ordering
+        // Sort Range plans and PK-sorted plans separately by selectivity
+        let sortedRangePlans = try await sortPlansBySelectivity(
+            childPlans: rangePlans,
+            filters: allIndexableFilters
         )
+
+        let sortedPKSortedPlans = try await sortPlansBySelectivity(
+            childPlans: pkSortedPlans,
+            filters: allIndexableFilters
+        )
+
+        // HYBRID INTERSECTION STRATEGY:
+        // 1. If both Range plans and PK-sorted plans exist:
+        //    - Hash-intersect Range plans first (O(min(n_range)) memory)
+        //    - Sorted-merge the result with PK-sorted plans (O(1) memory)
+        // 2. If only Range plans: Hash intersection
+        // 3. If only PK-sorted plans: Sorted-merge intersection
+        let intersectionPlan: any TypedQueryPlan<Record>
+
+        if !sortedRangePlans.isEmpty && !sortedPKSortedPlans.isEmpty {
+            // Hybrid intersection: Range plans (hash) + PK-sorted plans (sorted-merge)
+            logger.debug("IntersectionPlan: Using hybrid intersection strategy", metadata: [
+                "rangePlans": "\(sortedRangePlans.count)",
+                "pkSortedPlans": "\(sortedPKSortedPlans.count)"
+            ])
+
+            // Step 1: Hash-intersect Range plans
+            let rangeIntersection = TypedIntersectionPlan(
+                childPlans: sortedRangePlans,
+                primaryKeyExpression: entity.primaryKeyExpression,
+                requiresPKSort: false  // Hash-based intersection
+            )
+
+            // Step 2: Sorted-merge range intersection result with PK-sorted plans
+            intersectionPlan = TypedIntersectionPlan(
+                childPlans: [rangeIntersection] + sortedPKSortedPlans,
+                primaryKeyExpression: entity.primaryKeyExpression,
+                requiresPKSort: true  // Sorted-merge intersection
+            )
+        } else if !sortedRangePlans.isEmpty {
+            // Only Range plans: Hash intersection
+            logger.debug("IntersectionPlan: Using hash intersection (Range plans only)", metadata: [
+                "rangePlans": "\(sortedRangePlans.count)"
+            ])
+
+            intersectionPlan = TypedIntersectionPlan(
+                childPlans: sortedRangePlans,
+                primaryKeyExpression: entity.primaryKeyExpression,
+                requiresPKSort: false  // Hash-based intersection
+            )
+        } else {
+            // Only PK-sorted plans: Sorted-merge intersection
+            logger.debug("IntersectionPlan: Using sorted-merge intersection (PK-sorted plans only)", metadata: [
+                "pkSortedPlans": "\(sortedPKSortedPlans.count)"
+            ])
+
+            intersectionPlan = TypedIntersectionPlan(
+                childPlans: sortedPKSortedPlans,
+                primaryKeyExpression: entity.primaryKeyExpression,
+                requiresPKSort: true  // Sorted-merge intersection
+            )
+        }
 
         // Combine all remaining predicates (non-field predicates + unmatched filters)
         var allRemainingPredicates: [any TypedQueryComponent<Record>] = nonFieldPredicates
@@ -816,7 +884,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     private func matchFilterWithIndex(
         filter: any TypedQueryComponent<Record>,
         index: Index,
-        window: Range<Date>? = nil
+        window: RangeWindow? = nil
     ) throws -> IndexMatchResult? {
         // Try simple field filter first
         if let fieldFilter = filter as? TypedFieldQueryComponent<Record> {
@@ -841,7 +909,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     private func matchSimpleFilter(
         fieldFilter: TypedFieldQueryComponent<Record>,
         index: Index,
-        window: Range<Date>? = nil
+        window: RangeWindow? = nil
     ) throws -> IndexMatchResult? {
         // Check if index is on the same field (simple index)
         if let fieldExpr = index.rootExpression as? FieldKeyExpression {
@@ -907,7 +975,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     private func matchKeyExpressionFilter(
         keyExprFilter: TypedKeyExpressionQueryComponent<Record>,
         index: Index,
-        window: Range<Date>? = nil
+        window: RangeWindow? = nil
     ) throws -> IndexMatchResult? {
         // Extract RangeKeyExpression if present
         guard let rangeExpr = keyExprFilter.keyExpression as? RangeKeyExpression else {
@@ -1007,7 +1075,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     private func matchCompoundFilter(
         andFilter: TypedAndQueryComponent<Record>,
         index: Index,
-        window: Range<Date>? = nil
+        window: RangeWindow? = nil
     ) throws -> IndexMatchResult? {
         // Only compound indexes can match AND filters
         guard let concatExpr = index.rootExpression as? ConcatenateKeyExpression else {
@@ -1907,7 +1975,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             guard intValue < Int.max else {
                 return nil
             }
-            return Int64(intValue) + 1
+            return intValue + 1
 
         case let doubleValue as Double:
             // Cannot increment if already at infinity
@@ -1987,7 +2055,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         index: Index,
         beginValues: [any TupleElement],
         endValues: [any TupleElement],
-        window: Range<Date>? = nil
+        window: RangeWindow? = nil
     ) -> any TypedQueryPlan<Record> {
         let primaryKeyLength = getPrimaryKeyLength()
 
@@ -2061,8 +2129,19 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     /// Information about a Range filter extracted from query
     private struct RangeFilterInfo {
         let fieldName: String
-        let range: Range<Date>
+        let lowerBound: (any TupleElement & Comparable)?  // ✅ Optional: supports PartialRange
+        let upperBound: (any TupleElement & Comparable)?  // ✅ Optional: supports PartialRange
+        let boundaryType: BoundaryType  // ✅ Added: distinguishes Range vs ClosedRange
         let filter: any TypedQueryComponent<Record>
+
+        /// Create Range<Date> if both bounds are Date (for backward compatibility)
+        var dateRange: Range<Date>? {
+            guard let lower = lowerBound as? Date,
+                  let upper = upperBound as? Date else {
+                return nil
+            }
+            return lower..<upper
+        }
     }
 
     /// Check if a filter is Range-compatible (involves RangeKeyExpression)
@@ -2153,6 +2232,30 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     /// - Parameters:
     ///   - filter: Query filter to analyze
     /// - Returns: Array of extracted Range filters
+    ///
+    /// Extract TupleElement value from Any
+    ///
+    /// Supports only types that conform to both TupleElement and Comparable:
+    /// Date, Int, Int64, Int32, UInt64, Double, Float, String
+    ///
+    /// - Parameter value: The value to extract
+    /// - Returns: The value as both TupleElement and Comparable, or nil if not supported
+    private func extractTupleElementValue(from value: Any) -> (any TupleElement & Comparable)? {
+        // TupleElement types that are also Comparable
+        if let date = value as? Date { return date }
+        if let int = value as? Int { return int }
+        if let int64 = value as? Int64 { return int64 }
+        if let int32 = value as? Int32 { return int32 }
+        if let uint64 = value as? UInt64 { return uint64 }
+        if let double = value as? Double { return double }
+        if let float = value as? Float { return float }
+        if let string = value as? String { return string }
+
+        // Note: Int16, Int8, UInt, UInt32, UInt16, UInt8 do NOT conform to TupleElement
+        // If no common type matched, return nil
+        return nil
+    }
+
     private func extractRangeFilters(
         from filter: any TypedQueryComponent<Record>
     ) -> [RangeFilterInfo] {
@@ -2160,28 +2263,32 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
         // If filter is AND, check children for Range patterns
         guard let andFilter = filter as? TypedAndQueryComponent<Record> else {
+            logger.trace("extractRangeFilters: Filter is not AND, returning empty")
             return rangeFilters
         }
+
+        logger.trace("extractRangeFilters: Processing AND filter with \(andFilter.children.count) children")
 
         // Flatten nested AND filters
         let flatChildren = flattenAndFilters(andFilter.children)
 
         // Group Range boundary comparisons by fieldName
         // Key: fieldName, Value: (component, comparison, value, filter)
-        var boundaryComparisons: [String: [(RangeComponent, TypedFieldQueryComponent<Record>.Comparison, Date, any TypedQueryComponent<Record>)]] = [:]
+        var boundaryComparisons: [String: [(RangeComponent, TypedFieldQueryComponent<Record>.Comparison, any TupleElement & Comparable, any TypedQueryComponent<Record>)]] = [:]
 
         for child in flatChildren {
             // Check if this is a Range boundary comparison
             guard let keyExprFilter = child as? TypedKeyExpressionQueryComponent<Record>,
                   let rangeExpr = keyExprFilter.keyExpression as? RangeKeyExpression,
-                  let dateValue = keyExprFilter.value as? Date else {
+                  let tupleValue = extractTupleElementValue(from: keyExprFilter.value) else {
                 continue
             }
 
             logger.trace("Found Range boundary filter", metadata: [
                 "field": "\(rangeExpr.fieldName)",
                 "component": "\(rangeExpr.component)",
-                "comparison": "\(keyExprFilter.comparison)"
+                "comparison": "\(keyExprFilter.comparison)",
+                "valueType": "\(type(of: tupleValue))"
             ])
 
             // Add to grouped comparisons
@@ -2191,21 +2298,21 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
             boundaryComparisons[rangeExpr.fieldName]?.append((
                 rangeExpr.component,
                 keyExprFilter.comparison,
-                dateValue,
+                tupleValue,
                 child
             ))
         }
 
-        // Try to reconstruct Range<Date> from boundary pairs
+        // Try to reconstruct Range from boundary pairs (supports any Comparable type)
         for (fieldName, comparisons) in boundaryComparisons {
-            // Find lowerBound < queryEnd
+            // Find lowerBound < or <= queryEnd (supports both Range and ClosedRange)
             let lowerBoundComparisons = comparisons.filter {
-                $0.0 == .lowerBound && $0.1 == .lessThan
+                $0.0 == .lowerBound && ($0.1 == .lessThan || $0.1 == .lessThanOrEquals)
             }
 
-            // Find upperBound > queryBegin
+            // Find upperBound > or >= queryBegin (supports both Range and ClosedRange)
             let upperBoundComparisons = comparisons.filter {
-                $0.0 == .upperBound && $0.1 == .greaterThan
+                $0.0 == .upperBound && ($0.1 == .greaterThan || $0.1 == .greaterThanOrEquals)
             }
 
             // Match pairs: lowerBound < queryEnd AND upperBound > queryBegin
@@ -2216,8 +2323,35 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
                 for upperBoundComp in upperBoundComparisons {
                     let queryBegin = upperBoundComp.2
 
+                    // Validate that both bounds are the same type
+                    let beginType = type(of: queryBegin)
+                    let endType = type(of: queryEnd)
+                    guard beginType == endType else {
+                        logger.warning("Range bounds have different types", metadata: [
+                            "field": "\(fieldName)",
+                            "beginType": "\(beginType)",
+                            "endType": "\(endType)"
+                        ])
+                        continue
+                    }
+
                     // Validate Range (begin < end)
-                    guard queryBegin < queryEnd else {
+                    // Note: We can't directly compare existential `any Comparable` types
+                    // So we use a helper to check if begin < end
+                    var isValidRange = false
+                    if let beginDate = queryBegin as? Date, let endDate = queryEnd as? Date {
+                        isValidRange = beginDate < endDate
+                    } else if let beginInt = queryBegin as? Int, let endInt = queryEnd as? Int {
+                        isValidRange = beginInt < endInt
+                    } else if let beginInt64 = queryBegin as? Int64, let endInt64 = queryEnd as? Int64 {
+                        isValidRange = beginInt64 < endInt64
+                    } else if let beginDouble = queryBegin as? Double, let endDouble = queryEnd as? Double {
+                        isValidRange = beginDouble < endDouble
+                    } else if let beginString = queryBegin as? String, let endString = queryEnd as? String {
+                        isValidRange = beginString < endString
+                    }
+
+                    guard isValidRange else {
                         logger.warning("Invalid Range extracted (begin >= end)", metadata: [
                             "field": "\(fieldName)",
                             "begin": "\(queryBegin)",
@@ -2226,12 +2360,20 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
                         continue
                     }
 
-                    // Reconstruct Range<Date>
-                    let extractedRange = queryBegin..<queryEnd
+                    // ✅ Detect BoundaryType based on comparison operators
+                    let boundaryType: BoundaryType
+                    if lowerBoundComp.1 == .lessThanOrEquals && upperBoundComp.1 == .greaterThanOrEquals {
+                        boundaryType = .closed  // ClosedRange: lowerBound <= queryEnd && upperBound >= queryBegin
+                    } else {
+                        boundaryType = .halfOpen  // Range: lowerBound < queryEnd && upperBound > queryBegin
+                    }
 
                     logger.debug("Extracted Range filter", metadata: [
                         "field": "\(fieldName)",
-                        "range": "[\(queryBegin), \(queryEnd))"
+                        "beginValue": "\(queryBegin)",
+                        "endValue": "\(queryEnd)",
+                        "boundaryType": "\(boundaryType.rawValue)",
+                        "valueType": "\(type(of: queryBegin))"
                     ])
 
                     // Create RangeFilterInfo
@@ -2243,12 +2385,62 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
 
                     rangeFilters.append(RangeFilterInfo(
                         fieldName: fieldName,
-                        range: extractedRange,
+                        lowerBound: queryBegin,
+                        upperBound: queryEnd,
+                        boundaryType: boundaryType,  // ✅ Pass boundaryType
                         filter: compositeFilter
                     ))
                 }
             }
+
+            // ✅ Handle PartialRange: lowerBound only (PartialRangeFrom)
+            if upperBoundComparisons.isEmpty && !lowerBoundComparisons.isEmpty {
+                for lowerBoundComp in lowerBoundComparisons {
+                    let queryEnd = lowerBoundComp.2
+                    let boundaryType: BoundaryType = lowerBoundComp.1 == .lessThanOrEquals ? .closed : .halfOpen
+
+                    logger.debug("Extracted PartialRangeFrom filter", metadata: [
+                        "field": "\(fieldName)",
+                        "endValue": "\(queryEnd)",
+                        "boundaryType": "\(boundaryType.rawValue)"
+                    ])
+
+                    rangeFilters.append(RangeFilterInfo(
+                        fieldName: fieldName,
+                        lowerBound: nil,  // ✅ No lowerBound
+                        upperBound: queryEnd,
+                        boundaryType: boundaryType,
+                        filter: lowerBoundComp.3
+                    ))
+                }
+            }
+
+            // ✅ Handle PartialRange: upperBound only (PartialRangeThrough/PartialRangeUpTo)
+            if lowerBoundComparisons.isEmpty && !upperBoundComparisons.isEmpty {
+                for upperBoundComp in upperBoundComparisons {
+                    let queryBegin = upperBoundComp.2
+                    let boundaryType: BoundaryType = upperBoundComp.1 == .greaterThanOrEquals ? .closed : .halfOpen
+
+                    logger.debug("Extracted PartialRangeThrough/UpTo filter", metadata: [
+                        "field": "\(fieldName)",
+                        "beginValue": "\(queryBegin)",
+                        "boundaryType": "\(boundaryType.rawValue)"
+                    ])
+
+                    rangeFilters.append(RangeFilterInfo(
+                        fieldName: fieldName,
+                        lowerBound: queryBegin,
+                        upperBound: nil,  // ✅ No upperBound
+                        boundaryType: boundaryType,
+                        filter: upperBoundComp.3
+                    ))
+                }
+            }
         }
+
+        logger.trace("extractRangeFilters: Returning \(rangeFilters.count) Range filters", metadata: [
+            "fields": "\(rangeFilters.map { $0.fieldName }.joined(separator: ", "))"
+        ])
 
         return rangeFilters
     }
@@ -2289,7 +2481,7 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
     ///            any field has disjoint ranges (contradictory conditions).
     private func calculateRangeIntersectionWindows(
         _ rangeFilters: [RangeFilterInfo]
-    ) -> [String: Range<Date>]? {
+    ) -> [String: RangeWindow]? {
         // Group filters by field name
         var filtersByField: [String: [RangeFilterInfo]] = [:]
         for filter in rangeFilters {
@@ -2300,30 +2492,182 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
 
         // Calculate intersection for each field
-        var windows: [String: Range<Date>] = [:]
+        var windows: [String: RangeWindow] = [:]
         for (fieldName, filters) in filtersByField {
             if filters.count == 1 {
-                // Single filter: use its range directly
-                windows[fieldName] = filters[0].range
+                // Single filter: use its range directly (only if both bounds present)
+                let filter = filters[0]
+                // ✅ Skip PartialRange (one-sided) - window optimization requires both bounds
+                guard let lowerBound = filter.lowerBound,
+                      let upperBound = filter.upperBound else {
+                    // PartialRange: no window optimization, will use raw index scan
+                    continue
+                }
+
+                // ✅ FIX: For ClosedRange, apply successor to upperBound
+                let effectiveUpperBound: any Comparable & Sendable
+                if filter.boundaryType == .closed {
+                    // ClosedRange: [lower, upper] → Range: [lower, successor(upper))
+                    // upperBound is already TupleElement & Comparable, cast is always safe
+                    if let succ = successor(of: upperBound) {
+                        effectiveUpperBound = succ as! (any Comparable & Sendable)
+                    } else {
+                        // Cannot compute successor, use original (may cause incorrect results)
+                        effectiveUpperBound = upperBound
+                    }
+                } else {
+                    // Range: already exclusive upper bound
+                    effectiveUpperBound = upperBound
+                }
+
+                windows[fieldName] = RangeWindow(
+                    lowerBound: lowerBound,
+                    upperBound: effectiveUpperBound
+                )
             } else {
-                // Multiple filters: calculate intersection
-                let ranges = filters.map(\.range)
-                if let intersection = RangeWindowCalculator.calculateIntersectionWindow(ranges) {
-                    windows[fieldName] = intersection
+                // Multiple filters: calculate intersection using type-specific comparison
+                // All filters for a field must have the same type
+                guard !filters.isEmpty else { continue }
+
+                // Try to calculate intersection based on the type
+                if let window = calculateIntersectionForComparableType(filters, fieldName: fieldName) {
+                    windows[fieldName] = window
                 } else {
                     // No intersection for this field → CONTRADICTORY CONDITIONS
-                    // The query is logically inconsistent and cannot match any records
                     logger.info("Range pre-filtering: Contradictory Range conditions on field, returning EmptyPlan", metadata: [
                         "fieldName": "\(fieldName)",
-                        "filterCount": "\(filters.count)",
-                        "ranges": "\(ranges.map { "[\($0.lowerBound), \($0.upperBound))" }.joined(separator: ", "))"
+                        "filterCount": "\(filters.count)"
                     ])
-                    return nil  // ✅ FIX: Immediately return nil to signal empty result set
+                    return nil
                 }
             }
         }
 
         return windows
+    }
+
+    /// Calculate intersection window for filters with a specific Comparable type
+    private func calculateIntersectionForComparableType(
+        _ filters: [RangeFilterInfo],
+        fieldName: String
+    ) -> RangeWindow? {
+        guard !filters.isEmpty else { return nil }
+
+        // Check if all filters have Date bounds
+        if let dateRanges = extractTypedRanges(filters, as: Date.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(dateRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have Int bounds
+        if let intRanges = extractTypedRanges(filters, as: Int.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(intRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have Int64 bounds
+        if let int64Ranges = extractTypedRanges(filters, as: Int64.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(int64Ranges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have Double bounds
+        if let doubleRanges = extractTypedRanges(filters, as: Double.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(doubleRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have String bounds
+        if let stringRanges = extractTypedRanges(filters, as: String.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(stringRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have UInt64 bounds
+        if let uint64Ranges = extractTypedRanges(filters, as: UInt64.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(uint64Ranges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have Float bounds
+        if let floatRanges = extractTypedRanges(filters, as: Float.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(floatRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have UUID bounds
+        if let uuidRanges = extractTypedRanges(filters, as: UUID.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(uuidRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Check if all filters have Versionstamp bounds
+        if let versionstampRanges = extractTypedRanges(filters, as: Versionstamp.self) {
+            if let intersection = RangeWindowCalculator.calculateIntersectionWindow(versionstampRanges) {
+                return RangeWindow(intersection)
+            }
+            return nil
+        }
+
+        // Unsupported type or mixed types
+        logger.trace("Range pre-filtering: Unsupported or mixed Comparable types", metadata: [
+            "fieldName": "\(fieldName)",
+            "filterCount": "\(filters.count)"
+        ])
+        return nil
+    }
+
+    /// Extract typed ranges if all filters have the same Comparable type
+    private func extractTypedRanges<T: Comparable>(
+        _ filters: [RangeFilterInfo],
+        as type: T.Type
+    ) -> [Range<T>]? {
+        var ranges: [Range<T>] = []
+
+        for filter in filters {
+            guard let lower = filter.lowerBound as? T,
+                  let upper = filter.upperBound as? T else {
+                return nil  // Type mismatch
+            }
+
+            // ✅ FIX: For ClosedRange (boundaryType == .closed), we need to convert to Range
+            // by computing successor(upper) to make the upper bound exclusive
+            let effectiveUpper: T
+            if filter.boundaryType == .closed {
+                // ClosedRange: [lower, upper] → Range: [lower, successor(upper))
+                // Cast to TupleElement for successor(), then cast result back to T
+                if let upperAsTupleElement = upper as? any TupleElement,
+                   let succ = successor(of: upperAsTupleElement) as? T {
+                    effectiveUpper = succ
+                } else {
+                    // Cannot compute successor, use original (may cause incorrect results)
+                    effectiveUpper = upper
+                }
+            } else {
+                // Range: already exclusive upper bound
+                effectiveUpper = upper
+            }
+
+            ranges.append(lower..<effectiveUpper)
+        }
+
+        return ranges.count == filters.count ? ranges : nil
     }
 
     // MARK: - Selectivity-Based Optimization (Phase 3)
@@ -2366,22 +2710,62 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         // Create plan-selectivity pairs
         var planSelectivities: [(plan: any TypedQueryPlan<Record>, selectivity: Double)] = []
 
-        for plan in childPlans {
+        for (index, plan) in childPlans.enumerated() {
             // Extract index name from plan (if it's an index scan plan)
             let indexName = extractIndexName(from: plan)
+
+            // Get corresponding filter (if available)
+            let filter = index < filters.count ? filters[index] : nil
 
             // Estimate selectivity
             let selectivity: Double
             if let indexName = indexName {
                 // Try to get Range statistics for this index
                 if let rangeStats = try? await statisticsManager.getRangeStatistics(indexName: indexName) {
-                    // Use Range statistics for selectivity estimation
-                    // For now, use base selectivity; could be refined with query range width
-                    selectivity = rangeStats.selectivity
-                    logger.debug("Selectivity-based optimization: Using Range statistics", metadata: [
-                        "indexName": "\(indexName)",
-                        "selectivity": "\(selectivity)"
-                    ])
+                    // ✅ Phase 6: Use query range width for dynamic selectivity estimation
+                    if let filter = filter {
+                        // Extract Range filters to get actual query boundaries
+                        let rangeFilters = extractRangeFilters(from: filter)
+
+                        if rangeFilters.count == 1 {
+                            let rangeFilter = rangeFilters[0]
+                            // ✅ Only estimate selectivity if both bounds are present
+                            if let lowerBound = rangeFilter.lowerBound,
+                               let upperBound = rangeFilter.upperBound,
+                               let dynamicSelectivity = try? await statisticsManager.estimateRangeSelectivity(
+                                indexName: indexName,
+                                lowerBound: lowerBound,
+                                upperBound: upperBound
+                            ) {
+                                selectivity = dynamicSelectivity
+                                logger.debug("Selectivity-based optimization: Using dynamic Range selectivity", metadata: [
+                                    "indexName": "\(indexName)",
+                                    "selectivity": "\(selectivity)"
+                                ])
+                            } else {
+                                // Fallback to base selectivity if estimation fails
+                                selectivity = rangeStats.selectivity
+                                logger.debug("Selectivity-based optimization: Using base Range statistics", metadata: [
+                                    "indexName": "\(indexName)",
+                                    "selectivity": "\(selectivity)"
+                                ])
+                            }
+                        } else {
+                            // No single Range filter: use base selectivity
+                            selectivity = rangeStats.selectivity
+                            logger.debug("Selectivity-based optimization: Using base Range statistics (multiple ranges)", metadata: [
+                                "indexName": "\(indexName)",
+                                "selectivity": "\(selectivity)"
+                            ])
+                        }
+                    } else {
+                        // No query range extracted: use base selectivity
+                        selectivity = rangeStats.selectivity
+                        logger.debug("Selectivity-based optimization: Using base Range statistics (no filter)", metadata: [
+                            "indexName": "\(indexName)",
+                            "selectivity": "\(selectivity)"
+                        ])
+                    }
                 } else if (try? await statisticsManager.getIndexStatistics(indexName: indexName)) != nil {
                     // Use regular index statistics
                     // Estimate based on histogram if available
@@ -2443,5 +2827,361 @@ public struct TypedRecordQueryPlanner<Record: Recordable> {
         }
 
         return nil
+    }
+
+    // MARK: - Partial Range Index Support
+
+    /// Handle Range queries where only one index (start_index OR end_index) is defined
+    ///
+    /// This method handles cases where developers have explicitly defined only `.lowerBound` or `.upperBound`
+    /// indexes for a Range field. When only partial indexes exist:
+    /// - If only start_index exists: Use it for the lowerBound condition, add upperBound to unmatchedFilters
+    /// - If only end_index exists: Use it for the upperBound condition, add lowerBound to unmatchedFilters
+    /// - If both exist: Create standard intersection plan
+    /// - If neither exists: Add all conditions to unmatchedFilters
+    ///
+    /// - Parameters:
+    ///   - rangeFilters: Extracted Range filters from the query
+    ///   - availableIndexes: All indexes available for this record type
+    ///   - intersectionWindows: Per-field intersection windows for pre-filtering optimization
+    /// - Returns: Tuple of (childPlans: generated index scan plans, unmatchedFilters: remaining filters for post-processing)
+    private func planRangeQueryWithPartialIndexes(
+        rangeFilters: [RangeFilterInfo],
+        availableIndexes: [Index],
+        intersectionWindows: [String: RangeWindow]
+    ) -> (childPlans: [any TypedQueryPlan<Record>], unmatchedFilters: [any TypedQueryComponent<Record>]) {
+        var childPlans: [any TypedQueryPlan<Record>] = []
+        var unmatchedFilters: [any TypedQueryComponent<Record>] = []
+
+        for rangeFilter in rangeFilters {
+            let fieldName = rangeFilter.fieldName
+
+            // Find start_index (lowerBound component)
+            let startIndex = availableIndexes.first { index in
+                guard let rangeExpr = index.rootExpression as? RangeKeyExpression else { return false }
+                return rangeExpr.fieldName == fieldName && rangeExpr.component == .lowerBound
+            }
+
+            // Find end_index (upperBound component)
+            let endIndex = availableIndexes.first { index in
+                guard let rangeExpr = index.rootExpression as? RangeKeyExpression else { return false }
+                return rangeExpr.fieldName == fieldName && rangeExpr.component == .upperBound
+            }
+
+            // Handle 4 cases based on which indexes exist
+            switch (startIndex, endIndex) {
+            case (.some(let start), .some(let end)):
+                // Case 1: Both indexes exist → standard intersection plan
+                if let lowerBound = rangeFilter.lowerBound, let upperBound = rangeFilter.upperBound {
+                    // start_index plan: lowerBound < queryEnd (or <= for ClosedRange)
+                    let startPlan = createRangeIndexScanPlan(
+                        index: start,
+                        queryValue: upperBound,
+                        comparison: rangeFilter.boundaryType == .closed ? .lessThanOrEquals : .lessThan,
+                        component: .lowerBound,
+                        window: intersectionWindows[fieldName]
+                    )
+
+                    // end_index plan: upperBound > queryBegin (or >= for ClosedRange)
+                    let endPlan = createRangeIndexScanPlan(
+                        index: end,
+                        queryValue: lowerBound,
+                        comparison: rangeFilter.boundaryType == .closed ? .greaterThanOrEquals : .greaterThan,
+                        component: .upperBound,
+                        window: intersectionWindows[fieldName]
+                    )
+
+                    childPlans.append(contentsOf: [startPlan, endPlan])
+                }
+
+            case (.some(let start), .none):
+                // Case 2: Only start_index exists → use start plan + add end condition to unmatchedFilters
+                if let upperBound = rangeFilter.upperBound {
+                    // start_index plan: lowerBound < queryEnd
+                    let startPlan = createRangeIndexScanPlan(
+                        index: start,
+                        queryValue: upperBound,
+                        comparison: rangeFilter.boundaryType == .closed ? .lessThanOrEquals : .lessThan,
+                        component: .lowerBound,
+                        window: intersectionWindows[fieldName]
+                    )
+                    childPlans.append(startPlan)
+
+                    // Add end condition to unmatchedFilters (will be applied as post-filter)
+                    if let lowerBound = rangeFilter.lowerBound {
+                        let endFilter = TypedKeyExpressionQueryComponent<Record>(
+                            keyExpression: RangeKeyExpression(
+                                fieldName: fieldName,
+                                component: .upperBound,
+                                boundaryType: rangeFilter.boundaryType
+                            ),
+                            comparison: rangeFilter.boundaryType == .closed ? .greaterThanOrEquals : .greaterThan,
+                            value: lowerBound
+                        )
+                        unmatchedFilters.append(endFilter)
+                    }
+                } else {
+                    // PartialRangeFrom (only lowerBound): use start_index + unmatchedFilter
+                    // overlaps(period, lowerBound...) requires:
+                    //   1. period.lowerBound >= lowerBound (use start_index to filter)
+                    //   2. period.upperBound > lowerBound (add to unmatchedFilter)
+                    if let lowerBound = rangeFilter.lowerBound {
+                        // 1. start_index scan: period.lowerBound >= lowerBound
+                        let startPlan = createRangeIndexScanPlan(
+                            index: start,
+                            queryValue: lowerBound,
+                            comparison: rangeFilter.boundaryType == .closed ? .greaterThanOrEquals : .greaterThan,
+                            component: .lowerBound,
+                            window: intersectionWindows[fieldName]
+                        )
+                        childPlans.append(startPlan)
+
+                        // 2. Add unmatchedFilter for period.upperBound > lowerBound
+                        // ✅ BUG FIX: For PartialRangeFrom, unmatchedFilter must always use strict '>'
+                        // because the upperBound side is open (not included in the range)
+                        let endFilter = TypedKeyExpressionQueryComponent<Record>(
+                            keyExpression: RangeKeyExpression(
+                                fieldName: fieldName,
+                                component: .upperBound,
+                                boundaryType: .halfOpen  // ✅ Fixed: halfOpen = not included
+                            ),
+                            comparison: .greaterThan,  // ✅ Fixed: Always strict '>'
+                            value: lowerBound
+                        )
+                        unmatchedFilters.append(endFilter)
+                    }
+                }
+
+            case (.none, .some(let end)):
+                // Case 3: Only end_index exists → use end plan + add start condition to unmatchedFilters
+                if let lowerBound = rangeFilter.lowerBound {
+                    // end_index plan: upperBound > queryBegin
+                    let endPlan = createRangeIndexScanPlan(
+                        index: end,
+                        queryValue: lowerBound,
+                        comparison: rangeFilter.boundaryType == .closed ? .greaterThanOrEquals : .greaterThan,
+                        component: .upperBound,
+                        window: intersectionWindows[fieldName]
+                    )
+                    childPlans.append(endPlan)
+
+                    // Add start condition to unmatchedFilters (will be applied as post-filter)
+                    if let upperBound = rangeFilter.upperBound {
+                        let startFilter = TypedKeyExpressionQueryComponent<Record>(
+                            keyExpression: RangeKeyExpression(
+                                fieldName: fieldName,
+                                component: .lowerBound,
+                                boundaryType: rangeFilter.boundaryType
+                            ),
+                            comparison: rangeFilter.boundaryType == .closed ? .lessThanOrEquals : .lessThan,
+                            value: upperBound
+                        )
+                        unmatchedFilters.append(startFilter)
+                    }
+                } else {
+                    // PartialRangeThrough/UpTo (only upperBound): use end_index + unmatchedFilter
+                    // overlaps(period, ...upperBound) requires:
+                    //   1. period.upperBound <= upperBound (use end_index to filter)
+                    //   2. period.lowerBound < upperBound (add to unmatchedFilter)
+                    if let upperBound = rangeFilter.upperBound {
+                        // 1. end_index scan: period.upperBound <= upperBound
+                        let endPlan = createRangeIndexScanPlan(
+                            index: end,
+                            queryValue: upperBound,
+                            comparison: rangeFilter.boundaryType == .closed ? .lessThanOrEquals : .lessThan,
+                            component: .upperBound,
+                            window: intersectionWindows[fieldName]
+                        )
+                        childPlans.append(endPlan)
+
+                        // 2. Add unmatchedFilter for period.lowerBound < upperBound
+                        // ✅ BUG FIX: For PartialRangeThrough/UpTo, unmatchedFilter must always use strict '<'
+                        // because the lowerBound side is the "missing side" (not included in the range)
+                        // - PartialRangeThrough (...X): rangeFilter is upperBound <= X, unmatchedFilter is lowerBound < X (strict)
+                        // - PartialRangeUpTo (..<X): rangeFilter is upperBound < X, unmatchedFilter is lowerBound < X (strict)
+                        let startFilter = TypedKeyExpressionQueryComponent<Record>(
+                            keyExpression: RangeKeyExpression(
+                                fieldName: fieldName,
+                                component: .lowerBound,
+                                boundaryType: .halfOpen  // ✅ Fixed: Always halfOpen for missing side
+                            ),
+                            comparison: .lessThan,  // ✅ Fixed: Always strict '<'
+                            value: upperBound
+                        )
+                        unmatchedFilters.append(startFilter)
+                    }
+                }
+
+            case (.none, .none):
+                // Case 4: No indexes defined → add entire filter to unmatchedFilters (full scan with post-filter)
+                unmatchedFilters.append(rangeFilter.filter)
+            }
+        }
+
+        return (childPlans, unmatchedFilters)
+    }
+
+    /// Compute the successor of a value for Range boundary calculations
+    ///
+    /// This function returns the next representable value after the given value,
+    /// which is useful for implementing <= as < successor(value).
+    ///
+    /// - Parameter value: The value to compute the successor for
+    /// - Returns: The successor value, or nil if it cannot be computed
+    private func successor(of value: any TupleElement) -> (any TupleElement)? {
+        switch value {
+        case let date as Date:
+            // For Date, add 1 millisecond (FDB Tuple encoding uses millisecond precision)
+            // Note: Date is stored as Int64 milliseconds in FDB Tuple encoding
+            return date.addingTimeInterval(0.001)
+
+        case let int64 as Int64:
+            // For Int64, add 1 (unless at max value)
+            guard int64 < Int64.max else { return nil }
+            return int64 + 1
+
+        case let int as Int:
+            // Convert to Int64 and add 1
+            let int64 = Int64(int)
+            guard int64 < Int64.max else { return nil }
+            return int64 + 1
+
+        case let int32 as Int32:
+            // Convert to Int64 and add 1
+            return Int64(int32) + 1
+
+        case let uint64 as UInt64:
+            // For UInt64, add 1 (unless at max value)
+            guard uint64 < UInt64.max else { return nil }
+            return uint64 + 1
+
+        case let double as Double:
+            // For Double, use nextUp (next representable value)
+            return double.nextUp
+
+        case let float as Float:
+            // For Float, use nextUp and convert to Double for consistency
+            return Double(float.nextUp)
+
+        case let string as String:
+            // For String, append the smallest character (\0)
+            // This gives us the next string in lexicographic order
+            return string + "\u{0000}"
+
+        default:
+            // For other types, we cannot compute successor
+            // Caller should fall back to post-filter approach
+            return nil
+        }
+    }
+
+    /// Create a TypedIndexScanPlan for a Range boundary component
+    ///
+    /// This helper creates an index scan plan for a single Range boundary (lowerBound or upperBound).
+    /// The scan range is determined by the component and comparison operator:
+    /// - lowerBound < value: Scan lowerBound index where lowerBound < value
+    /// - upperBound > value: Scan upperBound index where upperBound > value
+    ///
+    /// - Parameters:
+    ///   - index: The Range component index to scan (must have rangeComponent)
+    ///   - queryValue: The comparison value from the query (TupleElement type)
+    ///   - comparison: The comparison operator (.lessThan, .lessThanOrEquals, .greaterThan, .greaterThanOrEquals)
+    ///   - component: The Range component being queried (.lowerBound or .upperBound)
+    ///   - window: Optional intersection window for pre-filtering optimization
+    /// - Returns: TypedIndexScanPlan configured for the Range boundary scan
+    private func createRangeIndexScanPlan(
+        index: Index,
+        queryValue: any TupleElement,
+        comparison: TypedFieldQueryComponent<Record>.Comparison,
+        component: RangeComponent,
+        window: RangeWindow?
+    ) -> any TypedQueryPlan<Record> {
+        let primaryKeyLength = getPrimaryKeyLength()
+
+        // Determine scan range based on comparison operator
+        let beginValues: [any TupleElement]
+        let endValues: [any TupleElement]
+        var postFilter: (any TypedQueryComponent<Record>)? = nil
+
+        switch comparison {
+        case .lessThan:
+            // FDB endKey is exclusive, so this correctly implements <
+            // Example: lowerBound < 2024-12-31 → scan lowerBound from MIN to 2024-12-31
+            beginValues = []
+            endValues = [queryValue]
+
+        case .lessThanOrEquals:
+            // FDB endKey is exclusive, so endValues = [queryValue] would only give us <
+            // To implement <=, we need to include queryValue itself
+            // Solution: Use successor(queryValue) as endKey, so scan becomes < successor(queryValue)
+            // which is equivalent to <= queryValue
+            beginValues = []
+            if let successorValue = successor(of: queryValue) {
+                endValues = [successorValue]
+            } else {
+                // Fallback: Use post-filter if successor cannot be computed
+                endValues = []
+                let boundaryType: BoundaryType = index.rootExpression is RangeKeyExpression
+                    ? (index.rootExpression as! RangeKeyExpression).boundaryType
+                    : .halfOpen
+                postFilter = TypedKeyExpressionQueryComponent<Record>(
+                    keyExpression: RangeKeyExpression(
+                        fieldName: (index.rootExpression as? FieldKeyExpression)?.fieldName
+                            ?? (index.rootExpression as? RangeKeyExpression)?.fieldName
+                            ?? "",
+                        component: component,
+                        boundaryType: boundaryType
+                    ),
+                    comparison: .lessThanOrEquals,
+                    value: queryValue
+                )
+            }
+
+        case .greaterThan:
+            // FDB beginKey is inclusive, so beginValues = [queryValue] would give us >=
+            // To implement strict >, we scan from queryValue and filter
+            // Solution: Scan >= queryValue, then post-filter to exclude queryValue itself
+            beginValues = [queryValue]
+            endValues = []
+
+            // Add post-filter for strict > check
+            let boundaryType: BoundaryType = index.rootExpression is RangeKeyExpression
+                ? (index.rootExpression as! RangeKeyExpression).boundaryType
+                : .halfOpen
+            postFilter = TypedKeyExpressionQueryComponent<Record>(
+                keyExpression: RangeKeyExpression(
+                    fieldName: (index.rootExpression as? FieldKeyExpression)?.fieldName
+                        ?? (index.rootExpression as? RangeKeyExpression)?.fieldName
+                        ?? "",
+                    component: component,
+                    boundaryType: boundaryType
+                ),
+                comparison: .greaterThan,
+                value: queryValue
+            )
+
+        case .greaterThanOrEquals:
+            // FDB beginKey is inclusive, so this correctly implements >=
+            // Example: upperBound >= 2024-01-01 → scan upperBound from 2024-01-01 to MAX
+            beginValues = [queryValue]
+            endValues = []
+
+        default:
+            // For other comparisons (equals, notEquals, etc.), use full scan
+            beginValues = []
+            endValues = []
+        }
+
+        // Create TypedIndexScanPlan with window and post-filter
+        return TypedIndexScanPlan<Record>(
+            indexName: index.name,
+            indexSubspaceTupleKey: index.subspaceTupleKey,
+            beginValues: beginValues,
+            endValues: endValues,
+            filter: postFilter,  // Apply post-filter for strict comparisons
+            primaryKeyLength: primaryKeyLength,
+            recordName: recordName,
+            window: window
+        )
     }
 }

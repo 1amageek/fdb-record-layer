@@ -25,6 +25,124 @@ public enum MacroIndexScope {
     case global
 }
 
+// MARK: - Directory Path Elements
+
+/// Protocol for directory path elements
+///
+/// Directory paths can contain string literals and KeyPath references.
+/// This protocol allows type-safe specification of heterogeneous path elements.
+///
+/// **Usage**:
+/// ```swift
+/// #Directory<Order>(
+///     "tenants",           // Literal (ExpressibleByStringLiteral)
+///     Field(\.accountID),  // Field (KeyPath wrapper)
+///     "orders",
+///     layer: .partition
+/// )
+/// ```
+public protocol DirectoryPathElement {
+    associatedtype Value
+    var value: Value { get }
+}
+
+/// String literal path element
+///
+/// Automatically created from string literals via `ExpressibleByStringLiteral`.
+public struct Path: DirectoryPathElement, ExpressibleByStringLiteral {
+    public let value: String
+
+    public init(stringLiteral value: String) {
+        self.value = value
+    }
+
+    public init(_ value: String) {
+        self.value = value
+    }
+}
+
+extension String: DirectoryPathElement {
+    public var value: String { self }
+}
+
+/// KeyPath-based path element for dynamic partitioning
+///
+/// Wraps a KeyPath to a field in the record type, used for multi-tenant directories.
+///
+/// **Usage**:
+/// ```swift
+/// #Directory<Order>(
+///     "tenants",
+///     Field(\.tenantID),  // KeyPath to tenantID field
+///     "orders",
+///     layer: .partition
+/// )
+/// ```
+public struct Field<Root>: DirectoryPathElement {
+    public var value: PartialKeyPath<Root>
+
+    public init(_ keyPath: PartialKeyPath<Root>) {
+        self.value = keyPath
+    }
+}
+
+/// Directory layer type for #Directory macro
+///
+/// This enum is used as a type-safe parameter for the #Directory macro.
+/// It will be converted to fdb-swift-bindings' DirectoryType at compile time.
+public enum DirectoryLayerType: Sendable, Equatable {
+    case partition
+    case recordStore
+    case luceneIndex
+    case timeSeries
+    case vectorIndex
+    case custom(String)
+}
+
+// MARK: - DirectoryLayerType RawRepresentable
+
+extension DirectoryLayerType: RawRepresentable {
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "partition":
+            self = .partition
+        case "recordStore":
+            self = .recordStore
+        case "luceneIndex":
+            self = .luceneIndex
+        case "timeSeries":
+            self = .timeSeries
+        case "vectorIndex":
+            self = .vectorIndex
+        default:
+            // Custom layer types are prefixed with "custom:"
+            if rawValue.hasPrefix("custom:") {
+                let name = String(rawValue.dropFirst("custom:".count))
+                self = .custom(name)
+            } else {
+                return nil
+            }
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .partition:
+            return "partition"
+        case .recordStore:
+            return "recordStore"
+        case .luceneIndex:
+            return "luceneIndex"
+        case .timeSeries:
+            return "timeSeries"
+        case .vectorIndex:
+            return "vectorIndex"
+        case .custom(let name):
+            return "custom:\(name)"
+        }
+    }
+}
+
 // MARK: - Record Macros
 
 /// Marks a struct as a persistable record type
@@ -346,65 +464,6 @@ public macro Spatial(
     type: SpatialType
 ) = #externalMacro(module: "FDBRecordLayerMacros", type: "SpatialMacro")
 
-/// Protocol for directory path elements
-///
-/// Directory paths can contain string literals and KeyPath references.
-/// This protocol allows type-safe specification of heterogeneous path elements.
-///
-/// **Usage**:
-/// ```swift
-/// #Directory<Order>(
-///     "tenants",           // Literal (ExpressibleByStringLiteral)
-///     Field(\.accountID),  // Field (KeyPath wrapper)
-///     "orders",
-///     layer: .partition
-/// )
-/// ```
-public protocol DirectoryPathElement {
-    associatedtype Value
-    var value: Value { get }
-}
-
-/// String literal path element
-///
-/// Automatically created from string literals via `ExpressibleByStringLiteral`.
-public struct Path: DirectoryPathElement, ExpressibleByStringLiteral {
-    public let value: String
-
-    public init(stringLiteral value: String) {
-        self.value = value
-    }
-
-    public init(_ value: String) {
-        self.value = value
-    }
-}
-
-extension String: DirectoryPathElement {
-    public var value: String { self }
-}
-
-/// KeyPath-based path element for dynamic partitioning
-///
-/// Wraps a KeyPath to a field in the record type, used for multi-tenant directories.
-///
-/// **Usage**:
-/// ```swift
-/// #Directory<Order>(
-///     "tenants",
-///     Field(\.tenantID),  // KeyPath to tenantID field
-///     "orders",
-///     layer: .partition
-/// )
-/// ```
-public struct Field<Root>: DirectoryPathElement {
-    public var value: PartialKeyPath<Root>
-
-    public init(_ keyPath: PartialKeyPath<Root>) {
-        self.value = keyPath
-    }
-}
-
 /// Defines a directory path using FoundationDB Directory Layer
 ///
 /// This macro validates the directory path and layer parameter, and serves as a marker
@@ -494,19 +553,6 @@ public macro Directory<T>(
     _ pathElements: any DirectoryPathElement...,
     layer: DirectoryLayerType = .recordStore
 ) = #externalMacro(module: "FDBRecordLayerMacros", type: "DirectoryMacro")
-
-/// Directory layer type for #Directory macro
-///
-/// This enum is used as a type-safe parameter for the #Directory macro.
-/// It will be converted to fdb-swift-bindings' DirectoryType at compile time.
-public enum DirectoryLayerType: Sendable {
-    case partition
-    case recordStore
-    case luceneIndex
-    case timeSeries
-    case vectorIndex
-    case custom(String)
-}
 
 /// Defines a relationship to another record type
 ///

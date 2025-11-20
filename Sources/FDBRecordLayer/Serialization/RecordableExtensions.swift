@@ -196,13 +196,16 @@ public extension Recordable {
     ///   - component: Boundary component (.lowerBound or .upperBound)
     /// - Returns: Array with boundary value as TupleElement (empty if nil Optional)
     /// - Throws: RecordLayerError.fieldNotFound if field doesn't exist or is not a Range
+    ///
+    /// **NOTE**: This default implementation uses Mirror API for reflection-based extraction.
+    /// It's used as a fallback when the macro-generated method is not accessible through
+    /// protocol witness table dispatch. GenericRecordAccess bypasses this by using its own
+    /// Mirror-based implementation directly.
     func extractRangeBoundary(
         fieldName: String,
         component: RangeComponent
     ) throws -> [any TupleElement] {
-        // NOTE: Due to a Swift limitation, the macro-generated method cannot override this default.
-        // So we implement the logic using Reflection as a fallback.
-
+        // This default implementation uses Swift Mirror for reflection
         let mirror = Mirror(reflecting: self)
         guard let child = mirror.children.first(where: { $0.label == fieldName }) else {
             throw RecordLayerError.fieldNotFound(fieldName)
@@ -234,12 +237,16 @@ public extension Recordable {
 
         switch component {
         case .lowerBound:
-            if let lowerBound = mirror.children.first(where: { $0.label == "lowerBound" })?.value as? any TupleElement {
-                return [lowerBound]
+            if let lowerBoundValue = mirror.children.first(where: { $0.label == "lowerBound" })?.value {
+                if let converted = convertToTupleElement(lowerBoundValue) {
+                    return [converted]
+                }
             }
         case .upperBound:
-            if let upperBound = mirror.children.first(where: { $0.label == "upperBound" })?.value as? any TupleElement {
-                return [upperBound]
+            if let upperBoundValue = mirror.children.first(where: { $0.label == "upperBound" })?.value {
+                if let converted = convertToTupleElement(upperBoundValue) {
+                    return [converted]
+                }
             }
         }
 
@@ -250,7 +257,13 @@ public extension Recordable {
 // MARK: - Helper Functions
 
 /// Convert Any value to TupleElement
-private func convertToTupleElement(_ value: Any) -> (any TupleElement)? {
+///
+/// This function ensures consistent type conversion:
+/// - Int, Int32, UInt, UInt32 → Int64
+/// - Other types → preserved
+///
+/// **Visibility**: Internal (used by macro-generated code)
+internal func convertToTupleElement(_ value: Any) -> (any TupleElement)? {
     switch value {
     case let v as String:
         return v

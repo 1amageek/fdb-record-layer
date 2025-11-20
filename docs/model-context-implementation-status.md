@@ -79,10 +79,10 @@ extension RecordContainer {
     public func mainContext(subspace: Subspace) -> ModelContext
 
     @MainActor
-    public func mainContext(path: String) -> ModelContext
+    public func mainContext<Record: Recordable>(for type: Record.Type) async throws -> ModelContext
 
     public func makeContext(subspace: Subspace) -> ModelContext
-    public func makeContext(path: String) -> ModelContext
+    public func makeContext<Record: Recordable>(for type: Record.Type) async throws -> ModelContext
 }
 ```
 
@@ -92,8 +92,10 @@ extension RecordContainer {
 // Initialize container
 let container = try RecordContainer(for: User.self, Product.self)
 
-// Create model context
-let context = container.makeContext(path: "app/users")
+// Create model context (path auto-resolved from #Directory macro)
+let context = try await container.makeContext(for: User.self)
+// Directory path: ["app", "users"] (from #Directory macro)
+// Or: ["User"] (default if no #Directory macro)
 
 // Fetch records
 let users = try await context.fetch(User.self)
@@ -124,9 +126,10 @@ context.rollback()  // Discard all changes
 
 **Current Behavior**:
 ```swift
-let context = container.makeContext(path: "data")
+// Note: With Directory auto-resolution, context type is determined by the Record type
+let context = try await container.makeContext(for: User.self)
 
-context.insert(user)     // ✅ Works (sets context type to User)
+context.insert(user)     // ✅ Works (type matches User)
 context.insert(product)  // ❌ Fatal error: Mixed types not allowed
 
 // Error message:
@@ -137,12 +140,12 @@ context.insert(product)  // ❌ Fatal error: Mixed types not allowed
 **Best Practice**:
 ```swift
 // Create separate contexts for different record types
-let userContext = container.makeContext(path: "users")
+let userContext = try await container.makeContext(for: User.self)
 userContext.insert(user1)
 userContext.insert(user2)
 try await userContext.save()  // ✅ All User records
 
-let productContext = container.makeContext(path: "products")
+let productContext = try await container.makeContext(for: Product.self)
 productContext.insert(product1)
 productContext.insert(product2)
 try await productContext.save()  // ✅ All Product records
@@ -388,7 +391,7 @@ let schema = Schema([User.self])
 let config = RecordConfiguration(schema: schema)
 let container = try RecordContainer(configurations: [config])
 
-let store = container.store(for: User.self, path: "users")
+let store = try await container.store(for: User.self)
 try await store.save(user1)
 try await store.save(user2)
 ```
@@ -398,7 +401,7 @@ try await store.save(user2)
 ```swift
 let container = try RecordContainer(for: User.self)
 
-let context = container.makeContext(path: "users")
+let context = try await container.makeContext(for: User.self)
 context.insert(user1)
 context.insert(user2)
 try await context.save()  // Batch operation

@@ -402,8 +402,8 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
             // OK: CORRECT RETRY LOGIC: Create new transaction for each retry
             while !batchSucceeded && retryCount <= configuration.maxRetries {
-                let context = try RecordContext(database: database)
-                // Note: No need for defer { context.cancel() } - RecordContext.deinit handles cleanup
+                let context = try TransactionContext(database: database)
+                // Note: No need for defer { context.cancel() } - TransactionContext.deinit handles cleanup
 
                 do {
                     let (nextContinuation, batchIssues, batchEndKey, scannedCount) = try await scrubIndexEntriesBatch(
@@ -497,8 +497,8 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     var skipCommitted = false
 
                     while !skipCommitted && skipRetryCount <= configuration.maxRetries {
-                        let skipContext = try RecordContext(database: database)
-                        // Note: No need for defer - RecordContext.deinit handles cleanup
+                        let skipContext = try TransactionContext(database: database)
+                        // Note: No need for defer - TransactionContext.deinit handles cleanup
 
                         do {
                             try await progress.markPhase1Range(from: currentKey, to: skipKey, context: skipContext)
@@ -591,7 +591,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     ///
     /// OK: FIX (Issue 3): Now returns scannedCount as 4th tuple element
     private func scrubIndexEntriesBatch(
-        context: RecordContext,
+        context: TransactionContext,
         indexSubspace: Subspace,
         recordSubspace: Subspace,
         recordNames: [String],
@@ -603,7 +603,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
         // OK: Set transaction timeout
         if configuration.transactionTimeoutMillis > 0 {
-            try context.setTimeout(milliseconds: configuration.transactionTimeoutMillis)
+            try context.setTimeout(Int64(configuration.transactionTimeoutMillis))
         }
 
         // OK: Set read-your-writes option
@@ -889,8 +889,8 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
             // OK: CORRECT RETRY LOGIC: Create new transaction for each retry
             while !batchSucceeded && retryCount <= configuration.maxRetries {
-                let context = try RecordContext(database: database)
-                // Note: No need for defer { context.cancel() } - RecordContext.deinit handles cleanup
+                let context = try TransactionContext(database: database)
+                // Note: No need for defer { context.cancel() } - TransactionContext.deinit handles cleanup
 
                 do {
                     let (nextContinuation, batchIssues, batchEndKey, scannedCount) = try await scrubRecordsBatch(
@@ -982,8 +982,8 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
                     var skipCommitted = false
 
                     while !skipCommitted && skipRetryCount <= configuration.maxRetries {
-                        let skipContext = try RecordContext(database: database)
-                        // Note: No need for defer - RecordContext.deinit handles cleanup
+                        let skipContext = try TransactionContext(database: database)
+                        // Note: No need for defer - TransactionContext.deinit handles cleanup
 
                         do {
                             try await progress.markPhase2Range(from: currentKey, to: skipKey, context: skipContext)
@@ -1072,7 +1072,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
     ///
     /// OK: FIX (Issue 3): Now returns scannedCount as 4th tuple element
     private func scrubRecordsBatch(
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace,
         indexSubspace: Subspace,
         recordName: String,
@@ -1084,7 +1084,7 @@ public final class OnlineIndexScrubber<Record: Sendable>: Sendable {
 
         // OK: Set transaction timeout
         if configuration.transactionTimeoutMillis > 0 {
-            try context.setTimeout(milliseconds: configuration.transactionTimeoutMillis)
+            try context.setTimeout(Int64(configuration.transactionTimeoutMillis))
         }
 
         // OK: Set read-your-writes option
@@ -1564,7 +1564,7 @@ struct ScrubberProgress {
     }
 
     /// Get current phase from metadata
-    func getCurrentPhase(context: RecordContext) async throws -> Phase {
+    func getCurrentPhase(context: TransactionContext) async throws -> Phase {
         let phaseKey = progressSubspace.pack(Tuple("current_phase"))
         guard let bytes = try await context.getTransaction().getValue(for: phaseKey),
               let phaseString = String(bytes: bytes, encoding: .utf8),
@@ -1575,19 +1575,19 @@ struct ScrubberProgress {
     }
 
     /// Set current phase
-    func setPhase(_ phase: Phase, context: RecordContext) {
+    func setPhase(_ phase: Phase, context: TransactionContext) {
         let phaseKey = progressSubspace.pack(Tuple("current_phase"))
         let value = FDB.Bytes(phase.rawValue.utf8)
         context.getTransaction().setValue(value, for: phaseKey)
     }
 
     /// Mark a range as completed in Phase 1
-    func markPhase1Range(from: FDB.Bytes, to: FDB.Bytes, context: RecordContext) async throws {
+    func markPhase1Range(from: FDB.Bytes, to: FDB.Bytes, context: TransactionContext) async throws {
         try await phase1RangeSet.insertRange(begin: from, end: to, context: context)
     }
 
     /// Mark a range as completed in Phase 2
-    func markPhase2Range(from: FDB.Bytes, to: FDB.Bytes, context: RecordContext) async throws {
+    func markPhase2Range(from: FDB.Bytes, to: FDB.Bytes, context: TransactionContext) async throws {
         try await phase2RangeSet.insertRange(begin: from, end: to, context: context)
     }
 

@@ -328,8 +328,8 @@ struct CoveringIndexScanTests {
         var results: [Product] = []
 
         try await database.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.markClosed() }  // Prevent deinit from cancelling externally-managed transaction
+            let context = TransactionContext(transaction: transaction)
+
 
             let cursor = try await plan.execute(
                 subspace: subspace,
@@ -400,8 +400,8 @@ struct CoveringIndexScanTests {
         var results: [Product] = []
 
         try await database.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.markClosed() }  // Prevent deinit from cancelling externally-managed transaction
+            let context = TransactionContext(transaction: transaction)
+
             let cursor = try await plan.execute(
                 subspace: subspace,
                 recordAccess: recordAccess,
@@ -468,8 +468,8 @@ struct CoveringIndexScanTests {
         var results: [Product] = []
 
         try await database.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.markClosed() }  // Prevent deinit from cancelling externally-managed transaction
+            let context = TransactionContext(transaction: transaction)
+
             let cursor = try await plan.execute(
                 subspace: subspace,
                 recordAccess: recordAccess,
@@ -543,8 +543,8 @@ struct CoveringIndexScanTests {
         var results: [Product] = []
 
         try await database.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.markClosed() }  // Prevent deinit from cancelling externally-managed transaction
+            let context = TransactionContext(transaction: transaction)
+
             let cursor = try await plan.execute(
                 subspace: subspace,
                 recordAccess: recordAccess,
@@ -619,8 +619,8 @@ struct CoveringIndexScanTests {
         var results: [Product] = []
 
         try await database.withTransaction { transaction in
-            let context = RecordContext(transaction: transaction)
-            defer { context.markClosed() }  // Prevent deinit from cancelling externally-managed transaction
+            let context = TransactionContext(transaction: transaction)
+
             let cursor = try await plan.execute(
                 subspace: subspace,
                 recordAccess: recordAccess,

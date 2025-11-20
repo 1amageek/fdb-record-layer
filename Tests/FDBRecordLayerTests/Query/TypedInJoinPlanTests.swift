@@ -456,18 +456,19 @@ struct TypedInJoinPlanTests {
             recordName: "TestRecord"
         )
 
-        let recordContext = try RecordContext(database: database)
-
-        let cursor = try await plan.execute(
-            subspace: subspace,
-            recordAccess: recordAccess,
-            context: recordContext,
-            snapshot: false
-        )
-
         var results: [TestRecord] = []
-        for try await record in cursor {
-            results.append(record)
+        try await database.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
+            let cursor = try await plan.execute(
+                subspace: subspace,
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: false
+            )
+
+            for try await record in cursor {
+                results.append(record)
+            }
         }
 
         #expect(results.count == 4, "Should return 4 records (id: 1, 2, 3, 5)")
@@ -517,18 +518,19 @@ struct TypedInJoinPlanTests {
             recordName: "TestRecord"
         )
 
-        let recordContext = try RecordContext(database: database)
-
-        let cursor = try await plan.execute(
-            subspace: subspace,
-            recordAccess: recordAccess,
-            context: recordContext,
-            snapshot: false
-        )
-
         var results: [TestRecord] = []
-        for try await rec in cursor {
-            results.append(rec)
+        try await database.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
+            let cursor = try await plan.execute(
+                subspace: subspace,
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: false
+            )
+
+            for try await rec in cursor {
+                results.append(rec)
+            }
         }
 
         #expect(results.count == 1, "Should return record only once despite duplicate IN values")
@@ -617,18 +619,19 @@ struct TypedInJoinPlanTests {
             recordName: "TaggedRecord"
         )
 
-        let recordContext = try RecordContext(database: database)
-
-        let cursor = try await plan.execute(
-            subspace: subspace,
-            recordAccess: recordAccess,
-            context: recordContext,
-            snapshot: false
-        )
-
         var results: [TaggedRecord] = []
-        for try await rec in cursor {
-            results.append(rec)
+        try await database.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
+            let cursor = try await plan.execute(
+                subspace: subspace,
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: false
+            )
+
+            for try await rec in cursor {
+                results.append(rec)
+            }
         }
 
         #expect(results.count == 3, "Should return 3 records (id: 1, 2, 3)")
@@ -681,18 +684,18 @@ struct TypedInJoinPlanTests {
             recordName: "TestRecord"
         )
 
-        let recordContext = try RecordContext(database: database)
-
-        let cursor = try await plan.execute(
-            subspace: subspace,
-            recordAccess: recordAccess,
-            context: recordContext,
-            snapshot: false
-        )
-
         var results: [TestRecord] = []
-        for try await rec in cursor {
-            results.append(rec)
+        try await database.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
+            let cursor = try await plan.execute(
+                subspace: subspace,
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: false
+            )
+            for try await rec in cursor {
+                results.append(rec)
+            }
         }
 
         #expect(results.count == 0, "Should return no records when no matches")
@@ -746,18 +749,18 @@ struct TypedInJoinPlanTests {
             recordName: "TestRecord"
         )
 
-        let recordContext = try RecordContext(database: database)
-
-        let cursor = try await plan.execute(
-            subspace: subspace,
-            recordAccess: recordAccess,
-            context: recordContext,
-            snapshot: false
-        )
-
         var results: [TestRecord] = []
-        for try await rec in cursor {
-            results.append(rec)
+        try await database.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
+            let cursor = try await plan.execute(
+                subspace: subspace,
+                recordAccess: recordAccess,
+                context: context,
+                snapshot: false
+            )
+            for try await rec in cursor {
+                results.append(rec)
+            }
         }
 
         #expect(results.count == 50, "Should return 50 records")

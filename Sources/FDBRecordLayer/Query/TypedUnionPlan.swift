@@ -30,28 +30,28 @@ import FoundationDB
 /// - Time: O(n₁ + n₂ + ... + nₖ) where nᵢ is size of child i
 /// - Memory: O(1) (streaming, no buffering)
 /// - I/O: Proportional to union size (duplicates read only once)
-public struct TypedUnionPlan<Record: Sendable>: TypedQueryPlan {
+internal struct TypedUnionPlan<Record: Sendable>: TypedQueryPlan {
     // MARK: - Properties
 
     /// Child plans to union
-    public let childPlans: [any TypedQueryPlan<Record>]
+    internal let childPlans: [any TypedQueryPlan<Record>]
 
     /// Primary key expression for comparing records
     public let primaryKeyExpression: KeyExpression
 
     // MARK: - Initialization
 
-    public init(childPlans: [any TypedQueryPlan<Record>], primaryKeyExpression: KeyExpression) {
+    internal init(childPlans: [any TypedQueryPlan<Record>], primaryKeyExpression: KeyExpression) {
         self.childPlans = childPlans
         self.primaryKeyExpression = primaryKeyExpression
     }
 
     // MARK: - TypedQueryPlan
 
-    public func execute(
+    internal func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute all child plans concurrently

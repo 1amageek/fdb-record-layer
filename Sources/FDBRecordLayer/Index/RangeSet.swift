@@ -36,7 +36,7 @@ public final class RangeSet: Sendable {
     ///   - begin: Start of the range (inclusive)
     ///   - end: End of the range (exclusive)
     ///   - context: Transaction context
-    public func insertRange(begin: FDB.Bytes, end: FDB.Bytes, context: RecordContext) async throws {
+    internal func insertRange(begin: FDB.Bytes, end: FDB.Bytes, context: TransactionContext) async throws {
         let transaction = context.getTransaction()
 
         // Store a marker for this range
@@ -55,7 +55,7 @@ public final class RangeSet: Sendable {
     ///   - fullEnd: End of the entire key space
     /// - Returns: Array of (begin, end) tuples representing missing ranges
     public func missingRanges(fullBegin: FDB.Bytes, fullEnd: FDB.Bytes) async throws -> [(begin: FDB.Bytes, end: FDB.Bytes)] {
-        return try await database.withRecordContext { [subspace] context in
+        return try await database.withTransactionContext { [subspace] context in
             let transaction = context.getTransaction()
             var completedRanges: [(begin: FDB.Bytes, end: FDB.Bytes)] = []
 
@@ -121,7 +121,7 @@ public final class RangeSet: Sendable {
     ///
     /// Used when restarting an index build from scratch.
     public func clear() async throws {
-        try await database.withRecordContext { [subspace] context in
+        try await database.withTransactionContext { [subspace] context in
             let transaction = context.getTransaction()
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
@@ -137,7 +137,7 @@ public final class RangeSet: Sendable {
     ///   - fullEnd: End of the entire key space
     /// - Returns: (completed ranges count, estimated progress percentage)
     public func getProgress(fullBegin: FDB.Bytes, fullEnd: FDB.Bytes) async throws -> (completedRanges: Int, estimatedProgress: Double) {
-        return try await database.withRecordContext { [subspace] context in
+        return try await database.withTransactionContext { [subspace] context in
             let transaction = context.getTransaction()
             var completedCount = 0
             var completedBytes: UInt64 = 0

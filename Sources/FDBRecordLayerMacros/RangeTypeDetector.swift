@@ -1,214 +1,103 @@
+//
+//  RangeTypeDetector.swift
+//  FDBRecordLayer
+//
+//  Created by Gemini
+//
+
 import Foundation
-import SwiftSyntax
 
-/// Range型の検出情報
-public enum RangeTypeInfo {
-    /// Range<Bound> - 半開区間 [a, b)
-    case range(boundType: String)
+/// A utility for detecting Swift Range types from a string representation.
+///
+/// This detector analyzes a type name string (e.g., "Range<Date>", "Optional<ClosedRange<Int>>")
+/// and returns structured information about the range, including its base type and boundary characteristics.
+/// This is necessary because Swift macros do not have access to full type reflection at compile time.
+enum RangeTypeDetector {
 
-    /// ClosedRange<Bound> - 閉区間 [a, b]
-    case closedRange(boundType: String)
+    /// Information about a detected range type.
+    struct RangeInfo {
+        /// The base type of the range, e.g., "Date" from "Range<Date>".
+        let boundType: String
 
-    /// PartialRangeFrom<Bound> - [a, ∞)
-    case partialRangeFrom(boundType: String)
+        /// The category of the range (e.g., full range, partial range, or not a range).
+        let category: RangeCategory
 
-    /// PartialRangeThrough<Bound> - (-∞, b]
-    case partialRangeThrough(boundType: String)
+        /// Whether this is a ClosedRange (true) or Range (false)
+        let isClosed: Bool
 
-    /// PartialRangeUpTo<Bound> - (-∞, b)
-    case partialRangeUpTo(boundType: String)
-
-    /// UnboundedRange - (-∞, ∞) - インデックス化不可
-    case unboundedRange
-
-    /// Range型ではない
-    case notRange
-
-    /// 開始時刻インデックスが必要か
-    public var needsStartIndex: Bool {
-        switch self {
-        case .range, .closedRange, .partialRangeFrom:
-            return true
-        default:
-            return false
+        /// Get boundary type for index metadata
+        var boundaryType: BoundaryType {
+            switch category {
+            case .full:
+                return isClosed ? .closed : .halfOpen
+            case .partialFrom, .partialUpTo:
+                return .halfOpen  // PartialRange は常に halfOpen
+            case .notRange:
+                return .halfOpen
+            }
         }
     }
 
-    /// 終了時刻インデックスが必要か
-    public var needsEndIndex: Bool {
-        switch self {
-        case .range, .closedRange, .partialRangeThrough, .partialRangeUpTo:
-            return true
-        default:
-            return false
-        }
+    /// Boundary type for Range indexes
+    enum BoundaryType: String {
+        case halfOpen
+        case closed
     }
 
-    /// 境界タイプ
-    public var boundaryType: String {
-        switch self {
-        case .range, .partialRangeUpTo:
-            return "halfOpen"
-        case .closedRange, .partialRangeFrom, .partialRangeThrough:
-            return "closed"
-        default:
-            return "halfOpen"  // デフォルト
-        }
+    /// The category of a range, determining which boundaries it has.
+    enum RangeCategory {
+        /// A full range with both a lower and an upper bound, e.g., `Range<T>` or `ClosedRange<T>`.
+        case full
+
+        /// A partial range with only a lower bound, e.g., `PartialRangeFrom<T>`.
+        case partialFrom
+
+        /// A partial range with only an upper bound, e.g., `PartialRangeUpTo<T>` or `PartialRangeThrough<T>`.
+        case partialUpTo
+
+        /// Not a range type.
+        case notRange
     }
 
-    /// Bound型を取得
-    public var boundType: String? {
-        switch self {
-        case .range(let bound), .closedRange(let bound),
-             .partialRangeFrom(let bound), .partialRangeThrough(let bound),
-             .partialRangeUpTo(let bound):
-            return bound
-        default:
-            return nil
-        }
-    }
-}
-
-/// Range型検出器
-public struct RangeTypeDetector {
-    /// 型文字列からRange型情報を検出
+    /// Analyzes a type string to detect if it represents a range.
     ///
-    /// - Parameter typeString: 型文字列（例: "Range<Date>", "ClosedRange<Int64>"）
-    /// - Returns: Range型情報
-    public static func detectRangeType(_ typeString: String) -> RangeTypeInfo {
-        let cleaned = typeString.trimmingCharacters(in: .whitespaces)
-
-        // UnboundedRange
-        if cleaned == "UnboundedRange" {
-            return .unboundedRange
+    /// - Parameter typeName: The string representation of the type, e.g., "Range<Date>".
+    /// - Returns: A `RangeInfo` struct containing details about the detected range, or `nil` if it's not a range type.
+    static func detectRange(from typeName: String) -> RangeInfo? {
+        if typeName.contains("ClosedRange<") {
+            guard let boundType = extractGenericArgument(from: typeName) else { return nil }
+            return RangeInfo(boundType: boundType, category: .full, isClosed: true)
         }
-
-        // Range<Bound>
-        if cleaned.hasPrefix("Range<") {
-            if let bound = extractBoundType(from: cleaned, prefix: "Range<") {
-                return .range(boundType: bound)
-            }
+        if typeName.contains("Range<") {
+            guard let boundType = extractGenericArgument(from: typeName) else { return nil }
+            return RangeInfo(boundType: boundType, category: .full, isClosed: false)
         }
-
-        // ClosedRange<Bound>
-        if cleaned.hasPrefix("ClosedRange<") {
-            if let bound = extractBoundType(from: cleaned, prefix: "ClosedRange<") {
-                return .closedRange(boundType: bound)
-            }
+        if typeName.contains("PartialRangeFrom<") {
+            guard let boundType = extractGenericArgument(from: typeName) else { return nil }
+            return RangeInfo(boundType: boundType, category: .partialFrom, isClosed: false)
         }
-
-        // PartialRangeFrom<Bound>
-        if cleaned.hasPrefix("PartialRangeFrom<") {
-            if let bound = extractBoundType(from: cleaned, prefix: "PartialRangeFrom<") {
-                return .partialRangeFrom(boundType: bound)
-            }
+        if typeName.contains("PartialRangeThrough<") || typeName.contains("PartialRangeUpTo<") {
+            guard let boundType = extractGenericArgument(from: typeName) else { return nil }
+            return RangeInfo(boundType: boundType, category: .partialUpTo, isClosed: false)
         }
-
-        // PartialRangeThrough<Bound>
-        if cleaned.hasPrefix("PartialRangeThrough<") {
-            if let bound = extractBoundType(from: cleaned, prefix: "PartialRangeThrough<") {
-                return .partialRangeThrough(boundType: bound)
-            }
-        }
-
-        // PartialRangeUpTo<Bound>
-        if cleaned.hasPrefix("PartialRangeUpTo<") {
-            if let bound = extractBoundType(from: cleaned, prefix: "PartialRangeUpTo<") {
-                return .partialRangeUpTo(boundType: bound)
-            }
-        }
-
-        return .notRange
+        // Note: UnboundedRange is not considered a valid range for indexing.
+        return nil
     }
 
-    /// TypeSyntaxからRange型情報を検出
-    ///
-    /// - Parameter typeSyntax: TypeSyntax
-    /// - Returns: Range型情報
-    public static func detectRangeType(from typeSyntax: TypeSyntax) -> RangeTypeInfo {
-        let typeString = typeSyntax.trimmedDescription
-        return detectRangeType(typeString)
-    }
-
-    /// IdentifierTypeSyntaxからRange型情報を検出
-    ///
-    /// - Parameter identifierType: IdentifierTypeSyntax
-    /// - Returns: Range型情報
-    public static func detectRangeType(from identifierType: IdentifierTypeSyntax) -> RangeTypeInfo {
-        let typeName = identifierType.name.text
-
-        // ジェネリック引数を取得
-        guard let genericArgs = identifierType.genericArgumentClause?.arguments,
-              let firstArg = genericArgs.first else {
-            // ジェネリック引数がない場合
-            if typeName == "UnboundedRange" {
-                return .unboundedRange
-            }
-            return .notRange
-        }
-
-        let boundType = firstArg.argument.trimmedDescription
-
-        switch typeName {
-        case "Range":
-            return .range(boundType: boundType)
-        case "ClosedRange":
-            return .closedRange(boundType: boundType)
-        case "PartialRangeFrom":
-            return .partialRangeFrom(boundType: boundType)
-        case "PartialRangeThrough":
-            return .partialRangeThrough(boundType: boundType)
-        case "PartialRangeUpTo":
-            return .partialRangeUpTo(boundType: boundType)
-        default:
-            return .notRange
-        }
-    }
-
-    // MARK: - Private Helpers
-
-    /// 型文字列からBound型を抽出
-    ///
-    /// - Parameters:
-    ///   - typeString: 型文字列（例: "Range<Date>"）
-    ///   - prefix: プレフィックス（例: "Range<"）
-    /// - Returns: Bound型（例: "Date"）
-    private static func extractBoundType(from typeString: String, prefix: String) -> String? {
-        guard typeString.hasPrefix(prefix), typeString.hasSuffix(">") else {
+    /// Extracts the generic argument from a type string.
+    /// Example: "Optional<Range<Date>>" -> "Range<Date>"
+    /// Example: "Range<Date>" -> "Date"
+    private static func extractGenericArgument(from typeName: String) -> String? {
+        guard let firstAngleBracket = typeName.firstIndex(of: "<"),
+              let lastAngleBracket = typeName.lastIndex(of: ">") else {
             return nil
         }
 
-        let startIndex = typeString.index(typeString.startIndex, offsetBy: prefix.count)
-        let endIndex = typeString.index(before: typeString.endIndex)
+        let startIndex = typeName.index(after: firstAngleBracket)
+        let endIndex = lastAngleBracket
 
-        guard startIndex < endIndex else {
-            return nil
-        }
+        guard startIndex < endIndex else { return nil }
 
-        let bound = String(typeString[startIndex..<endIndex])
-        return bound.trimmingCharacters(in: .whitespaces)
-    }
-}
-
-// MARK: - CustomStringConvertible
-
-extension RangeTypeInfo: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .range(let bound):
-            return "Range<\(bound)>"
-        case .closedRange(let bound):
-            return "ClosedRange<\(bound)>"
-        case .partialRangeFrom(let bound):
-            return "PartialRangeFrom<\(bound)>"
-        case .partialRangeThrough(let bound):
-            return "PartialRangeThrough<\(bound)>"
-        case .partialRangeUpTo(let bound):
-            return "PartialRangeUpTo<\(bound)>"
-        case .unboundedRange:
-            return "UnboundedRange"
-        case .notRange:
-            return "Not a Range type"
-        }
+        return String(typeName[startIndex..<endIndex])
     }
 }

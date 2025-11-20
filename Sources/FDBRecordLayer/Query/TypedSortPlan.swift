@@ -20,14 +20,14 @@ import FoundationDB
 /// - Time complexity: O(n log n) where n is the number of results
 /// - Memory complexity: O(n)
 /// - Should be avoided when an index can provide the sort order
-public struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
+internal struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
     // MARK: - Properties
 
     /// The child plan producing unsorted results
-    public let childPlan: any TypedQueryPlan<Record>
+    internal let childPlan: any TypedQueryPlan<Record>
 
     /// Fields to sort by (in order)
-    public let sortFields: [SortField]
+    internal let sortFields: [SortField]
 
     // MARK: - Types
 
@@ -47,7 +47,7 @@ public struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
 
     // MARK: - Initialization
 
-    public init(
+    internal init(
         childPlan: any TypedQueryPlan<Record>,
         sortFields: [SortField]
     ) {
@@ -60,7 +60,7 @@ public struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute child plan

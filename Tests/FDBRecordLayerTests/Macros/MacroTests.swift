@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 import FoundationDB
 @testable import FDBRecordLayer
 

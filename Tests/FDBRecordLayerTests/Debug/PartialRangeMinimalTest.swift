@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import FDBRecordCore
 @testable import FoundationDB
 @testable import FDBRecordLayer
 
@@ -11,7 +12,7 @@ struct PartialRangeMinimalTest {
     @Recordable
     struct MinimalPartialRange {
         #PrimaryKey<MinimalPartialRange>([\.id])
-        #Index<MinimalPartialRange>([\.validFrom])
+        #Index<MinimalPartialRange>([\.validFrom.lowerBound])
 
         var id: Int64
         var validFrom: PartialRangeFrom<Date>
@@ -21,7 +22,8 @@ struct PartialRangeMinimalTest {
     @Recordable
     struct RegularRange {
         #PrimaryKey<RegularRange>([\.id])
-        #Index<RegularRange>([\.period])
+        #Index<RegularRange>([\.period.lowerBound])
+        #Index<RegularRange>([\.period.upperBound])
 
         var id: Int64
         var period: Range<Date>
@@ -31,7 +33,7 @@ struct PartialRangeMinimalTest {
     @Recordable
     struct OpenEndEvent {
         #PrimaryKey<OpenEndEvent>([\.id])
-        #Index<OpenEndEvent>([\.validFrom])
+        #Index<OpenEndEvent>([\.validFrom.lowerBound])
 
         var id: Int64
         var validFrom: PartialRangeFrom<Date>
@@ -42,7 +44,7 @@ struct PartialRangeMinimalTest {
     @Recordable
     struct OpenStartEvent {
         #PrimaryKey<OpenStartEvent>([\.id])
-        #Index<OpenStartEvent>([\.validThrough])
+        #Index<OpenStartEvent>([\.validThrough.upperBound])
 
         var id: Int64
         var validThrough: PartialRangeThrough<Date>
@@ -53,7 +55,7 @@ struct PartialRangeMinimalTest {
     @Recordable
     struct OpenStartExclusiveEvent {
         #PrimaryKey<OpenStartExclusiveEvent>([\.id])
-        #Index<OpenStartExclusiveEvent>([\.validUpTo])
+        #Index<OpenStartExclusiveEvent>([\.validUpTo.upperBound])
 
         var id: Int64
         var validUpTo: PartialRangeUpTo<Date>

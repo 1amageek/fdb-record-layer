@@ -97,8 +97,7 @@ struct RangeSelectivityOptimizationTests {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let indexSubspace = testSubspace.subspace("I").subspace("event_by_period")
 
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             for i in 0..<100 {
                 let lowerBound = baseDate.addingTimeInterval(Double(i * 86400))
@@ -155,8 +154,7 @@ struct RangeSelectivityOptimizationTests {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let indexSubspace = testSubspace.subspace("I").subspace("event_by_period")
 
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             for i in 0..<1000 {
                 let lowerBound = baseDate.addingTimeInterval(Double(i * 3600))  // Every hour
@@ -241,8 +239,7 @@ struct RangeSelectivityOptimizationTests {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let indexSubspace = testSubspace.subspace("I").subspace("event_by_period")
 
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             for i in 0..<100 {
                 let lowerBound = baseDate.addingTimeInterval(Double(i * 86400))
@@ -314,8 +311,7 @@ struct RangeSelectivityOptimizationTests {
 
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
 
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             // Index 1: Period index (high selectivity, 10% of records match)
             for i in 0..<100 {

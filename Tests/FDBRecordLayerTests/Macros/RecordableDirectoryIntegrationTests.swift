@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FoundationDB
 @testable import FDBRecordLayer
 
@@ -310,5 +311,70 @@ struct RecordableDirectoryIntegrationTests {
         // Clean up
         try await store.delete(by: 1)
         try await store.delete(by: 2)
+    }
+
+    @Test("directoryPathComponents is generated correctly for static path")
+    func testDirectoryPathComponentsStatic() {
+        // UserWithDirectory has static path: "app", "users"
+        let components = UserWithDirectory.directoryPathComponents
+
+        #expect(components.count == 2)
+
+        if let first = components[0] as? Path {
+            #expect(first.value == "app")
+        } else {
+            Issue.record("First component should be Path")
+        }
+
+        if let second = components[1] as? Path {
+            #expect(second.value == "users")
+        } else {
+            Issue.record("Second component should be Path")
+        }
+    }
+
+    @Test("directoryPathComponents is generated correctly for partition with Field")
+    func testDirectoryPathComponentsPartition() {
+        // TenantOrder has path: "tenants", Field(\.tenantID), "orders"
+        let components = TenantOrder.directoryPathComponents
+
+        #expect(components.count == 3)
+
+        if let first = components[0] as? Path {
+            #expect(first.value == "tenants")
+        } else {
+            Issue.record("First component should be Path")
+        }
+
+        if let _ = components[1] as? Field<TenantOrder> {
+            // Field exists, verify it has a KeyPath
+            // (We can't check the exact KeyPath value, but we can verify the type)
+        } else {
+            Issue.record("Second component should be Field<TenantOrder>")
+        }
+
+        if let third = components[2] as? Path {
+            #expect(third.value == "orders")
+        } else {
+            Issue.record("Third component should be Path")
+        }
+    }
+
+    @Test("directoryLayerType is generated correctly for recordStore")
+    func testDirectoryLayerTypeRecordStore() {
+        #expect(UserWithDirectory.directoryLayerType == .recordStore)
+        #expect(OrderWithDirectory.directoryLayerType == .recordStore)
+    }
+
+    @Test("directoryLayerType is generated correctly for partition")
+    func testDirectoryLayerTypePartition() {
+        #expect(TenantOrder.directoryLayerType == .partition)
+        #expect(ChannelMessage.directoryLayerType == .partition)
+        #expect(MultiTenantUser.directoryLayerType == .partition)
+    }
+
+    @Test("directoryLayerType is generated correctly for custom")
+    func testDirectoryLayerTypeCustom() {
+        #expect(ProductWithCustomLayer.directoryLayerType == .luceneIndex)
     }
 }

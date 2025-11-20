@@ -95,7 +95,7 @@ let versionIndex = Index(
 )
 
 // 2. Optimistic Locking
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     // Load record with current version
     let (document, currentVersion) = try await recordStore.loadWithVersion(
         primaryKey: Tuple("doc_123"),
@@ -116,7 +116,7 @@ try await database.withRecordContext { context in
 // Throws: RecordLayerError.versionMismatch if concurrent update detected
 
 // 3. Version History Query
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     // Get all versions of a record
     let versions = try await recordStore.loadVersionHistory(
         primaryKey: Tuple("doc_123"),
@@ -141,7 +141,7 @@ try await database.withRecordContext { context in
 }
 
 // 4. Auto-versioning (no expected version)
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     // Automatically assigns new version on save
     try await recordStore.save(newDocument, context: context)
     // Version is assigned at commit time via Versionstamp
@@ -312,7 +312,7 @@ actor VersionHistoryManager {
     }
 
     private func keepLastNVersions(primaryKey: Tuple, count: Int) async throws {
-        try await database.withRecordContext { context in
+        try await database.withTransaction { context in
             let transaction = context.getTransaction()
 
             // Get all versions for this primary key
@@ -753,7 +753,7 @@ let scoreRankIndex = Index(
 
 ```swift
 // 1. Get rank of a record
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     let player = try await recordStore.load(
         primaryKey: Tuple("player:123"),
         context: context
@@ -768,7 +768,7 @@ try await database.withRecordContext { context in
 }
 
 // 2. Get record by rank
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     let topPlayer = try await recordStore.getRecordByRank(
         index: "game_score_rank",
         rank: 0,  // First place
@@ -777,7 +777,7 @@ try await database.withRecordContext { context in
 }
 
 // 3. Get rank range
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     let top10 = try await recordStore.getRecordsByRankRange(
         index: "game_score_rank",
         rankRange: 0..<10,
@@ -787,7 +787,7 @@ try await database.withRecordContext { context in
 }
 
 // 4. Get nearby ranks
-try await database.withRecordContext { context in
+try await database.withTransaction { context in
     let nearby = try await recordStore.getRecordsByRankNearby(
         index: "game_score_rank",
         record: player,

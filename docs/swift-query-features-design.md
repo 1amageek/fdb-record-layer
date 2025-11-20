@@ -484,7 +484,7 @@ public struct TypedTextIndexScanPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         let transaction = context.getTransaction()
@@ -1074,7 +1074,7 @@ public struct TypedDistinctPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute child plan
@@ -1314,7 +1314,7 @@ public struct TypedFirstNPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute child plan
@@ -1494,7 +1494,7 @@ public protocol TypedElementPlan<Element>: Sendable {
 
     func execute(
         subspace: Subspace,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyElementCursor<Element>
 }
@@ -1579,7 +1579,7 @@ public struct TypedFlatMapPlan<Record: Sendable, Element: TupleElement>: TypedEl
 
     public func execute(
         subspace: Subspace,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyElementCursor<Element> {
         // Execute child plan to get records

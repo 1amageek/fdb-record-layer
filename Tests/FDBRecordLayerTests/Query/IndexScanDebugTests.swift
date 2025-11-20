@@ -87,8 +87,7 @@ struct IndexScanDebugTests {
 
         // Check what keys are actually stored for records
         print("\n=== Actual Record Keys ===\"")
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let recordSubspace = subspace.subspace("R")
             let (begin, end) = recordSubspace.range()
 
@@ -107,8 +106,7 @@ struct IndexScanDebugTests {
         }
 
         // Examine actual keys in index
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
 
             let indexSubspace = subspace.subspace("I").subspace("simple_category")
 
@@ -208,8 +206,7 @@ struct IndexScanDebugTests {
         #expect(queryResults.count == 2, "Should find 2 records with category A")
 
         // Cleanup
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }

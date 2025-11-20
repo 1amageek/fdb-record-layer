@@ -629,7 +629,7 @@ public struct TypedIntersectionPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute all child plans (returns PK-ordered cursors)
@@ -973,7 +973,7 @@ public struct TypedSortPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute child plan
@@ -1515,7 +1515,7 @@ public struct TypedUnionPlan<Record: Sendable>: TypedQueryPlan {
     public func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         snapshot: Bool
     ) async throws -> AnyTypedRecordCursor<Record> {
         // Execute all child plans (returns PK-ordered cursors)

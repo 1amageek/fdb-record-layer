@@ -95,22 +95,11 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
     /// This method:
     /// 1. Transitions index to writeOnly state
     /// 2. Clears any previous progress
-    /// 3. Builds the index in batches
+    /// 3. Builds the index in batches (or HNSW graph for vector indexes)
     /// 4. Transitions index to readable state
     ///
     /// - Parameter clearFirst: If true, clears existing progress before starting
     public func buildIndex(clearFirst: Bool = false) async throws {
-        // For HNSW-enabled vector indexes, delegate to buildHNSWIndex()
-        if case .vector = index.type,
-           index.options.vectorOptions != nil {
-            // ✅ Read strategy from Schema (runtime configuration)
-            let strategy = schema.getVectorStrategy(for: index.name)
-            if case .hnsw = strategy {
-                try await buildHNSWIndex(clearFirst: clearFirst)
-                return
-            }
-        }
-
         lock.withLock { state in
             state.startTime = Date()
             state.totalRecordsScanned = 0
@@ -132,12 +121,33 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
             logger.info("Cleared previous build progress")
         }
 
-        // Step 3: Build index in batches
-        try await buildIndexInBatches()
+        // Step 3: Build index (branch on strategy type)
+        if case .vector = index.type,
+           index.options.vectorOptions != nil {
+            // ✅ Read strategy from Schema (runtime configuration)
+            let strategy = schema.getVectorStrategy(for: index.name)
+            if case .hnsw = strategy {
+                // ✅ FIX: Build HNSW graph without early return
+                // buildHNSWIndex() expects caller to manage state (enable/makeReadable)
+                // clearFirst already handled above, so pass false here
+                try await buildHNSWIndex(clearFirst: false)
+            } else {
+                // Flat scan build (standard batch processing)
+                try await buildIndexInBatches()
+            }
+        } else {
+            // Non-vector index build (standard batch processing)
+            try await buildIndexInBatches()
+        }
 
-        // Step 4: Transition to readable
-        try await indexStateManager.makeReadable(index.name)
-        logger.info("Transitioned index '\(index.name)' to readable")
+        // Step 4: Transition to readable (if not already)
+        let finalState = try await indexStateManager.state(of: index.name)
+        if finalState != .readable {
+            try await indexStateManager.makeReadable(index.name)
+            logger.info("Transitioned index '\(index.name)' to readable")
+        } else {
+            logger.info("Index '\(index.name)' is already readable")
+        }
 
         let (totalScanned, batchCount) = lock.withLock { state in
             state.endTime = Date()
@@ -247,7 +257,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
             )
 
             // Mark this batch as complete
-            try await database.withRecordContext { [rangeSet, currentBegin] context in
+            try await database.withTransactionContext { [rangeSet, currentBegin] context in
                 try await rangeSet.insertRange(begin: currentBegin, end: batchEnd, context: context)
             }
 
@@ -279,7 +289,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         recordSubspace: Subspace,
         indexSubspace: Subspace
     ) async throws -> FDB.Bytes {
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             var recordsInBatch = 0
             var lastKey = begin
@@ -553,7 +563,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         let indexSubspace = subspace.subspace(RecordStoreKeyspace.index.rawValue)
             .subspace(index.subspaceTupleKey)
 
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
 
             // Query level assignments to find max level
@@ -634,7 +644,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         let recordSubspace = subspace.subspace(RecordStoreKeyspace.record.rawValue)
         let (begin, end) = recordSubspace.range()
 
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             var count = 0
 
@@ -664,7 +674,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         recordSubspace: Subspace,
         indexSubspace: Subspace
     ) async throws -> FDB.Bytes {
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             var recordsInBatch = 0
             var lastKey = begin
@@ -765,7 +775,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
             throw RecordLayerError.internalError("Failed to create HNSW maintainer")
         }
 
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             return try await hnswMaintainer.getMaxLevel(transaction: transaction)
         }
@@ -816,7 +826,7 @@ public final class OnlineIndexer<Record: Sendable & Recordable>: Sendable {
         recordSubspace: Subspace,
         indexSubspace: Subspace
     ) async throws -> FDB.Bytes {
-        return try await database.withRecordContext { context in
+        return try await database.withTransactionContext { context in
             let transaction = context.getTransaction()
             var recordsInBatch = 0
             var lastKey = begin

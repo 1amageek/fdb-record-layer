@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FDBRecordLayer
 
 /// Debug tests to identify Planner integration issues
@@ -179,5 +180,13 @@ private final class MockStatisticsManager: StatisticsManagerProtocol {
         recordType: String
     ) async throws -> Double {
         return 0.1
+    }
+
+    func estimateRangeSelectivity(indexName: String, queryRange: Range<Date>) async throws -> Double {
+        return 1.0
+    }
+
+    func estimateRangeSelectivity(indexName: String, lowerBound: any Comparable, upperBound: any Comparable) async throws -> Double {
+        return 1.0
     }
 }

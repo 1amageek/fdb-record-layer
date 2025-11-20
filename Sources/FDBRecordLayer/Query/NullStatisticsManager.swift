@@ -38,4 +38,16 @@ public final class NullStatisticsManager: StatisticsManagerProtocol, Sendable {
         // This is a conservative estimate used when no statistics are available
         return 0.1
     }
+
+    public func estimateRangeSelectivity(indexName: String, queryRange: Range<Date>) async throws -> Double {
+        // Default selectivity for Range queries: 10%
+        // This is a conservative estimate used when no statistics are available
+        return 0.1
+    }
+
+    public func estimateRangeSelectivity(indexName: String, lowerBound: any Comparable, upperBound: any Comparable) async throws -> Double {
+        // Default selectivity for generic Range queries: 10%
+        // This is a conservative estimate used when no statistics are available
+        return 0.1
+    }
 }

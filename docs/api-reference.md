@@ -214,7 +214,7 @@ public final class RecordStore<Record: FDBRecordCore.Record>: Sendable {
 レコードを保存します。
 
 ```swift
-public func save(_ record: Record, context: RecordContext) async throws
+public func save(_ record: Record, context: TransactionContext) async throws
 ```
 
 **動作**:
@@ -228,7 +228,7 @@ public func save(_ record: Record, context: RecordContext) async throws
 let store = RecordStore<User>(database: db, subspace: subspace, schema: schema)
 
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     try await store.save(user, context: context)
 }
 ```
@@ -242,7 +242,7 @@ try await database.withTransaction { transaction in
 ```swift
 public func load(
     primaryKey: Record.ID,
-    context: RecordContext
+    context: TransactionContext
 ) async throws -> Record?
 ```
 
@@ -251,7 +251,7 @@ public func load(
 **使用例**:
 ```swift
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     if let user = try await store.load(primaryKey: 123, context: context) {
         print("Found user: \(user.name)")
     }
@@ -267,7 +267,7 @@ try await database.withTransaction { transaction in
 ```swift
 public func delete(
     primaryKey: Record.ID,
-    context: RecordContext
+    context: TransactionContext
 ) async throws
 ```
 
@@ -279,7 +279,7 @@ public func delete(
 **使用例**:
 ```swift
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     try await store.delete(primaryKey: 123, context: context)
 }
 ```
@@ -749,12 +749,12 @@ let schemaV2 = Schema(version: 2, [User.self, Order.self])
 
 ---
 
-## RecordContext
+## TransactionContext
 
 トランザクションコンテキスト。
 
 ```swift
-public struct RecordContext: Sendable {
+public struct TransactionContext: Sendable {
     public let transaction: TransactionProtocol
 
     public init(transaction: TransactionProtocol)
@@ -766,7 +766,7 @@ public struct RecordContext: Sendable {
 **使用例**:
 ```swift
 try await database.withTransaction { transaction in
-    var context = RecordContext(transaction: transaction)
+    var context = TransactionContext(transaction: transaction)
 
     // コミット後に実行されるフック
     context.addCommitHook { result in

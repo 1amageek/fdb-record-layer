@@ -33,8 +33,7 @@ struct IndexStateManagerTests {
         #expect(state == .disabled)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -58,8 +57,7 @@ struct IndexStateManagerTests {
         #expect(newState == .writeOnly)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -86,8 +84,7 @@ struct IndexStateManagerTests {
         #expect(readableState == .readable)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -113,8 +110,7 @@ struct IndexStateManagerTests {
         #expect(state2 == .disabled)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -132,8 +128,7 @@ struct IndexStateManagerTests {
         }
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -145,7 +140,8 @@ struct IndexStateManagerTests {
         let subspace = Subspace(prefix: Array("test_consistency_\(UUID().uuidString)".utf8))
         let manager = IndexStateManager(database: db, subspace: subspace)
 
-        try await db.withRecordContext { context in
+        try await db.withTransaction { transaction in
+            let context = TransactionContext(transaction: transaction)
             // Read initial state within transaction
             let state1 = try await manager.state(of: "test_index", context: context)
             #expect(state1 == .disabled)
@@ -163,8 +159,7 @@ struct IndexStateManagerTests {
         #expect(state3 == .writeOnly)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -190,8 +185,7 @@ struct IndexStateManagerTests {
         #expect(states["index3"] == .disabled)
 
         // Cleanup
-        try await db.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await db.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }

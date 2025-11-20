@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FDBRecordLayer
 
 // MARK: - Test Models (Manual Recordable Conformance for Testing)

@@ -277,6 +277,13 @@ public struct TypedKeyExpressionQueryComponent<Record: Sendable>: TypedQueryComp
             return false
         }
 
+        // DEBUG: Print for Range boundary comparisons
+        if let rangeExpr = keyExpression as? RangeKeyExpression {
+            print("[DEBUG] RangeKeyExpression - field: \(rangeExpr.fieldName), component: \(rangeExpr.component)")
+            print("[DEBUG]   Extracted values: \(fieldValues)")
+            print("[DEBUG]   Comparison: \(comparison) with value: \(value)")
+        }
+
         // Use ANY semantics: return true if ANY element matches
         for fieldValue in fieldValues {
             let matches: Bool

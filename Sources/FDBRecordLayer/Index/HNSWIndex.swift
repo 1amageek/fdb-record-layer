@@ -1251,29 +1251,59 @@ extension GenericHNSWIndexMaintainer {
         let currentMaxLevel = try await getMaxLevel(transaction: transaction)
 
         if currentMaxLevel >= 2 {
-            // Graph is too large for inline indexing - SKIP with WARNING
+            // ❌ Graph is too large for inline indexing - THROW ERROR
+            // 🛡️ FIX: Prevent data loss by stopping writes instead of silently skipping
+            //
+            // **Why throw instead of silent skip**:
+            // - Silent skip causes permanent data loss (records not in HNSW graph)
+            // - Queries continue using HNSW search (no fallback triggered)
+            // - Missing records never appear in search results
+            // - Data integrity > availability
+            //
+            // **User must take action**:
+            // 1. Switch to .hnswBatch strategy
+            // 2. Rebuild index via OnlineIndexer
             let mValue = self.parameters.M
             let estimatedNodes = Int(pow(Double(mValue), Double(currentMaxLevel)))
             let estimatedOps = 12000 * (currentMaxLevel - 1)
 
-            Logger(label: "com.fdb.recordlayer.index.hnsw").warning("HNSW inline indexing skipped for large graph", metadata: [
-                "index": "\(index.name)",
-                "maxLevel": "\(currentMaxLevel)",
-                "estimatedNodes": "\(estimatedNodes)",
-                "estimatedOps": "\(estimatedOps)",
-                "reason": "Graph too large for inline indexing (would exceed FDB 5s timeout and 10MB limits)",
-                "recommendation": "Switch to .hnsw(inlineIndexing: false) and rebuild via OnlineIndexer"
-            ])
+            let recommendation = """
+                HNSW graph has grown beyond inline indexing capacity.
 
-            // ✅ CRITICAL: Still save vector for flat scan fallback
-            // Even though we skip HNSW graph construction, the vector data must be saved
-            // so that queries can fall back to flat scan if needed
-            let primaryKey = newRecord.extractPrimaryKey()
-            let vector = try extractVector(from: newRecord, recordAccess: recordAccess)
-            saveVectorToFlatIndex(primaryKey: primaryKey, vector: vector, transaction: transaction)
+                **Required Action**:
+                1. Change strategy to .hnswBatch (or .hnsw(inlineIndexing: false))
+                2. Rebuild index via OnlineIndexer.buildHNSWIndex()
 
-            // Skip HNSW graph insertion and return early (graceful degradation)
-            return
+                **Example**:
+                ```swift
+                let schema = Schema(
+                    [Product.self],
+                    vectorStrategies: [
+                        \\Product.embedding: .hnswBatch  // ✅ Batch indexing
+                    ]
+                )
+
+                let onlineIndexer = OnlineIndexer(store: store, indexName: "product_embedding_hnsw")
+                try await onlineIndexer.buildHNSWIndex()
+                ```
+
+                Current graph size:
+                - maxLevel: \(currentMaxLevel)
+                - Estimated nodes: ~\(estimatedNodes)
+                - Estimated FDB operations per insert: ~\(estimatedOps)
+
+                FDB Transaction Limits:
+                - Timeout: 5 seconds
+                - Size: 10MB
+                - Graph insertions at this size WILL exceed these limits
+                """
+
+            throw RecordLayerError.hnswInlineIndexingNotSupported(
+                indexName: index.name,
+                currentMaxLevel: currentMaxLevel,
+                reason: "Graph too large for inline indexing (would exceed FDB 5s timeout and 10MB limits)",
+                recommendation: recommendation
+            )
         }
 
             // ✅ Small graph (maxLevel < 2) - ALLOW inline insertion

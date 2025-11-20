@@ -234,7 +234,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ///   - record: Record to save
     ///   - context: Transaction context
     /// - Throws: RecordLayerError if save fails
-    internal func saveInternal(_ record: Record, context: RecordContext) async throws {
+    internal func saveInternal(_ record: Record, context: TransactionContext) async throws {
         // Validate @Vector and @Spatial fields before saving
         try record.validateVectorFields()
         try record.validateSpatialFields()
@@ -302,7 +302,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ///   - context: Transaction context
     /// - Returns: Record (nil if not found)
     /// - Throws: RecordLayerError if fetch fails
-    internal func fetchInternal(by primaryKey: any TupleElement, context: RecordContext) async throws -> Record? {
+    internal func fetchInternal(by primaryKey: any TupleElement, context: TransactionContext) async throws -> Record? {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace control: Always automatically add record type name (Phase 2a-1)
@@ -326,7 +326,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ///   - primaryKey: Primary key value
     ///   - context: Transaction context
     /// - Throws: RecordLayerError if delete fails
-    internal func deleteInternal(by primaryKey: any TupleElement, context: RecordContext) async throws {
+    internal func deleteInternal(by primaryKey: any TupleElement, context: TransactionContext) async throws {
         let recordAccess = GenericRecordAccess<Record>()
 
         // Subspace control: Always automatically add record type name (Phase 2a-1)
@@ -369,12 +369,11 @@ public final class RecordStore<Record: Recordable>: Sendable {
     public func save(_ record: Record) async throws {
         let start = DispatchTime.now()
 
-        do {
-            // Create transaction
-            let transaction = try database.createTransaction()
-            let context = RecordContext(transaction: transaction)
-            defer { context.cancel() }
+        // Create transaction
+        let transaction = try database.createTransaction()
+        let context = TransactionContext(transaction: transaction)
 
+        do {
             // Use common logic
             try await saveInternal(record, context: context)
 
@@ -391,6 +390,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
                 "operation": "save"
             ])
         } catch {
+            // Cancel transaction on error
+            context.cancel()
+
             // Record error metrics
             metricsRecorder.recordError(
                 operation: "save",
@@ -423,7 +425,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         do {
             // Create transaction
             let transaction = try database.createTransaction()
-            let context = RecordContext(transaction: transaction)
+            let context = TransactionContext(transaction: transaction)
             defer { context.cancel() }
 
             // Use common logic
@@ -629,7 +631,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         // 3. Verify index is in readable state
         let indexStateManager = IndexStateManager(database: database, subspace: subspace)
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let state = try await indexStateManager.state(of: targetIndex.name, context: context)
@@ -760,7 +762,7 @@ public final class RecordStore<Record: Recordable>: Sendable {
         // 3. Verify index is in readable state
         let indexStateManager = IndexStateManager(database: database, subspace: subspace)
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let state = try await indexStateManager.state(of: targetIndex.name, context: context)
@@ -849,12 +851,11 @@ public final class RecordStore<Record: Recordable>: Sendable {
     ) async throws {
         let start = DispatchTime.now()
 
-        do {
-            // Create transaction
-            let transaction = try database.createTransaction()
-            let context = RecordContext(transaction: transaction)
-            defer { context.cancel() }
+        // Create transaction
+        let transaction = try database.createTransaction()
+        let context = TransactionContext(transaction: transaction)
 
+        do {
             // Use common logic
             try await deleteInternal(by: primaryKey, context: context)
 
@@ -871,6 +872,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
                 "operation": "delete"
             ])
         } catch {
+            // Cancel transaction on error
+            context.cancel()
+
             // Record error metrics
             metricsRecorder.recordError(
                 operation: "delete",
@@ -927,18 +931,22 @@ public final class RecordStore<Record: Recordable>: Sendable {
         _ block: (RecordTransaction<Record>) async throws -> T
     ) async throws -> T {
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
-        defer { context.cancel() }
+        let context = TransactionContext(transaction: transaction)
 
-        let recordTransaction = RecordTransaction<Record>(
-            store: self,
-            context: context
-        )
+        do {
+            let recordTransaction = RecordTransaction<Record>(
+                store: self,
+                context: context
+            )
 
-        let result = try await block(recordTransaction)
-        try await context.commit()
+            let result = try await block(recordTransaction)
+            try await context.commit()
 
-        return result
+            return result
+        } catch {
+            context.cancel()
+            throw error
+        }
     }
 }
 
@@ -949,9 +957,9 @@ public final class RecordStore<Record: Recordable>: Sendable {
 /// Used to perform record operations within a transaction.
 public struct RecordTransaction<Record: Recordable> {
     private let store: RecordStore<Record>
-    internal let context: RecordContext
+    internal let context: TransactionContext
 
-    internal init(store: RecordStore<Record>, context: RecordContext) {
+    internal init(store: RecordStore<Record>, context: TransactionContext) {
         self.store = store
         self.context = context
     }
@@ -1082,7 +1090,7 @@ extension RecordStore {
             // Execute query within a single transaction to avoid race conditions
             // Index state check and query execution use the same transaction snapshot
             let indexSubspace = self.indexSubspace.subspace(function.indexName)
-            let result = try await database.withRecordContext { context in
+            let result = try await database.withTransactionContext { context in
                 // Check index state within the same transaction as the query
                 // This ensures consistency: if makeReadable() was called in the same transaction,
                 // we will see the updated state
@@ -1168,7 +1176,7 @@ extension RecordStore {
         _ function: F
     ) async throws -> [String: F.Result] where F.Result == Int64 {
         // Create context for this operation (will auto-close on deinit)
-        let context = try RecordContext(database: database)
+        let context = try TransactionContext(database: database)
 
         // Get index subspace
         let indexSubspace = self.indexSubspace.subspace(function.indexName)
@@ -1286,7 +1294,7 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
         )
     }
 
-    public struct AsyncIterator: AsyncIteratorProtocol {
+    public final class AsyncIterator: AsyncIteratorProtocol {
         public typealias Element = Record
 
         private let database: any DatabaseProtocol
@@ -1319,6 +1327,25 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
             self.snapshotReadVersion = nil
         }
 
+        /// ✅ BUG FIX: Clean up transaction when iterator is dropped mid-stream
+        ///
+        /// **Problem**: If the iterator is dropped before scan completes (e.g., early `break` in for-in loop),
+        /// the active transaction remains open until the 5-second timeout, causing resource leaks.
+        ///
+        /// **Solution**: Cancel transaction in deinit to ensure cleanup even when iterator is dropped.
+        ///
+        /// **Example scenario**:
+        /// ```swift
+        /// for try await record in store.scan(...) {
+        ///     if someCondition {
+        ///         break  // Iterator dropped here - deinit cancels transaction
+        ///     }
+        /// }
+        /// ```
+        deinit {
+            transaction?.cancel()
+        }
+
         /// Get the next key after the given key
         ///
         /// This is critical for resuming range scans without duplicates.
@@ -1340,7 +1367,7 @@ public struct RecordScanSequence<Record: Recordable>: AsyncSequence {
             return nextKey
         }
 
-        public mutating func next() async throws -> Record? {
+        public func next() async throws -> Record? {
             // Create/recreate transaction if needed (for batching to respect 5s/10MB limits)
             if kvIterator == nil {
                 // ✅ BUG FIX #7: Cancel previous transaction before creating new one

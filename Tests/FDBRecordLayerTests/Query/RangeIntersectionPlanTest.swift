@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FDBRecordLayer
 
 /// Test to verify that overlaps() queries generate IntersectionPlan
@@ -9,7 +10,8 @@ struct RangeIntersectionPlanTest {
     @Recordable
     struct Event {
         #PrimaryKey<Event>([\.id])
-        #Index<Event>([\.period])  // Auto-generates start + end indexes
+        #Index<Event>([\.period.lowerBound])  // Explicit lowerBound index
+        #Index<Event>([\.period.upperBound])  // Explicit upperBound index
 
         var id: Int64
         var period: Range<Date>
@@ -35,6 +37,14 @@ struct RangeIntersectionPlanTest {
             recordType: String
         ) async throws -> Double {
             return 0.1  // Default selectivity estimate
+        }
+
+        func estimateRangeSelectivity(indexName: String, queryRange: Range<Date>) async throws -> Double {
+            return 1.0
+        }
+
+        func estimateRangeSelectivity(indexName: String, lowerBound: any Comparable, upperBound: any Comparable) async throws -> Double {
+            return 1.0
         }
     }
 

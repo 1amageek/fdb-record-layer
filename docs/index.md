@@ -179,13 +179,13 @@ let store = try await User.openStore(database: db, schema: schema)
 // Create
 let user = User(userID: 1, email: "alice@example.com", name: "Alice", age: 30)
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     try await store.save(user, context: context)
 }
 
 // Read
 let loadedUser = try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     return try await store.load(primaryKey: 1, context: context)
 }
 
@@ -193,13 +193,13 @@ let loadedUser = try await database.withTransaction { transaction in
 var updatedUser = user
 updatedUser.age = 31
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     try await store.save(updatedUser, context: context)
 }
 
 // Delete
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     try await store.delete(primaryKey: 1, context: context)
 }
 ```
@@ -442,7 +442,7 @@ let products = try await store.query(Product.self)
 ```swift
 // トランザクションで原子性保証
 try await database.withTransaction { transaction in
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
 
     // 在庫チェック
     guard let product = try await productStore.load(primaryKey: productID, context: context),

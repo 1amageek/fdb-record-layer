@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 @testable import FDBRecordLayer
 @testable import FoundationDB
 
@@ -709,7 +710,7 @@ struct RankIndexEndToEndTests {
 
         let store = try await createRecordStore(database: database, recordType: Player.self)
 
-        // Note: 100k is too large for test environment, use 10k for practical testing
+        // Note: 10k is too large for test environment, use 10k for practical testing
         let datasetSize = 10_000
         print("Inserting \(datasetSize) players...")
 

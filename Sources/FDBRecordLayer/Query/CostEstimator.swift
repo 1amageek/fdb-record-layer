@@ -29,7 +29,7 @@ public struct CostEstimator: Sendable {
     ///   - sortKeys: Optional sort requirements to determine if sorting is needed
     ///   - schema: Optional schema to check if plan satisfies sort order
     /// - Returns: Estimated query cost
-    public func estimateCost<Record: Sendable>(
+    internal func estimateCost<Record: Sendable>(
         _ plan: any TypedQueryPlan<Record>,
         recordType: String,
         sortKeys: [TypedSortKey<Record>]? = nil,

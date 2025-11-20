@@ -23,7 +23,7 @@ public protocol CacheKeyable {
 /// **Thread Safety**: Uses Mutex for fine-grained locking.
 /// All cache operations are protected by a single mutex, providing
 /// better performance than Actor due to reduced context switching overhead.
-public final class PlanCache<Record: Sendable>: Sendable {
+internal final class PlanCache<Record: Sendable>: Sendable {
     private struct CacheState {
         var cache: [String: CachedPlan] = [:]
     }
@@ -38,7 +38,7 @@ public final class PlanCache<Record: Sendable>: Sendable {
         var hitCount: Int
     }
 
-    public init(maxSize: Int = 1000) {
+    internal init(maxSize: Int = 1000) {
         self.maxSize = maxSize
         self.state = Mutex(CacheState())
     }
@@ -49,7 +49,7 @@ public final class PlanCache<Record: Sendable>: Sendable {
     ///
     /// - Parameter query: The query to look up
     /// - Returns: The cached plan if available
-    public func get(query: TypedRecordQuery<Record>) -> (any TypedQueryPlan<Record>)? {
+    internal func get(query: TypedRecordQuery<Record>) -> (any TypedQueryPlan<Record>)? {
         let key = cacheKey(query: query)
 
         return state.withLock { state in
@@ -71,7 +71,7 @@ public final class PlanCache<Record: Sendable>: Sendable {
     ///   - query: The query
     ///   - plan: The execution plan
     ///   - cost: The estimated cost
-    public func put(
+    internal func put(
         query: TypedRecordQuery<Record>,
         plan: any TypedQueryPlan<Record>,
         cost: QueryCost
@@ -94,14 +94,14 @@ public final class PlanCache<Record: Sendable>: Sendable {
     }
 
     /// Clear all cached plans
-    public func clear() {
+    internal func clear() {
         state.withLock { state in
             state.cache.removeAll()
         }
     }
 
     /// Get cache statistics
-    public func getStats() -> CacheStats {
+    internal func getStats() -> CacheStats {
         return state.withLock { state in
             let totalHits = state.cache.values.reduce(0) { $0 + $1.hitCount }
             let avgHits = state.cache.isEmpty ? 0.0 : Double(totalHits) / Double(state.cache.count)

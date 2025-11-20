@@ -358,7 +358,7 @@ public final class RecordStore {
 
         // FDBに保存
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let recordSubspace = subspace.subspace(T.recordTypeName)
@@ -383,7 +383,7 @@ public final class RecordStore {
         let recordAccess = GenericRecordAccess<T>()
 
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let recordSubspace = subspace.subspace(T.recordTypeName)
@@ -411,7 +411,7 @@ public final class RecordStore {
         by primaryKey: any TupleElement
     ) async throws {
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         // レコード削除
@@ -433,7 +433,7 @@ public final class RecordStore {
         _ block: (RecordTransaction) async throws -> T
     ) async throws -> T {
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let recordTransaction = RecordTransaction(
@@ -502,7 +502,7 @@ public protocol IndexMaintainer: Sendable {
     func updateIndex<T: Recordable>(
         oldRecord: T?,
         newRecord: T?,
-        context: RecordContext
+        context: TransactionContext
     ) async throws
 }
 ```
@@ -523,7 +523,7 @@ internal final class IndexManager {
     /// レコード保存時にすべてのインデックスを更新
     func updateIndexes<T: Recordable>(
         for record: T,
-        context: RecordContext
+        context: TransactionContext
     ) async throws {
         let indexes = metaData.getIndexesForRecordType(T.recordTypeName)
 
@@ -541,7 +541,7 @@ internal final class IndexManager {
     func deleteIndexes<T: Recordable>(
         for type: T.Type,
         primaryKey: any TupleElement,
-        context: RecordContext
+        context: TransactionContext
     ) async throws {
         // 実装省略
     }
@@ -624,7 +624,7 @@ public final class QueryBuilder<T: Recordable> {
 
         // 実行
         let transaction = try store.database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let recordAccess = GenericRecordAccess<T>()

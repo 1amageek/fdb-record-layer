@@ -44,7 +44,7 @@ public final class IndexStateManager: Sendable {
     /// - Returns: Current IndexState
     /// - Throws: RecordLayerError if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
-        let state = try await database.withRecordContext { [subspace] context in
+        let state = try await database.withTransactionContext { [subspace] context in
             let transaction = context.getTransaction()
             let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 
@@ -75,7 +75,7 @@ public final class IndexStateManager: Sendable {
     ///   - context: The transaction context to use
     /// - Returns: Current IndexState
     /// - Throws: RecordLayerError if state value is invalid
-    public func state(of indexName: String, context: RecordContext) async throws -> IndexState {
+    internal func state(of indexName: String, context: TransactionContext) async throws -> IndexState {
         let transaction = context.getTransaction()
         let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 
@@ -104,7 +104,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: RecordLayerError.invalidStateTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
-        try await database.withRecordContext { [subspace, logger] context in
+        try await database.withTransactionContext { [subspace, logger] context in
             let transaction = context.getTransaction()
             let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 
@@ -142,7 +142,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: RecordLayerError.invalidStateTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
-        try await database.withRecordContext { [subspace, logger] context in
+        try await database.withTransactionContext { [subspace, logger] context in
             let transaction = context.getTransaction()
             let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 
@@ -179,7 +179,7 @@ public final class IndexStateManager: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
-        try await database.withRecordContext { [subspace, logger] context in
+        try await database.withTransactionContext { [subspace, logger] context in
             let transaction = context.getTransaction()
             let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 
@@ -210,7 +210,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexNames: List of index names
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
-        return try await database.withRecordContext { [subspace] context in
+        return try await database.withTransactionContext { [subspace] context in
             let transaction = context.getTransaction()
             let stateSubspace = subspace.subspace(RecordStoreKeyspace.indexState.rawValue)
             var states: [String: IndexState] = [:]
@@ -241,7 +241,7 @@ public final class IndexStateManager: Sendable {
     ///   - indexNames: List of index names
     ///   - context: The transaction context to use
     /// - Returns: Dictionary mapping index names to states
-    public func states(of indexNames: [String], context: RecordContext) async throws -> [String: IndexState] {
+    internal func states(of indexNames: [String], context: TransactionContext) async throws -> [String: IndexState] {
         let transaction = context.getTransaction()
         let stateSubspace = subspace.subspace(RecordStoreKeyspace.indexState.rawValue)
         var states: [String: IndexState] = [:]
@@ -281,7 +281,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: RecordLayerError if state transitions fail
     public func ensureReadable(_ indexName: String) async throws {
-        try await database.withRecordContext { [subspace, logger] context in
+        try await database.withTransactionContext { [subspace, logger] context in
             let transaction = context.getTransaction()
             let stateKey = Self.makeStateKey(for: indexName, in: subspace)
 

@@ -81,11 +81,11 @@ public final class IndexManager: Sendable {
     ///   - oldRecord: The old record (nil if inserting)
     ///   - context: The record context for database operations
     ///   - recordSubspace: The subspace for storing record data
-    public func updateIndexes<T: Recordable>(
+    internal func updateIndexes<T: Recordable>(
         for record: T,
         primaryKey: Tuple,
         oldRecord: T? = nil,
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace
     ) async throws {
         let recordName = T.recordName
@@ -133,10 +133,10 @@ public final class IndexManager: Sendable {
     ///   - primaryKey: The primary key of the deleted record
     ///   - context: The record context for database operations
     ///   - recordSubspace: The subspace for storing record data
-    public func deleteIndexes<T: Recordable>(
+    internal func deleteIndexes<T: Recordable>(
         oldRecord: T,
         primaryKey: Tuple,
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace
     ) async throws {
         let recordName = T.recordName

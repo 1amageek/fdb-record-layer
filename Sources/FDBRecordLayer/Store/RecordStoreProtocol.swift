@@ -4,7 +4,7 @@ import FoundationDB
 /// Protocol defining the record store interface
 ///
 /// This protocol allows for different implementations and easy mocking in tests.
-public protocol RecordStoreProtocol: Sendable {
+internal protocol RecordStoreProtocol: Sendable {
     /// The record type this store handles
     associatedtype Record: Sendable
 
@@ -18,25 +18,25 @@ public protocol RecordStoreProtocol: Sendable {
     /// - Parameters:
     ///   - record: The record to save
     ///   - context: The transaction context
-    func save(_ record: Record, context: RecordContext) async throws
+    func save(_ record: Record, context: TransactionContext) async throws
 
     /// Fetch a record by primary key
     /// - Parameters:
     ///   - primaryKey: The primary key tuple
     ///   - context: The transaction context
     /// - Returns: The record, or nil if not found
-    func fetch(primaryKey: Tuple, context: RecordContext) async throws -> Record?
+    func fetch(primaryKey: Tuple, context: TransactionContext) async throws -> Record?
 
     /// Delete a record by primary key
     /// - Parameters:
     ///   - primaryKey: The primary key tuple
     ///   - context: The transaction context
-    func delete(primaryKey: Tuple, context: RecordContext) async throws
+    func delete(primaryKey: Tuple, context: TransactionContext) async throws
 
     /// Get index state
     /// - Parameters:
     ///   - indexName: The index name
     ///   - context: The transaction context
     /// - Returns: The index state
-    func indexState(of indexName: String, context: RecordContext) async throws -> IndexState
+    func indexState(of indexName: String, context: TransactionContext) async throws -> IndexState
 }

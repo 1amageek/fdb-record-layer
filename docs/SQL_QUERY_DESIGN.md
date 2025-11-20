@@ -276,7 +276,7 @@ private func fetchCountFromIndex(
     let key = countSubspace.pack(keyTuple)
 
     let transaction = try database.createTransaction()
-    let context = RecordContext(transaction: transaction)
+    let context = TransactionContext(transaction: transaction)
     defer { context.cancel() }
 
     guard let value = try await context.read(key) else {

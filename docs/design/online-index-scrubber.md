@@ -428,7 +428,7 @@ extension OnlineIndexScrubber {
     ///   - warningCount: Current warning count (inout for limiting)
     /// - Returns: (continuation key, batch result)
     private func scrubIndexEntriesBatch(
-        context: RecordContext,
+        context: TransactionContext,
         indexSubspace: Subspace,
         recordSubspace: Subspace,
         startKey: FDB.Bytes,
@@ -463,7 +463,7 @@ extension OnlineIndexScrubber {
     ///   - warningCount: Current warning count (inout for limiting)
     /// - Returns: (continuation key, batch result)
     private func scrubRecordsBatch(
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace,
         indexSubspace: Subspace,
         startKey: FDB.Bytes,

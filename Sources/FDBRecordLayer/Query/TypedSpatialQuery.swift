@@ -119,7 +119,7 @@ public struct TypedSpatialQuery<Record: Recordable>: Sendable {
     public func execute() async throws -> [Record] {
         // Create transaction for this query execution
         let transaction = try database.createTransaction()
-        let context = RecordContext(transaction: transaction)
+        let context = TransactionContext(transaction: transaction)
         defer { context.cancel() }
 
         let plan = TypedSpatialIndexScanPlan(
@@ -168,7 +168,7 @@ struct TypedSpatialIndexScanPlan<Record: Recordable>: Sendable {
     func execute(
         subspace: Subspace,
         recordAccess: any RecordAccess<Record>,
-        context: RecordContext,
+        context: TransactionContext,
         recordSubspace: Subspace
     ) async throws -> [Record] {
         let transaction = context.getTransaction()

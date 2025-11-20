@@ -123,8 +123,7 @@ struct RecordStoreIndexIntegrationTests {
     }
 
     func cleanupSubspace(_ database: any DatabaseProtocol, _ subspace: Subspace) async throws {
-        try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
         }
@@ -136,8 +135,7 @@ struct RecordStoreIndexIntegrationTests {
         indexName: String,
         keyPrefix: Tuple
     ) async throws -> Int {
-        return try await database.withRecordContext { context in
-            let transaction = context.getTransaction()
+        return try await database.withTransaction { transaction in
             let indexNameSubspace = indexSubspace.subspace(indexName)
 
             // Extract elements from Tuple and apply them individually

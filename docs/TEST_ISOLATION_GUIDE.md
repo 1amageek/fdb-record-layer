@@ -25,7 +25,7 @@ func testMethod() async throws {
     }
 
     // Test code here...
-    try await db.withRecordContext { context in
+    try await db.withTransaction { context in
         // ...
     }
 

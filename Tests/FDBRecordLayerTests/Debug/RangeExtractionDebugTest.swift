@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+@testable import FDBRecordCore
+@testable import FoundationDB
 @testable import FDBRecordLayer
 
 /// Debug test to verify Range boundary extraction

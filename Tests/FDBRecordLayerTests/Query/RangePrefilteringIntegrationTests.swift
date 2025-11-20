@@ -15,7 +15,8 @@ struct RangePrefilteringIntegrationTests {
     @Recordable
     struct Event: Sendable {
         #PrimaryKey<Event>([\.id])
-        #Index<Event>([\.period])  // Auto-generates start + end indexes
+        #Index<Event>([\.period.lowerBound])  // Explicit lowerBound index
+        #Index<Event>([\.period.upperBound])  // Explicit upperBound index
 
         var id: Int64
         var period: Range<Date>

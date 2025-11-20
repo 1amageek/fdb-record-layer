@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+ import FDBRecordCore
 import FDBRecordLayer
 
 // MARK: - Test Types

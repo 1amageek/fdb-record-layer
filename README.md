@@ -105,6 +105,7 @@ import FDBRecordCore  // Common for iOS/macOS/Server
 struct User {
     #PrimaryKey<User>([\.userID])
     #Index<User>([\.email])
+    #Directory<User>("app", "users")  // Optional: defaults to ["User"]
 
     var userID: Int64
     var email: String
@@ -143,8 +144,10 @@ let container = try RecordContainer(
     ]
 )
 
-// 3. Get RecordStore for specific path
-let store = container.store(for: User.self, path: "app/users")
+// 3. Get RecordStore (path auto-resolved from #Directory macro)
+let store = try await container.store(for: User.self)
+// Directory path: ["app", "users"] (from #Directory macro)
+// Or: ["User"] (default if no #Directory macro)
 
 // 4. Save
 try await store.save(user)
@@ -155,7 +158,7 @@ let adults = try await store.query(User.self)
     .execute()
 
 // Optional: Use ModelContext (SwiftData-like API)
-let context = container.makeContext(path: "app/users")
+let context = try await container.makeContext(for: User.self)
 context.insert(user)
 if context.hasChanges {
     try await context.save()
@@ -189,7 +192,8 @@ let container = try RecordContainer(
     for: Product.self,
     configurations: [RecordConfiguration(schema: schema)]
 )
-let store = container.store(for: Product.self, path: "app/products")
+let store = try await container.store(for: Product.self)
+// Directory: ["Product"] (default)
 try await store.save(product)
 ```
 

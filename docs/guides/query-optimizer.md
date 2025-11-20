@@ -633,7 +633,7 @@ The Query Optimizer is fully compliant with Swift 6's strict concurrency mode:
 ```swift
 // Safe pattern: Return values from closure instead of mutating captured variables
 let (distinctValues, nullCount, minValue, maxValue) =
-    try await database.withRecordContext { context in
+    try await database.withTransaction { context in
         var localDistinctValues: Set<ComparableValue> = []
         var localNullCount: Int64 = 0
         // ... collect data

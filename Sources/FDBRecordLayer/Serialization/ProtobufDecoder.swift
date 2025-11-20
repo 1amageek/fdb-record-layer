@@ -413,6 +413,410 @@ private struct _ProtobufKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCon
             return (lowerBound...upperBound) as! T
         }
 
+        // Special handling for Range<Int>
+        if type == Range<Int>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Int64 as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int> lowerBound (field 1) not found or invalid"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Int(Int64(bitPattern: lowerBits))
+
+            // Field 2: upperBound (Int64 as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int> upperBound (field 2) not found or invalid"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Int(Int64(bitPattern: upperBits))
+
+            return (lowerBound..<upperBound) as! T
+        }
+
+        // Special handling for Range<Int64>
+        if type == Range<Int64>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int64> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Int64 as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int64> lowerBound (field 1) not found or invalid"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Int64(bitPattern: lowerBits)
+
+            // Field 2: upperBound (Int64 as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Int64> upperBound (field 2) not found or invalid"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Int64(bitPattern: upperBits)
+
+            return (lowerBound..<upperBound) as! T
+        }
+
+        // Special handling for Range<Double>
+        if type == Range<Double>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Double> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Double as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Double> lowerBound (field 1) not found or invalid"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Double(bitPattern: lowerBits)
+
+            // Field 2: upperBound (Double as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Range<Double> upperBound (field 2) not found or invalid"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Double(bitPattern: upperBits)
+
+            return (lowerBound..<upperBound) as! T
+        }
+
+        // Special handling for ClosedRange<Int>
+        if type == ClosedRange<Int>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "ClosedRange<Int> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Int64 as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid lowerBound in ClosedRange<Int>"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Int(Int64(bitPattern: lowerBits))
+
+            // Field 2: upperBound (Int64 as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid upperBound in ClosedRange<Int>"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Int(Int64(bitPattern: upperBits))
+
+            return (lowerBound...upperBound) as! T
+        }
+
+        // Special handling for ClosedRange<Int64>
+        if type == ClosedRange<Int64>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "ClosedRange<Int64> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Int64 as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid lowerBound in ClosedRange<Int64>"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Int64(bitPattern: lowerBits)
+
+            // Field 2: upperBound (Int64 as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid upperBound in ClosedRange<Int64>"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Int64(bitPattern: upperBits)
+
+            return (lowerBound...upperBound) as! T
+        }
+
+        // Special handling for ClosedRange<Double>
+        if type == ClosedRange<Double>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "ClosedRange<Double> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Double as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid lowerBound in ClosedRange<Double>"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerBound = Double(bitPattern: lowerBits)
+
+            // Field 2: upperBound (Double as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid upperBound in ClosedRange<Double>"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperBound = Double(bitPattern: upperBits)
+
+            return (lowerBound...upperBound) as! T
+        }
+
+        // Special handling for ClosedRange<Date>
+        if type == ClosedRange<Date>.self {
+            guard contains(key) else {
+                throw DecodingError.keyNotFound(
+                    key,
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "ClosedRange<Date> field not found"
+                    )
+                )
+            }
+
+            let (_, data) = try getField(for: key)
+            var offset = 0
+            let fields = Self.parseFields(from: data, offset: &offset)
+
+            // Field 1: lowerBound (Double timestamp as 64-bit)
+            guard let lowerField = fields[1], lowerField.wireType == 1, lowerField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid lowerBound in ClosedRange<Date>"
+                    )
+                )
+            }
+            let lowerBits = UInt64(lowerField.data[0]) |
+                           (UInt64(lowerField.data[1]) << 8) |
+                           (UInt64(lowerField.data[2]) << 16) |
+                           (UInt64(lowerField.data[3]) << 24) |
+                           (UInt64(lowerField.data[4]) << 32) |
+                           (UInt64(lowerField.data[5]) << 40) |
+                           (UInt64(lowerField.data[6]) << 48) |
+                           (UInt64(lowerField.data[7]) << 56)
+            let lowerTimestamp = Double(bitPattern: lowerBits)
+            let lowerBound = Date(timeIntervalSince1970: lowerTimestamp)
+
+            // Field 2: upperBound (Double timestamp as 64-bit)
+            guard let upperField = fields[2], upperField.wireType == 1, upperField.data.count == 8 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid upperBound in ClosedRange<Date>"
+                    )
+                )
+            }
+            let upperBits = UInt64(upperField.data[0]) |
+                           (UInt64(upperField.data[1]) << 8) |
+                           (UInt64(upperField.data[2]) << 16) |
+                           (UInt64(upperField.data[3]) << 24) |
+                           (UInt64(upperField.data[4]) << 32) |
+                           (UInt64(upperField.data[5]) << 40) |
+                           (UInt64(upperField.data[6]) << 48) |
+                           (UInt64(upperField.data[7]) << 56)
+            let upperTimestamp = Double(bitPattern: upperBits)
+            let upperBound = Date(timeIntervalSince1970: upperTimestamp)
+
+            return (lowerBound...upperBound) as! T
+        }
+
         // Special handling for PartialRange types
         // Check if type is one of the PartialRange types
         let isPartialRangeFrom = type == PartialRangeFrom<Date>.self
