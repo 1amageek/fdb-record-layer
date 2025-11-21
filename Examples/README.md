@@ -26,6 +26,72 @@ swift build
 
 ---
 
+## 環境変数による設定（推奨）
+
+Examples は環境変数でクラスタ設定や動作をカスタマイズできます：
+
+| 環境変数 | 説明 | デフォルト | 例 |
+|---------|------|----------|-----|
+| **FDB_CLUSTER_FILE** | クラスタファイルのパス | なし（デフォルトクラスタ） | `/etc/foundationdb/fdb.cluster` |
+| **FDB_API_VERSION** | FoundationDB APIバージョン | `710` | `730` |
+| **EXAMPLE_CLEANUP** | 実行後にデータをクリーンアップ | `true` | `false`（デバッグ用） |
+| **EXAMPLE_RUN_ID** | データ分離用の一意ID | UUID（自動生成） | `test-run-1` |
+
+### 使用例
+
+```bash
+# 本番クラスタに接続
+FDB_CLUSTER_FILE=/etc/foundationdb/prod.cluster swift run SimpleExample
+
+# データを残す（デバッグ用）
+EXAMPLE_CLEANUP=false swift run 07-VectorSearch
+
+# 複数の設定を組み合わせ
+FDB_CLUSTER_FILE=~/my-cluster.conf \
+FDB_API_VERSION=730 \
+EXAMPLE_CLEANUP=false \
+swift run 11-PerformanceOptimization
+```
+
+### CI/CD環境での使用
+
+```yaml
+# GitHub Actions例
+env:
+  FDB_CLUSTER_FILE: ${{ secrets.FDB_CLUSTER_FILE }}
+  FDB_API_VERSION: "710"
+  EXAMPLE_CLEANUP: "true"
+
+steps:
+  - name: Run examples
+    run: swift run SimpleExample
+```
+
+---
+
+## データの分離と再実行性
+
+すべての Examples は **自動的にデータを分離** します：
+
+1. **一意なRun ID**: 各実行ごとに UUID が生成され、データの衝突を防ぎます
+2. **自動クリーンアップ**: 実行後に自動的にデータを削除します（`EXAMPLE_CLEANUP=false`で無効化可能）
+3. **Subspaceプレフィックス**: `examples/<example-name>/<run-id>` 形式で分離
+
+### 手動クリーンアップ（デバッグ時）
+
+```bash
+# 特定のサンプルのデータを削除
+fdbcli --exec "clearrange \x00examples/SimpleExample \xff"
+
+# すべてのExamplesデータを削除
+fdbcli --exec "clearrange \x00examples \xff"
+
+# Vector Search例のHNSWインデックスをリセット
+# → 07-VectorSearch.swift内のresetHNSWIndex()を使用（自動）
+```
+
+---
+
 ## サンプル一覧
 
 ### 1. SimpleExample.swift - 基本的な使い方
@@ -263,14 +329,186 @@ Key Features of Macro API:
 
 ---
 
+## Advanced Examples（高度な例）
+
+基本的な例をマスターしたら、以下の高度な例で実践的なユースケースを学びましょう：
+
+### 4. 01-CRUDOperations.swift - CRUD操作の完全ガイド
+
+**内容**: User モデルを使った完全なCRUD（Create、Read、Update、Delete）操作
+
+**実行方法**:
+```bash
+swift run 01-CRUDOperations
+```
+
+**学べること**: プライマリキー検索、インデックス検索、更新、削除
+
+---
+
+### 5. 02-QueryFiltering.swift - クエリとフィルタリング
+
+**内容**: Product モデルを使った複雑なクエリパターン（価格範囲、複数条件、ソート、リミット、IN句）
+
+**実行方法**:
+```bash
+swift run 02-QueryFiltering
+```
+
+**学べること**: where句の組み合わせ、orderBy、limit、IN クエリ
+
+---
+
+### 6. 03-RangeQueries.swift - Range型クエリ
+
+**内容**: Event モデルでPartialRange（`...`、`..<`、`X...`）を使った時系列クエリ
+
+**実行方法**:
+```bash
+swift run 03-RangeQueries
+```
+
+**学べること**: PartialRangeFrom、PartialRangeThrough、PartialRangeUpTo、overlaps()
+
+---
+
+### 7. 04-IndexManagement.swift - インデックス管理
+
+**内容**: OnlineIndexerを使った既存データへのインデックス追加とバッチ構築
+
+**実行方法**:
+```bash
+swift run 04-IndexManagement
+```
+
+**学べること**: OnlineIndexer、buildIndex()、進行状況監視、バッチサイズ調整
+
+---
+
+### 8. 05-SchemaMigration.swift - スキーママイグレーション
+
+**内容**: Schema V1（インデックスなし）からV2（emailインデックス追加）への段階的マイグレーション
+
+**実行方法**:
+```bash
+swift run 05-SchemaMigration
+```
+
+**学べること**: MigrationManager、Migration定義、バージョン管理、addIndex()
+
+---
+
+### 9. 06-SpatialIndex.swift - 空間インデックス
+
+**内容**: Restaurant モデルで地理座標ベースの検索（半径検索、バウンディングボックス）
+
+**実行方法**:
+```bash
+swift run 06-SpatialIndex
+```
+
+**学べること**: @Spatial マクロ、.geo、withinRadius()、withinBoundingBox()
+
+---
+
+### 10. 07-VectorSearch.swift - ベクトル検索
+
+**内容**: Product モデルで埋め込みベクトルを使った類似商品検索（HNSW）
+
+**実行方法**:
+```bash
+swift run 07-VectorSearch
+```
+
+**学べること**: ベクトルインデックス、buildHNSWIndex()、nearestNeighbors()、O(log n)検索
+
+---
+
+### 11. 08-ECommercePlatform.swift - E-commerceプラットフォーム
+
+**内容**: 完全なE-commerceシステム（Product、Order、複合インデックス、ステータス管理）
+
+**実行方法**:
+```bash
+swift run 08-ECommercePlatform
+```
+
+**学べること**: マルチレコードタイプ、外部キー、注文履歴、カテゴリ検索
+
+---
+
+### 12. 09-SocialMedia.swift - ソーシャルメディア
+
+**内容**: SNSプラットフォーム（SocialUser、Post、Follow、タイムライン、ハッシュタグ検索）
+
+**実行方法**:
+```bash
+swift run 09-SocialMedia
+```
+
+**学べること**: フォロー関係、タイムライン生成、ハッシュタグインデックス、IN Joinクエリ
+
+---
+
+### 13. 10-IoTSensorData.swift - IoTセンサーデータ
+
+**内容**: IoTセンサー管理（時系列データ、温度異常検知、地理座標インデックス）
+
+**実行方法**:
+```bash
+swift run 10-IoTSensorData
+```
+
+**学べること**: 複合主キー（sensorID + timestamp）、時系列クエリ、異常検知、空間検索
+
+---
+
+### 14. 11-PerformanceOptimization.swift - パフォーマンス最適化
+
+**内容**: StatisticsManager、バッチ挿入、複合インデックス戦略、クエリ最適化
+
+**実行方法**:
+```bash
+swift run 11-PerformanceOptimization
+```
+
+**学べること**: 統計情報収集、バッチ処理（chunked）、インデックス選択、スループット測定
+
+---
+
+### 15. 12-ErrorHandling.swift - エラーハンドリング
+
+**内容**: リトライロジック、競合解決（OCC）、デッドロック回避、トランザクションスコープのベストプラクティス
+
+**実行方法**:
+```bash
+swift run 12-ErrorHandling
+```
+
+**学べること**: 指数バックオフ、isRetryable判定、一貫した順序アクセス、トランザクション制限
+
+---
+
 ## ファイル構造
 
 ```
 Examples/
-├── README.md               # このファイル
-├── SimpleExample.swift     # 基本的な使用例
-├── MultiTypeExample.swift  # 複数レコードタイプの例
-└── PartitionExample.swift  # マルチテナントの例
+├── README.md                        # このファイル
+├── SimpleExample.swift              # 基本的な使用例
+├── MultiTypeExample.swift           # 複数レコードタイプの例
+├── PartitionExample.swift           # マルチテナントの例
+├── 01-CRUDOperations.swift          # CRUD操作完全ガイド
+├── 02-QueryFiltering.swift          # クエリとフィルタリング
+├── 03-RangeQueries.swift            # Range型クエリ
+├── 04-IndexManagement.swift         # インデックス管理
+├── 05-SchemaMigration.swift         # スキーママイグレーション
+├── 06-SpatialIndex.swift            # 空間インデックス
+├── 07-VectorSearch.swift            # ベクトル検索
+├── 08-ECommercePlatform.swift       # E-commerceユースケース
+├── 09-SocialMedia.swift             # ソーシャルメディア
+├── 10-IoTSensorData.swift           # IoTセンサーデータ
+├── 11-PerformanceOptimization.swift # パフォーマンス最適化
+└── 12-ErrorHandling.swift           # エラーハンドリング
 ```
 
 ---
@@ -389,37 +627,229 @@ var createdAt: Date
 
 ## トラブルシューティング
 
-### FoundationDB接続エラー
+### 1. FoundationDB接続エラー
 
+**エラー**:
 ```
 Error: Could not connect to FoundationDB
+Error Domain=FDB Code=1031 "operation_timed_out"
 ```
+
+**原因**: FoundationDBが起動していない、またはクラスタファイルが見つからない
 
 **解決法**:
 ```bash
-# FoundationDBが起動しているか確認
+# 1. FoundationDBが起動しているか確認
 brew services list | grep foundationdb
 
-# 起動していない場合
+# 2. 起動していない場合
 brew services start foundationdb
 
-# ステータス確認
+# 3. ステータス確認
 fdbcli --exec "status"
+
+# 4. クラスタファイルの場所を確認
+ls -la /usr/local/etc/foundationdb/fdb.cluster
+
+# 5. カスタムクラスタファイルを使用
+FDB_CLUSTER_FILE=/path/to/custom.cluster swift run SimpleExample
 ```
 
-### ビルドエラー
+---
 
+### 2. ビルドエラー
+
+**エラー**:
 ```
 error: no such module 'FDBRecordLayer'
 ```
 
+**原因**: 依存関係が解決されていない、またはビルドキャッシュが古い
+
 **解決法**:
 ```bash
-# プロジェクトルートで
+# プロジェクトルートで完全なクリーンビルド
 swift package clean
+swift package reset
 swift package resolve
 swift build
+
+# Xcodeを使用している場合
+rm -rf .build
+rm -rf .swiftpm
+xcodebuild -scheme fdb-record-layer clean build
 ```
+
+---
+
+### 3. HNSWインデックスの再構築エラー
+
+**エラー**:
+```
+Error: HNSW index already exists in writeOnly state
+RecordLayerError.indexNotReadable
+```
+
+**原因**: 前回の実行でHNSWインデックス構築が中断された、または既にインデックスが存在する
+
+**解決法**:
+
+**Option 1: 自動リセット（推奨）**
+```swift
+// 07-VectorSearch.swiftでは自動的にresetHNSWIndex()が呼ばれます
+// EXAMPLE_CLEANUP=false の場合のみ手動リセットが必要
+```
+
+**Option 2: 手動リセット（fdbcli）**
+```bash
+# インデックスデータを削除
+fdbcli --exec "clearrange \x00examples/VectorSearch \xff"
+
+# 再実行
+swift run 07-VectorSearch
+```
+
+**Option 3: 環境変数でクリーンアップ強制**
+```bash
+EXAMPLE_CLEANUP=true swift run 07-VectorSearch
+```
+
+---
+
+### 4. データの競合エラー
+
+**エラー**:
+```
+RecordLayerError.recordAlreadyExists
+Error Domain=FDB Code=1020 "not_committed"
+```
+
+**原因**: 同じRun IDで複数回実行、または前回のデータが残っている
+
+**解決法**:
+```bash
+# 新しいRun IDで実行
+EXAMPLE_RUN_ID="new-run-$(date +%s)" swift run SimpleExample
+
+# または、データを手動削除
+fdbcli --exec "clearrange \x00examples \xff"
+```
+
+---
+
+### 5. トランザクションタイムアウト
+
+**エラー**:
+```
+Error Domain=FDB Code=1031 "operation_timed_out"
+Transaction exceeded 5 second limit
+```
+
+**原因**: 大量データ処理、HNSWインデックス構築が5秒を超えた
+
+**解決法**:
+
+**For Examples**: 自動的にバッチ処理されるため、通常は発生しません
+```swift
+// OnlineIndexerがバッチサイズを自動調整
+// batchSize: 100（デフォルト） → トランザクション制限内
+```
+
+**For 本番環境**: バッチサイズを調整
+```swift
+let onlineIndexer = OnlineIndexer(
+    store: store,
+    indexName: "product_embedding_hnsw",
+    batchSize: 50,          // ← 減らす
+    throttleDelayMs: 20     // ← 増やす
+)
+```
+
+---
+
+### 6. メモリ不足エラー
+
+**エラー**:
+```
+Process killed: out of memory
+```
+
+**原因**: ベクトル検索やSpatial Indexで大量データを一度に読み込んだ
+
+**解決法**:
+```bash
+# limit()を使用してデータ量を制限
+# 例: 11-PerformanceOptimization.swift
+swift run 11-PerformanceOptimization  # 既にlimit付き
+
+# メモリ制限を確認
+ulimit -a
+
+# メモリ制限を増やす（macOS）
+ulimit -m unlimited
+```
+
+---
+
+### 7. Directory Layer エラー
+
+**エラー**:
+```
+RecordLayerError.directoryAlreadyExists
+```
+
+**原因**: `#Directory`で指定したパスが既に存在する
+
+**解決法**:
+```bash
+# ディレクトリをリセット
+fdbcli --exec "clearrange \x00<directory-prefix> \xff"
+
+# 例: "app/users"をリセット
+fdbcli <<EOF
+writemode on
+clearrange \x00app/users \xff
+EOF
+
+# または、EXAMPLE_CLEANUP=trueで自動削除
+EXAMPLE_CLEANUP=true swift run SimpleExample
+```
+
+---
+
+### 8. デバッグモードでの実行
+
+詳細なログを出力するには：
+
+```bash
+# 環境変数でログレベルを設定
+FDB_NETWORK_OPTION_TRACE_ENABLE=1 \
+FDB_TRACE_LOG_GROUP=example \
+swift run SimpleExample
+
+# ログファイルを確認
+tail -f /tmp/fdb-trace.*.xml
+```
+
+---
+
+### よくあるエラーパターン早見表
+
+| エラーコード | 説明 | 解決法 |
+|------------|------|--------|
+| **1007** | transaction_too_old | リトライ（自動処理済み） |
+| **1020** | not_committed（競合） | リトライ、または順序アクセス修正 |
+| **1021** | commit_unknown_result | 冪等性チェック追加 |
+| **1031** | operation_timed_out | バッチサイズ削減、throttle追加 |
+| **2101** | transaction_too_large | バッチサイズ削減（<10MB） |
+
+---
+
+### サポートが必要な場合
+
+1. **ログを確認**: `fdbcli --exec "status details"`
+2. **Issues**: https://github.com/anthropics/fdb-record-layer/issues
+3. **ドキュメント**: `../CLAUDE.md`の「Part 1: エラーハンドリング」を参照
 
 ---
 

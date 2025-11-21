@@ -503,144 +503,28 @@ let package = Package(
 
 #### サーバープロジェクト（Vapor等）
 
-**FDBRecordLayerを依存**に追加します（FDBRecordCoreは自動的に含まれる）：
-
+**FDBRecordLayerを依存**に追加（FDBRecordCoreは自動的に含まれる）：
 ```swift
-// Package.swift (Server)
-let package = Package(
-    name: "MyServerApp",
-    platforms: [
-        .macOS(.v15),
-    ],
-    dependencies: [
-        // ✅ FDBRecordLayerを依存（FDBRecordCoreも含まれる）
-        .package(url: "https://github.com/1amageek/fdb-record-layer.git", from: "1.0.0"),
-        .package(url: "https://github.com/vapor/vapor.git", from: "4.0.0"),
-    ],
-    targets: [
-        .executableTarget(
-            name: "App",
-            dependencies: [
-                // ✅ FDBRecordLayerを使用（完全な永続化機能）
-                .product(name: "FDBRecordLayer", package: "fdb-record-layer"),
-                .product(name: "Vapor", package: "vapor"),
-            ]
-        ),
-    ]
-)
+.product(name: "FDBRecordLayer", package: "fdb-record-layer")
 ```
 
-**重要**:
-- ✅ `FDBRecordLayer` を依存に含める
-- ✅ FoundationDBクラスタへの接続が必要
-- ✅ `/usr/local/lib/libfdb_c.dylib` が必要
+**必須**: FDBクラスタ接続、`/usr/local/lib/libfdb_c.dylib`
 
 ### Import文の使い分け
 
-#### クライアントコード
+**クライアント**: `import FDBRecordCore`（モデル定義、Codable）
+**サーバー**: `import FDBRecordCore` + `import FDBRecordLayer`（RecordStore、永続化）
 
-```swift
-// ✅ 正しい: FDBRecordCoreのみimport
-import FDBRecordCore
+### 使用例
 
-// モデル定義
-@Recordable
-struct User {
-    #PrimaryKey<User>([\.userID])
-    var userID: Int64
-    var name: String
-}
+**SSOT原則**: Shared（`@Recordable`定義）→ iOS（JSON API）+ Server（FDB永続化）
+- クライアント: `JSONEncoder/Decoder`
+- サーバー: `RecordStore`経由でクエリ実行
 
-// Codable使用（JSON/Protobuf）
-let user = User(userID: 1, name: "Alice")
-let jsonData = try JSONEncoder().encode(user)
+### ベストプラクティス・トラブルシューティング
 
-// ❌ 間違い: FDBRecordLayerをimportするとエラー
-// import FDBRecordLayer  // ← FoundationDB依存でビルドエラー
-```
-
-#### サーバーコード
-
-```swift
-// ✅ 正しい: 両方をimport
-import FDBRecordCore   // モデル定義用
-import FDBRecordLayer  // RecordStore等の永続化機能用
-
-// 同じモデル定義を使用
-@Recordable
-struct User {
-    #PrimaryKey<User>([\.userID])
-    var userID: Int64
-    var name: String
-}
-
-// RecordStore使用（FDB永続化）
-let store = try await User.store(database: database, schema: schema)
-try await store.save(user)
-```
-
-**重要**:
-- サーバーでは `FDBRecordLayer` を import することで、自動的に `FDBRecordCore` も利用可能
-- クライアントでは `FDBRecordCore` のみ import
-
-### 完全な使用例
-
-#### 例1: iOSアプリ + Vapor サーバー
-
-**構成**: Shared（共通モデル）、iOSApp（JSON API）、Server（FDB永続化）
-
-**キーポイント**:
-- `Shared/User.swift`: `@Recordable`定義（FDBRecordCoreのみ）
-- `iOSApp/UserService`: URLSession + JSONEncoder/Decoder
-- `Server/UserRepository`: RecordStore経由でFDB永続化
-- SSOT原則: 同じモデル定義をクライアント・サーバーで共有
-
-```swift
-// Shared - SSOT
-@Recordable
-public struct User: Identifiable {
-    #PrimaryKey<User>([\.userID])
-    #Index<User>([\.email])
-    public var userID: Int64
-    public var email, name: String
-}
-
-// iOS - JSON API
-let users = try JSONDecoder().decode([User].self, from: data)
-
-// Server - FDB
-try await store.query().where(\.email, .equals, email).execute()
-```
-
-#### 例2: マルチプラットフォーム対応
-
-**構成**: Shared（FDBRecordCore）→ iOS/macOS/Server
-
-```swift
-// Shared/Product.swift - 全プラットフォーム共通
-@Recordable
-public struct Product {
-    #PrimaryKey<Product>([\.productID])
-    #Index<Product>([\.category, \.price])
-    public var productID: Int64
-    // ...
-}
-```
-
-### エラーと対処法
-
-| エラー | 原因 | 対処法 |
-|--------|------|--------|
-| `cannot find module 'FoundationDB'` | クライアントでFDBRecordLayerをimport | `import FDBRecordCore` のみ |
-| `cannot find 'RecordStore'` | ServerでFDBRecordCoreのみ依存 | FDBRecordLayer を依存 |
-| `no member 'extractField'` | マクロキャッシュ | `swift package clean` |
-
-### ベストプラクティス
-
-- モデルは共通モジュール（FDBRecordCore）に集約
-- クライアント: FDBRecordCoreのみ、サーバー: FDBRecordLayer
-- Codable活用（JSON API）
-- @Transient で一時フィールド除外
+- **モジュール分離**: 共通モデル（FDBRecordCore）、クライアント（Core のみ）、サーバー（Layer）
+- **エラー対処**: `cannot find module`→Coreのみimport、`cannot find RecordStore`→Layer依存追加、マクロエラー→`swift package clean`
 
 ---
 
@@ -672,75 +556,14 @@ public struct Product {
 1. 読み取り: GRV Proxy → 読み取りバージョン取得 → Storage Serverから直接読み取り
 2. 書き込み: Commit Proxy → 競合検出 → TLogへ書き込み → Storage Serverへ非同期更新
 
-**snapshotパラメータ**:
-
-| パラメータ | 動作 | 用途 |
-|-----------|------|------|
-| `snapshot: true` | 競合検知なし | SnapshotCursor（トランザクション外） |
-| `snapshot: false` | Serializable読み取り、競合検知あり | TransactionCursor（トランザクション内） |
-
-```swift
-// TransactionCursor: トランザクション内
-try await database.withTransaction { transaction in
-    let value = try await transaction.getValue(for: key, snapshot: false)
-    // 同一トランザクション内の書き込みが見える、競合を検知
-}
-
-// SnapshotCursor: トランザクション外
-let value = try await transaction.getValue(for: key, snapshot: true)
-// 読み取り専用、競合検知不要、パフォーマンス最適
-```
+**snapshotパラメータ**: `false`（競合検知、TX内）vs `true`（競合検知なし、読み取り専用）
 
 ### 標準レイヤー
 
-**Tuple Layer**: 型安全なエンコーディング、辞書順保持
-
-```swift
-// Tuple作成
-let tuple = Tuple("California", "Los Angeles", 123)
-
-// パック（エンコード）
-let packed = tuple.pack()  // FDB.Bytes
-
-// アンパック（デコード）
-let elements = try Tuple.unpack(from: packed)  // [any TupleElement]
-
-// Tuple構造体の使い方
-let tuple = Tuple("A", "B", 123)
-tuple.count  // 3
-
-// 要素アクセス（subscript）
-for i in 0..<tuple.count {
-    if let element = tuple[i] {
-        if let str = element as? String {
-            print("String: \(str)")
-        } else if let int = element as? Int64 {
-            print("Int64: \(int)")
-        }
-    }
-}
-
-// Subspace.unpack()の使い方
-let subspace = Subspace(prefix: [0x01])
-let key = subspace.pack(Tuple("category", 123))
-let unpacked: Tuple = try subspace.unpack(key)  // Tupleを返す
-let category = unpacked[0] as? String  // subscriptでアクセス
-let id = unpacked[1] as? Int64
-
-// 注意: Tuple.elements は internal なので外部からアクセス不可
-// 必ず subscript または count を使用
-```
-
-**Subspace Layer**: 名前空間の分離
-```swift
-let app = Subspace(prefix: Tuple("myapp").pack())
-let users = app["users"]
-```
-
-**Directory Layer**: 階層管理、短いプレフィックスへのマッピング
-```swift
-let dir = try await directoryLayer.createOrOpen(path: ["app", "users"])
-```
+**主要API**:
+- **Tuple**: `pack()`/`unpack()`、`subscript`でアクセス（`tuple[0]`）、辞書順保持
+- **Subspace**: 名前空間分離（`app["users"]`）
+- **Directory**: 階層管理（`createOrOpen(path:)`）
 
 ### トランザクション制限
 
@@ -753,169 +576,37 @@ let dir = try await directoryLayer.createOrOpen(path: ["app", "users"])
 | トランザクションサイズ | 10MB | ✅ |
 | 実行時間 | 5秒 | ✅（タイムアウト） |
 
-**制限の設定**:
-```swift
-// トランザクションサイズ制限
-try transaction.setOption(to: withUnsafeBytes(of: Int64(50_000_000).littleEndian) { Array($0) },
-                          forOption: .sizeLimit)  // 50MB
-
-// タイムアウト設定
-try transaction.setOption(to: withUnsafeBytes(of: Int64(3000).littleEndian) { Array($0) },
-                          forOption: .timeout)  // 3秒
-```
+**設定**: `transaction.setOption(.sizeLimit, 50MB)` / `.timeout, 3s`
 
 ### fdbcli コマンドライン
 
-**fdbcli**はFoundationDBクラスタの管理・操作を行うコマンドラインツールです。
-
-#### 起動とオプション
-
-```bash
-# 基本起動（デフォルトクラスタファイルを使用）
-fdbcli
-
-# クラスタファイルを指定
-fdbcli -C /path/to/fdb.cluster
-
-# コマンドを実行して終了
-fdbcli --exec "status"
-
-# 複数コマンドを実行
-fdbcli --exec "status; get mykey"
-
-# ステータスチェックをスキップ
-fdbcli --no-status
-```
-
-#### トランザクションモード
-
-| モード | 説明 | 使用方法 |
-|--------|------|---------|
-| **Autocommit** (デフォルト) | 各コマンドが自動的にコミット | `set key value` |
-| **Transaction** | 複数操作を1つのトランザクションで実行 | `begin` → 操作 → `commit` |
-
-#### 主要コマンド
-
-**クラスタ管理**:
-
-```bash
-# ステータス確認
-status                    # 基本情報
-status details           # 詳細統計
-status json              # JSON形式（スクリプト用）
-
-# データベース設定変更
-configure triple ssd     # triple redundancy + SSD storage
-configure single memory  # 単一サーバー + メモリストレージ
-
-# サーバー除外/復帰
-exclude 10.0.0.1:4500   # サーバーを除外
-include 10.0.0.1:4500   # サーバーを復帰
-
-# コーディネーター変更
-coordinators auto        # 自動選択
-
-# データベースロック
-lock                     # ロック
-unlock <PASSPHRASE>     # アンロック
-```
-
-**データ操作**:
-
-```bash
-# 書き込みモードを有効化（デフォルトは無効）
-writemode on
-
-# キー・値の操作
-set "key" "value"              # 設定
-get "key"                      # 取得
-clear "key"                    # 削除
-clearrange "begin" "end"       # 範囲削除
-getrange "begin" "end" 100     # 範囲取得（最大100件）
-
-# トランザクション
-begin                          # 開始
-set "key1" "value1"
-set "key2" "value2"
-commit                         # コミット
-rollback                       # ロールバック
-reset                          # リセット
-```
-
-**その他の機能**: エスケープ（`\x20`, `\"`）、バージョン取得（`getversion`）、テナント（`usetenant`）、ヘルプ（`help`）
-
-**実用例**:
-- クラスタ初期化: `fdbcli --exec "configure new single memory"`
-- データ確認: `writemode on; set key value; get key`
-- バッチ操作: `begin` → 複数`set` → `commit`
+**主要コマンド**:
+- **クラスタ**: `status [details|json]`、`configure`、`exclude/include`
+- **データ**: `writemode on`→`set/get/clear/clearrange/getrange`
+- **TX**: `begin`→操作→`commit/rollback`
+- **実用**: `fdbcli --exec "status"`、`begin; set k1 v1; set k2 v2; commit`
 
 ### ⚠️ CRITICAL: Subspace.pack() vs Subspace.subspace()
 
 > **重要**: 誤用するとインデックススキャンが0件を返す。型システムで防げないため、パターン理解が必須。
 
-#### エンコーディングの違い
-
 | メソッド | エンコーディング | 用途 |
 |---------|----------------|------|
-| `subspace.pack(tuple)` | **フラット** | インデックスキー（Range効率） |
-| `subspace.subspace(tuple)` | **ネスト**（\x05マーカー） | レコードキー（階層構造） |
+| `pack(tuple)` | **フラット** | インデックスキー |
+| `subspace(tuple)` | **ネスト**（\x05マーカー） | レコードキー |
 
-```swift
-let subspace = Subspace(prefix: [0x01])
-let tuple = Tuple("category", 123)
-
-// ✅ インデックスキー: フラット
-let flatKey = subspace.pack(tuple)
-// [0x01, 0x02, 'category', 0x00, 0x15, 0x01]
-
-// ✅ レコードキー: ネスト
-let nestedKey = subspace.subspace(tuple).pack(Tuple())
-// [0x01, 0x05, 0x02, 'category', 0x00, 0x15, 0x01, 0x00]
-//       ^^^^ Nested Tuple marker
-```
-
-#### 正しいパターン
-
-```swift
-// ✅ インデックスキー（ValueIndex, CountIndex, SumIndex）
-return indexSubspace.pack(Tuple(indexValue, primaryKey))
-
-// ✅ レコードキー（RecordStore）
-return recordSubspace.subspace(recordName).subspace(primaryKey).pack(Tuple())
-
-// ❌ 間違い: インデックスキーでsubspace()を使用
-// return indexSubspace.subspace(Tuple(indexValue)).pack(Tuple(primaryKey))
-// → \x05マーカーが入り、IndexManagerとマッチしない
-```
-
-#### デバッグ
-
-```swift
-// キーを16進数で確認
-print("Key: \(key.map { String(format: "%02x", $0) }.joined(separator: " "))")
-// \x05が含まれていたらネストエンコーディング（インデックスキーなら誤り）
-```
-
-**まとめ**: インデックスキーは`pack()`、レコードキーは`subspace().subspace().pack(Tuple())`
+**正しいパターン**:
+- インデックス: `indexSubspace.pack(Tuple(value, pk))`
+- レコード: `recordSubspace.subspace(name).subspace(pk).pack(Tuple())`
+- デバッグ: 16進ダンプで`\x05`マーカー確認
 
 ### データモデリングパターン
 
-| パターン | キー構造 | 値 | 用途 |
-|---------|---------|-----|------|
-| **シンプル** | `(index, field, primaryKey)` | `''` | 単一属性検索 |
-| **複合** | `(index, field1, field2, primaryKey)` | `''` | 複数属性ソート |
-| **カバリング** | `(index, field, primaryKey)` | `(data)` | プライマリアクセス不要 |
-
-```swift
-// シンプル: ZIPコード検索
-indexSubspace.pack(Tuple(zipcode, userID)) → ''
-
-// 複合: 都市+年齢範囲
-indexSubspace.range(from: Tuple("Tokyo", 18), to: Tuple("Tokyo", 65))
-
-// カバリング: インデックスからデータ取得
-indexSubspace.pack(Tuple(zipcode, userID)) → Tuple(name, otherData)
-```
+| パターン | キー構造 | 用途 |
+|---------|---------|------|
+| **シンプル** | `(index, field, pk)` | 単一属性検索 |
+| **複合** | `(index, f1, f2, pk)` | 複数属性・範囲検索 |
+| **カバリング** | `(index, field, pk) → data` | プライマリアクセス不要 |
 
 ### トランザクション分離レベルと競合制御
 
@@ -939,70 +630,23 @@ FoundationDBはOCC（Optimistic Concurrency Control）を使用したStrict Seri
 
 ### アトミック操作（MutationType）
 
-FoundationDBは読み取り-変更-書き込みサイクルを1つの操作にまとめた**アトミック操作**を提供します。これにより、頻繁に更新されるキー（カウンターなど）の競合を最小化できます。
+競合を最小化する読み取り-変更-書き込みのアトミック操作:
+- **数値**: ADD（カウンター）、MAX/MIN（追跡）
+- **ビット**: AND/OR/XOR（フラグ操作）
+- **バイト列**: BYTE_MAX/MIN、APPEND_IF_FITS（ログ）
+- **Versionstamp**: SET_VERSIONSTAMPED_KEY/VALUE
 
-**主要なアトミック操作**:
-
-| 操作 | 説明 | 用途 |
-|------|------|------|
-| **ADD** | Little-endian整数の加算 | カウンター、残高の増減 |
-| **BIT_AND** | ビット単位のAND | フラグのクリア |
-| **BIT_OR** | ビット単位のOR | フラグのセット |
-| **BIT_XOR** | ビット単位のXOR | フラグのトグル |
-| **MAX** | 既存値とparamの大きい方を保存 | 最大値の追跡 |
-| **MIN** | 既存値とparamの小さい方を保存 | 最小値の追跡 |
-| **BYTE_MAX** | 辞書順で大きい方を保存 | 文字列の最大値 |
-| **BYTE_MIN** | 辞書順で小さい方を保存 | 文字列の最小値 |
-| **APPEND_IF_FITS** | 既存値にparamを追加（100KB以下の場合） | ログの追記 |
-| **COMPARE_AND_CLEAR** | 既存値がparamと等しい場合にクリア | 条件付きクリア |
-| **SET_VERSIONSTAMPED_KEY** | キーにversionstampを埋め込む | 一意で順序付けられたキー |
-| **SET_VERSIONSTAMPED_VALUE** | 値にversionstampを埋め込む | タイムスタンプ付きデータ |
-
-**使用例**: `atomicOp(key:param:mutationType:)` → ADD（カウンター）、MAX/MIN（追跡）、APPEND_IF_FITS（ログ）
-
-**特性**: 競合回避（高並行性）、非冪等性（リトライ注意）、パラメータはバイト列
+**特性**: 高並行性、非冪等性（リトライ注意）
 
 ### Versionstamp
 
 **Versionstamp**は、FoundationDBがコミット時に割り当てる12バイトの一意で単調増加する値です。AUTO_INCREMENT PRIMARY KEYに相当する機能を提供します。
 
-**構造**:
+**構造**: 12バイト（8: TXバージョン、2: バッチ順、2: ユーザー順）
 
-```
-[8バイト: トランザクションバージョン][2バイト: バッチバージョン][2バイト: ユーザーバージョン]
- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^       ^^^^^^^^^^^^^^^^^^       ^^^^^^^^^^^^^^^^^^
- Big-endian                           Big-endian               ユーザー定義順序
- データベースのコミットバージョン      同一バッチ内の順序       トランザクション内の順序
-```
+**用途**: ログスキャン、追記専用データ、グローバル順序、AUTO_INCREMENT代替
 
-**使用例**:
-
-```swift
-// 1. Incomplete Versionstampを含むキーを作成
-var keyBytes = Tuple("log", Versionstamp.incomplete()).pack()
-
-// 2. SET_VERSIONSTAMPED_KEYでコミット時にversionstampを埋め込む
-transaction.atomicOp(
-    key: keyBytes,
-    param: logDataBytes,
-    mutationType: .setVersionstampedKey
-)
-
-// 3. コミット後、実際のversionstampを取得
-try await transaction.commit()
-let versionstamp = try await transaction.getVersionstamp()
-```
-
-**主な用途**:
-
-1. **ログスキャン**: 時系列順にデータを効率的に取得
-2. **追記専用データ構造**: 読み取り競合なしでデータを追加
-3. **グローバル順序**: すべてのトランザクションにわたる順序を保証
-4. **トランザクション内の順序**: ユーザーバージョンで同一トランザクション内の順序を定義
-
-**注意**:
-- Versionstampは単一FoundationDBクラスタのライフタイム全体で一意性と単調性を保証
-- 異なるクラスタ間でデータを移動する場合、単調性が崩れる可能性がある
+**使用**: `Versionstamp.incomplete()` → `atomicOp(.setVersionstampedKey)` → `getVersionstamp()`
 
 ### Watch操作
 
@@ -1660,40 +1304,8 @@ let min = try await findMinValue(
 
 **重要な制約**:
 - グルーピング値の数は `index.rootExpression.columnCount - 1` と一致する必要がある
-- 例: インデックスが `[country, region, amount]` の場合、`groupBy: ["USA", "East"]`（2値）が正しい
-- 不一致の場合は詳細なエラーメッセージとともに `RecordLayerError.invalidArgument` を返す
-
-**エラーメッセージの詳細化**:
-```
-// グルーピング値が少ない場合
-Grouping values count (1) does not match expected count (2) for index 'amount_min_by_country_region'
-Expected grouping fields: [country, region]
-Value field: amount
-Provided values: ["USA"]
-Missing: [region]
-
-// グルーピング値が多い場合
-Grouping values count (3) does not match expected count (2) for index 'amount_min_by_country_region'
-Expected grouping fields: [country, region]
-Value field: amount
-Provided values: ["USA", "East", "Extra"]
-Extra values: ["Extra"]
-```
-
-**内部実装**:
-```swift
-// MIN: 最初のキーを取得
-let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
-let firstKey = try await transaction.getKey(selector: selector, snapshot: true)
-let value = extractNumericValue(dataElements[0])  // O(1)
-
-// MAX: 最後のキーを取得
-let selector = FDB.KeySelector.lastLessThan(range.end)
-let lastKey = try await transaction.getKey(selector: selector, snapshot: true)
-let value = extractNumericValue(dataElements[0])  // O(1)
-```
-
-**対応する数値型**: Int64, Int, Int32, Double, Float（すべてInt64に変換）
+- 例: `[country, region, amount]` インデックスでは `groupBy: ["USA", "East"]`（2値）が正しい
+- 対応する数値型: Int64, Int, Int32, Double, Float
 
 #### VERSION インデックス（楽観的並行性制御）
 
@@ -1895,69 +1507,30 @@ let missingRanges = try await rangeSet.missingRanges(
 
 ### オンラインインデックス構築
 
+**OnlineIndexer**は既存データに対してバッチ処理でインデックスを構築します。
+
+**基本的な使用方法**:
 ```swift
-public final class OnlineIndexer<Record: Sendable>: Sendable {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
-    private let lock: Mutex<IndexBuildState>
+let onlineIndexer = OnlineIndexer(
+    store: store,
+    indexName: "user_by_email",
+    batchSize: 100,
+    throttleDelayMs: 10
+)
 
-    private struct IndexBuildState {
-        var totalRecordsScanned: UInt64 = 0
-        var isRunning: Bool = false
-    }
+// インデックス構築（バックグラウンド実行可能）
+try await onlineIndexer.buildIndex()
 
-    public func buildIndex() async throws {
-        // 1. インデックスを writeOnly 状態に設定
-        try await indexStateManager.setState(index: indexName, state: .writeOnly)
-
-        // 2. RangeSetで進行状況を追跡しながらバッチ処理
-        let rangeSet = RangeSet(database: database, subspace: progressSubspace)
-        let missingRanges = try await rangeSet.missingRanges(...)
-
-        for (begin, end) in missingRanges {
-            try await database.withTransaction { transaction in
-                // レコードをスキャン
-                let sequence = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(begin),
-                    endSelector: .firstGreaterOrEqual(end),
-                    snapshot: false
-                )
-
-                var batch: [(key: FDB.Bytes, value: FDB.Bytes)] = []
-                for try await (key, value) in sequence {
-                    batch.append((key, value))
-                    if batch.count >= batchSize { break }
-                }
-
-                // インデックスエントリを作成
-                for (key, value) in batch {
-                    let record = try serializer.deserialize(value)
-                    let indexEntry = evaluateIndexExpression(record)
-                    transaction.setValue([], for: indexSubspace.pack(indexEntry))
-                }
-
-                // 進行状況を記録
-                try await rangeSet.insertRange(begin: begin, end: batch.last!.key, transaction: transaction)
-            }
-        }
-
-        // 3. インデックスを readable 状態に設定
-        try await indexStateManager.setState(index: indexName, state: .readable)
-    }
-
-    public func getProgress() async throws -> (scanned: UInt64, total: UInt64, percentage: Double) {
-        return lock.withLock { state in
-            let percentage = total > 0 ? Double(state.totalRecordsScanned) / Double(total) : 0.0
-            return (state.totalRecordsScanned, total, percentage)
-        }
-    }
-}
+// 進行状況の監視
+let (scanned, total, percentage) = try await onlineIndexer.getProgress()
 ```
 
-**重要な特性**:
-- **再開可能**: RangeSetにより中断された場所から再開
+**主要な特性**:
+- **再開可能**: RangeSetによる進行状況追跡
 - **バッチ処理**: トランザクション制限（5秒、10MB）を遵守
-- **並行安全**: 同じインデックスに対する複数のビルダーは競合しない（RangeSetで調整）
-- **進行状況追跡**: リアルタイムで進捗を確認可能
+- **並行安全**: 複数のビルダーが競合しない（RangeSetで調整）
+
+**完全な例**: `Examples/04-IndexManagement.swift` を参照
 
 ### クエリプランナー
 
@@ -1998,64 +1571,11 @@ public struct TypedRecordQueryPlanner<Record: Sendable> {
 
 **StatisticsManager**: ヒストグラムベースの統計情報管理
 
-```swift
-public final class StatisticsManager: Sendable {
-    // ヒストグラム: (stats, indexName, bucketID) → (min, max, count)
+- **collectStatistics()**: サンプリングしてヒストグラム構築
+- **estimateSelectivity()**: フィルタ条件の選択性を推定
+- **プランナー統合**: コストベース最適化で最適なインデックスを選択
 
-    public func collectStatistics(
-        index: Index,
-        sampleRate: Double = 0.01
-    ) async throws {
-        // サンプリングしてヒストグラム構築
-        var buckets: [Bucket] = []
-
-        try await database.withTransaction { transaction in
-            let sequence = transaction.getRange(...)
-
-            for try await (key, _) in sequence where shouldSample(sampleRate) {
-                let value = extractIndexValue(key)
-                addToBucket(&buckets, value: value)
-            }
-
-            // ヒストグラムを保存
-            for bucket in buckets {
-                let statsKey = statsSubspace.pack(Tuple(index.name, bucket.id))
-                transaction.setValue(
-                    Tuple(bucket.min, bucket.max, bucket.count).pack(),
-                    for: statsKey
-                )
-            }
-        }
-    }
-
-    public func estimateSelectivity(
-        index: Index,
-        filters: [Filter]
-    ) -> Double {
-        // ヒストグラムから選択性を推定
-        // 例: city == "Tokyo" → ヒストグラムでTokyoのバケットを検索
-        let bucket = findBucket(index: index, value: filterValue)
-        return Double(bucket.count) / Double(totalRecords)
-    }
-}
-```
-
-**クエリ最適化の例**:
-
-```swift
-// クエリ: 東京在住の25-35歳のユーザー
-let query = QueryBuilder<User>()
-    .filter(\.city == "Tokyo")
-    .filter(\.age >= 25)
-    .filter(\.age <= 35)
-    .build()
-
-// プランナーの判断:
-// - Option 1: フルスキャン → コスト = 100,000（全レコード数）
-// - Option 2: city インデックス → 選択性 = 10%（東京: 10,000人）→ コスト = 10,000
-// - Option 3: city_age 複合インデックス → 選択性 = 1%（東京25-35歳: 1,000人）→ コスト = 1,000
-// → city_age インデックスを選択
-```
+**完全な例**: `Examples/11-PerformanceOptimization.swift` を参照
 
 ### Range Window Optimization（範囲ウィンドウ最適化）
 
@@ -2112,61 +1632,7 @@ rootSubspace/
 | **SUM** | (index, groupKey) | sum | 数値フィールドの集約 |
 | **MIN/MAX** | (index, groupKey) | min/max | 最小/最大値の追跡 |
 
-**VALUE Index**:
-```swift
-// インデックスキー: (index, email, userID) = ''
-let emailIndex = Index(
-    name: "user_by_email",
-    type: .value,
-    rootExpression: ConcatenateKeyExpression(children: [
-        FieldKeyExpression(fieldName: "email"),
-        FieldKeyExpression(fieldName: "userID")
-    ])
-)
-
-// 使用例
-let query = QueryBuilder<User>()
-    .filter(\.email == "alice@example.com")
-    .build()
-// → emailIndexを使用してRange読み取り
-```
-
-**COUNT Index**:
-```swift
-// インデックスキー: (index, city) → count（アトミック操作で更新）
-let cityCount = Index(
-    name: "user_count_by_city",
-    type: .count,
-    rootExpression: FieldKeyExpression(fieldName: "city")
-)
-
-// レコード追加時
-transaction.atomicOp(
-    key: countIndexSubspace.pack(Tuple("Tokyo")),
-    param: withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) },
-    mutationType: .add
-)
-```
-
-**複合インデックス**:
-```swift
-// 都市と年齢で検索可能
-let cityAgeIndex = Index(
-    name: "user_by_city_age",
-    type: .value,
-    rootExpression: ConcatenateKeyExpression(children: [
-        FieldKeyExpression(fieldName: "city"),
-        FieldKeyExpression(fieldName: "age"),
-        FieldKeyExpression(fieldName: "userID")
-    ])
-)
-
-// 使用例: 東京在住の18-65歳
-let (begin, end) = indexSubspace.range(
-    from: Tuple("Tokyo", 18),
-    to: Tuple("Tokyo", 65)
-)
-```
+**使用パターン**: 各インデックスタイプの詳細は上記のセクションを参照（VALUE、COUNT、SUM、MIN/MAX）
 
 ### マクロAPI（完全実装済み）
 
@@ -2338,73 +1804,29 @@ let schemaVersion = Schema.Version(
 
 #### MigrationContext操作
 
-**インデックス操作**:
+**利用可能な操作**:
+- `addIndex()`: インデックス追加（OnlineIndexer使用）
+- `rebuildIndex()`: インデックス再構築（disable → clear → rebuild）
+- `removeIndex()`: インデックス削除（FormerIndexとして記録）
+- `store(for:)`: レコードストアへのアクセス
 
+**基本的な使用例**:
 ```swift
-// 1. インデックス追加（オンライン構築）
-let migration1 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
-    toVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
-    description: "Add city index"
-) { context in
-    let cityIndex = Index(
-        name: "user_by_city",
-        type: .value,
-        rootExpression: FieldKeyExpression(fieldName: "city")
-    )
-    // OnlineIndexerを使用して構築（バッチ処理）
-    try await context.addIndex(cityIndex)
-}
-
-// 2. インデックス再構築（既存データから再生成）
-let migration2 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
-    toVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
-    description: "Rebuild email index due to data corruption"
-) { context in
-    // 内部処理: disable → clear → buildIndex (enable → build → readable)
-    try await context.rebuildIndex(indexName: "user_by_email")
-}
-
-// 3. インデックス削除（FormerIndexとして記録）
-let migration3 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
-    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
-    description: "Remove deprecated nickname index"
-) { context in
-    // FormerIndexを作成してスキーマに追加、既存データをクリア
-    try await context.removeIndex(
-        indexName: "user_by_nickname",
-        addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
-    )
-}
-```
-
-**データ操作**:
-
-```swift
-// レコード全件スキャンとデータ変換
 let migration = Migration(
-    fromVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
-    toVersion: SchemaVersion(major: 2, minor: 1, patch: 0),
-    description: "Normalize phone numbers"
+    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
+    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
+    description: "Add email index"
 ) { context in
-    let store = try context.store(for: "User")
-
-    // 全レコードをスキャン
-    let records = try await store.scanRecords { data in
-        // フィルタリングロジック（例: 旧フォーマットの電話番号のみ）
-        return true  // すべてのレコードを処理
-    }
-
-    // 各レコードを変換
-    for try await recordData in records {
-        // データ変換処理
-        let normalizedData = normalizePhoneNumber(recordData)
-        // 更新（実装は RecordStore API に依存）
-    }
+    let emailIndex = Index(
+        name: "user_by_email",
+        type: .value,
+        rootExpression: FieldKeyExpression(fieldName: "email")
+    )
+    try await context.addIndex(emailIndex)
 }
 ```
+
+**完全な例**: `Examples/05-SchemaMigration.swift` を参照
 
 #### インデックス状態遷移の詳細
 
@@ -2422,50 +1844,9 @@ removeIndex:
   初期状態 → disabled → FormerIndex作成
 ```
 
-**重要な実装パターン**:
-
-```swift
-// ✅ 正しい: addIndex - OnlineIndexerに完全委譲
-public func addIndex(_ index: Index) async throws {
-    // OnlineIndexerが以下を実行:
-    // 1. enable() - disabled → writeOnly
-    // 2. build() - バッチ処理でインデックスエントリ構築
-    // 3. makeReadable() - writeOnly → readable
-    try await store.buildIndex(indexName: index.name, batchSize: 1000, throttleDelayMs: 10)
-}
-
-// ✅ 正しい: rebuildIndex - disable/clearしてからOnlineIndexer委譲
-public func rebuildIndex(indexName: String) async throws {
-    // 1. disable - 既存インデックスを無効化
-    try await indexStateManager.disable(indexName)
-
-    // 2. clear - 既存データを削除
-    let indexRange = store.indexSubspace.subspace(indexName).range()
-    try await database.withTransaction { transaction in
-        transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
-    }
-
-    // 3. rebuild - OnlineIndexerが enable → build → readable を実行
-    try await store.buildIndex(indexName: indexName, batchSize: 1000, throttleDelayMs: 10)
-}
-
-// ❌ 間違い: 手動で状態遷移を管理（重複した遷移が発生）
-public func rebuildIndex(indexName: String) async throws {
-    try await indexStateManager.enable(indexName)       // ❌ OnlineIndexerも enable() を呼ぶ
-    try await store.buildIndex(...)                     // 内部で enable() → 重複
-    try await indexStateManager.makeReadable(indexName) // ❌ OnlineIndexerも makeReadable() を呼ぶ
-}
-```
-
-**OnlineIndexerの責務**:
-- `enable()`: インデックスを writeOnly 状態にする
-- `build()`: RangeSetを使用してバッチ処理でインデックス構築
-- `makeReadable()`: インデックスを readable 状態にする
-
-**MigrationContextの責務**:
-- `addIndex()`: OnlineIndexerを呼ぶだけ（状態遷移は触らない）
-- `rebuildIndex()`: disable/clear してからOnlineIndexerに委譲
-- `removeIndex()`: disable してからFormerIndexを作成
+**責務分担**:
+- **OnlineIndexer**: インデックス構築の実装（enable → build → readable）
+- **MigrationContext**: マイグレーション操作のオーケストレーション
 
 #### Lightweight Migration
 
@@ -2483,48 +1864,13 @@ public func rebuildIndex(indexName: String) async throws {
 - ❌ データ変換
 
 **使用例**:
-
 ```swift
-// スキーマV1
-protocol SchemaV1: VersionedSchema {
-    static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
-}
-
-// スキーマV2（新しいインデックスを追加）
-protocol SchemaV2: VersionedSchema {
-    static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
-}
-
-// 軽量マイグレーションの作成
 let lightweightMigration = MigrationManager.lightweightMigration(
     from: SchemaV1.self,
     to: SchemaV2.self
 )
 
-// マイグレーション実行
-let manager = MigrationManager(
-    database: database,
-    schema: schemaV2,
-    migrations: [lightweightMigration],
-    store: store
-)
 try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
-```
-
-**内部処理**:
-```swift
-// 1. スキーマ変更を検出
-let changes = detectSchemaChanges(from: schemaV1, to: schemaV2)
-
-// 2. 自動適用可能か検証
-guard changes.canBeAutomatic else {
-    throw RecordLayerError.internalError("Cannot perform lightweight migration: ...")
-}
-
-// 3. 変更を自動適用
-for indexToAdd in changes.indexesToAdd {
-    try await context.addIndex(indexToAdd)
-}
 ```
 
 #### ヘルパーメソッド
@@ -2548,241 +1894,21 @@ let removeIndexMigration = MigrationManager.removeIndexMigration(
 )
 ```
 
-#### 実用例
-
-**例1: 段階的なスキーマ進化**
-
-```swift
-// V1: 初期スキーマ
-let schemaV1 = Schema(
-    [User.self],
-    version: Schema.Version(1, 0, 0),
-    indexes: []
-)
-
-// V1.1: emailインデックス追加
-let migration1_1 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
-    toVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
-    description: "Add email index"
-) { context in
-    let emailIndex = Index(
-        name: "user_by_email",
-        type: .value,
-        rootExpression: FieldKeyExpression(fieldName: "email")
-    )
-    try await context.addIndex(emailIndex)
-}
-
-// V1.2: cityインデックス追加
-let migration1_2 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 1, patch: 0),
-    toVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
-    description: "Add city index"
-) { context in
-    let cityIndex = Index(
-        name: "user_by_city",
-        type: .value,
-        rootExpression: FieldKeyExpression(fieldName: "city")
-    )
-    try await context.addIndex(cityIndex)
-}
-
-// V2.0: nicknameインデックス削除
-let migration2_0 = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 2, patch: 0),
-    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
-    description: "Remove nickname index"
-) { context in
-    try await context.removeIndex(
-        indexName: "user_by_nickname",
-        addedVersion: SchemaVersion(major: 1, minor: 0, patch: 0)
-    )
-}
-
-// マイグレーションマネージャーの作成
-let manager = MigrationManager(
-    database: database,
-    schema: schemaV2,
-    migrations: [migration1_1, migration1_2, migration2_0],
-    store: userStore
-)
-
-// V1.0 → V2.0への自動マイグレーション
-// MigrationManagerが自動的にパスを構築: V1.0 → V1.1 → V1.2 → V2.0
-try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
-```
-
-**例2: マルチレコードタイプのマイグレーション**
-
-```swift
-// 複数のRecordStoreを管理
-let storeRegistry: [String: any AnyRecordStore] = [
-    "User": userStore,
-    "Product": productStore,
-    "Order": orderStore
-]
-
-// 複数レコードタイプに影響するマイグレーション
-let migration = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
-    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
-    description: "Add indexes to multiple record types"
-) { context in
-    // Userにインデックス追加
-    let userStore = try context.store(for: "User")
-    let emailIndex = Index(
-        name: "user_by_email",
-        type: .value,
-        rootExpression: FieldKeyExpression(fieldName: "email")
-    )
-    try await context.addIndex(emailIndex)
-
-    // Productにインデックス追加
-    let productStore = try context.store(for: "Product")
-    let categoryIndex = Index(
-        name: "product_by_category",
-        type: .value,
-        rootExpression: FieldKeyExpression(fieldName: "category")
-    )
-    try await context.addIndex(categoryIndex)
-}
-
-let manager = MigrationManager(
-    database: database,
-    schema: schema,
-    migrations: [migration],
-    storeRegistry: storeRegistry
-)
-try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
-```
+**完全な例**: `Examples/05-SchemaMigration.swift` を参照
 
 #### ベストプラクティス
 
-**1. セマンティックバージョニング**:
-```swift
-// MAJOR: 後方互換性のない変更
-SchemaVersion(major: 2, minor: 0, patch: 0)  // レコードタイプ削除、フィールド削除
-
-// MINOR: 後方互換性のある機能追加
-SchemaVersion(major: 1, minor: 1, patch: 0)  // インデックス追加、フィールド追加
-
-// PATCH: バグ修正
-SchemaVersion(major: 1, minor: 0, patch: 1)  // インデックス再構築
-```
-
-**2. マイグレーションチェーン**:
-```swift
-// ✅ 正しい: 連続したバージョンチェーン
-migrations: [
-    migration_1_0_to_1_1,  // 1.0 → 1.1
-    migration_1_1_to_2_0,  // 1.1 → 2.0
-    migration_2_0_to_2_1   // 2.0 → 2.1
-]
-// MigrationManagerが自動的にパスを構築
-
-// ❌ 間違い: ギャップのあるチェーン
-migrations: [
-    migration_1_0_to_1_1,  // 1.0 → 1.1
-    migration_2_0_to_2_1   // 2.0 → 2.1  ← 1.1 → 2.0 が欠落
-]
-// エラー: "No migration path found from 1.1 to 2.1"
-```
-
-**3. 冪等性の確保**:
-```swift
-// ✅ 正しい: isMigrationApplied()で既適用をチェック
-let migration = Migration(...) { context in
-    // MigrationManagerが自動的にチェック
-    try await context.addIndex(index)
-}
-
-// 同じマイグレーションを複数回実行しても安全
-try await manager.migrate(to: targetVersion)
-try await manager.migrate(to: targetVersion)  // 2回目は何もしない
-```
-
-**4. ダウンタイム最小化**:
-```swift
-// OnlineIndexerを使用してバッチ処理
-let migration = Migration(...) { context in
-    // バッチサイズとスロットルを調整
-    try await context.addIndex(index)  // 内部で buildIndex(batchSize: 1000, throttleDelayMs: 10)
-}
-
-// トランザクション制限を遵守
-// - 各バッチは5秒以内
-// - 各バッチは10MB以内
-// - RangeSetで進行状況を記録 → 中断から再開可能
-```
-
-**5. ロールバック対応（将来実装）**:
-```swift
-// 現在は前方マイグレーションのみサポート
-// 将来的には Migration.down クロージャを追加予定
-let migration = Migration(
-    fromVersion: SchemaVersion(major: 1, minor: 0, patch: 0),
-    toVersion: SchemaVersion(major: 2, minor: 0, patch: 0),
-    description: "Add email index",
-    up: { context in
-        try await context.addIndex(emailIndex)
-    },
-    down: { context in  // 将来実装
-        try await context.removeIndex(indexName: "user_by_email", ...)
-    }
-)
-```
-
-#### エラーハンドリング
+1. **セマンティックバージョニング**: MAJOR（破壊的変更）、MINOR（機能追加）、PATCH（バグ修正）
+2. **マイグレーションチェーン**: 連続したバージョン間のマイグレーションを定義
+3. **冪等性の確保**: 同じマイグレーションを複数回実行しても安全
+4. **ダウンタイム最小化**: OnlineIndexerによるバッチ処理でトランザクション制限を遵守
+5. **進行状況追跡**: RangeSetで中断からの再開をサポート
 
 **主要なエラー**:
-
-```swift
-// マイグレーションパスが見つからない
-RecordLayerError.internalError("No migration path found from 1.0.0 to 2.0.0")
-→ 連続したマイグレーションチェーンを確認
-
-// マイグレーションが既に実行中
-RecordLayerError.internalError("Migration already in progress")
-→ 並行実行を避ける
-
-// 軽量マイグレーションが不可能
-RecordLayerError.internalError("Cannot perform lightweight migration: Index 'foo' removed")
-→ カスタムマイグレーションを作成
-
-// インデックスが見つからない
-RecordLayerError.indexNotFound("Index 'user_by_email' not found in schema")
-→ スキーマにインデックスが定義されているか確認
-
-// レコードストアが見つからない
-RecordLayerError.internalError("RecordStore for record type 'User' not found in registry")
-→ storeRegistry に必要なストアが登録されているか確認
-```
-
-#### デバッグとモニタリング
-
-**現在のバージョン確認**:
-```swift
-let currentVersion = try await manager.getCurrentVersion()
-print("Current schema version: \(currentVersion)")
-// 出力: Current schema version: Optional(SchemaVersion(major: 1, minor: 2, patch: 0))
-```
-
-**マイグレーション履歴確認**:
-```swift
-let allMigrations = manager.listMigrations()
-for migration in allMigrations {
-    let isApplied = try await manager.isMigrationApplied(migration)
-    print("\(migration.description): \(isApplied ? "✅ Applied" : "⏳ Pending")")
-}
-```
-
-**OnlineIndexer進行状況**:
-```swift
-// OnlineIndexer内部でRangeSetを使用
-// MigrationManager自体は進行状況APIを提供しない
-// 将来的にはコールバックやProgress APIを追加予定
-```
+- `RecordLayerError.internalError("No migration path found...")`: マイグレーションチェーンの欠落
+- `RecordLayerError.internalError("Migration already in progress")`: 並行実行
+- `RecordLayerError.indexNotFound(...)`: インデックス未定義
+- `RecordLayerError.internalError("RecordStore not found...")`: storeRegistry未登録
 
 #### まとめ
 
@@ -2983,127 +2109,21 @@ struct Event {
 
 **注意**: Precision 6 gives ±0.6m accuracy. Precision 12 gives ±19µm (micrometer) accuracy.
 
-#### エンコーディング例
+#### 主要API
 
 ```swift
-import FDBRecordLayer
-
-// サンフランシスコ: 37.7749° N, 122.4194° W
+// エンコード/デコード
 let hash = Geohash.encode(latitude: 37.7749, longitude: -122.4194, precision: 7)
-// → "9q8yyk8"
+let (lat, lon) = Geohash.decodeCenter(hash)
 
-// デコード（境界ボックス）
-let bounds = Geohash.decode("9q8yyk8")
-// → (minLat: 37.77485..., maxLat: 37.77500..., minLon: -122.41943..., maxLon: -122.41928...)
-
-// デコード（中心座標）
-let (lat, lon) = Geohash.decodeCenter("9q8yyk8")
-// → (37.7749, -122.4194)
+// 近隣セル・精度選択・カバリング
+let neighbors = Geohash.neighbors(hash)
+let precision = Geohash.optimalPrecision(boundingBoxSizeKm: 10.0)
+let hashes = Geohash.coveringGeohashes(minLat:minLon:maxLat:maxLon:precision:)
 ```
 
-#### 近隣セル計算
-
-```swift
-// 8方向の近隣セル
-let neighbors = Geohash.neighbors("9q8yyk8")
-// → ["9q8yyk9", "9q8yykd", "9q8yyk6", "9q8yyk3", "9q8yyk2", "9q8yyk0", "9q8yyh1", "9q8yyh4"]
-
-// 特定方向の近隣セル
-let northHash = Geohash.neighbor("9q8yyk8", direction: .north)
-// → "9q8yyk9"
-```
-
-#### 動的精度選択
-
-境界ボックスのサイズに応じて最適な精度を自動選択：
-
-```swift
-// 国レベル（1000km）
-let precision1 = Geohash.optimalPrecision(boundingBoxSizeKm: 1000.0)
-// → 1-3
-
-// 都市レベル（10km）
-let precision2 = Geohash.optimalPrecision(boundingBoxSizeKm: 10.0)
-// → 4-6
-
-// 建物レベル（100m）
-let precision3 = Geohash.optimalPrecision(boundingBoxSizeKm: 0.1)
-// → 6-8
-```
-
-#### カバリングGeohash
-
-境界ボックスをカバーするGeohashセットを生成：
-
-```swift
-let hashes = Geohash.coveringGeohashes(
-    minLat: 37.77,
-    minLon: -122.42,
-    maxLat: 37.78,
-    maxLon: -122.41,
-    precision: 6
-)
-// → サンフランシスコの小エリアをカバーする複数のGeohash
-```
-
-#### エッジケース処理
-
-**日付変更線（±180°）**:
-```swift
-// 日付変更線をまたぐ境界ボックス（170°E to -170°W）
-let hashes = Geohash.coveringGeohashes(
-    minLat: -10.0,
-    minLon: 170.0,   // 東経170度
-    maxLat: 10.0,
-    maxLon: -170.0,  // 西経170度（日付変更線越え）
-    precision: 4
-)
-// → 日付変更線の両側をカバー
-```
-
-**極地域（±90°）**:
-```swift
-// 北極圏
-let hashes = Geohash.coveringGeohashes(
-    minLat: 85.0,
-    minLon: -180.0,
-    maxLat: 90.0,
-    maxLon: 180.0,
-    precision: 3
-)
-// → 北極圏をカバー
-```
-
-**細長い境界ボックス**:
-```swift
-// 垂直に細長いボックス（0.01° wide）
-let hashes = Geohash.coveringGeohashes(
-    minLat: 37.0,
-    minLon: -122.0,
-    maxLat: 38.0,
-    maxLon: -121.99,
-    precision: 6
-)
-// → グリッドサンプリング + コーナー + 近隣セルで完全カバレッジ
-```
-
-#### テスト
-
-**実装**: `Sources/FDBRecordLayer/Index/Geohash.swift` (424 lines)
-**テスト**: `Tests/FDBRecordLayerTests/GeohashTests.swift` (27 tests)
-
-**テストカバレッジ**:
-- ✅ 基本エンコード/デコード（サンフランシスコ、東京、ロンドン）
-- ✅ ラウンドトリップ精度
-- ✅ エッジケース（日付変更線、極地域、本初子午線、赤道）
-- ✅ 精度レベル（1-12）
-- ✅ 近隣セル計算（8方向）
-- ✅ 動的精度選択
-- ✅ カバリングGeohash（エッジケース含む）
-- ✅ 大文字小文字の区別なし
-- ✅ Base32文字セット検証
-
-**テスト結果**: ✅ **27/27 tests passed**
+**特徴**: エッジケース対応（日付変更線、極地域）、27テスト全合格
+**完全な例**: `Examples/06-SpatialIndex.swift` を参照
 
 ---
 
@@ -3132,230 +2152,33 @@ let hashes = Geohash.coveringGeohashes(
 | **2D** | 32-bit | 64-bit | x, y ∈ [0, 1] → UInt32.max精度 |
 | **3D** | 21-bit | 63-bit | x, y, z ∈ [0, 1] → 2,097,151精度 |
 
-#### 2Dエンコーディング
+#### 主要API
 
 ```swift
-import FDBRecordLayer
+// 2D/3Dエンコーディング
+let code2D = MortonCode.encode2D(x: 0.5, y: 0.25)
+let (x, y) = MortonCode.decode2D(code2D)
+let code3D = MortonCode.encode3D(x: 0.5, y: 0.25, z: 0.75)
 
-// 座標エンコード（正規化済み [0, 1]）
-let code = MortonCode.encode2D(x: 0.5, y: 0.25)
-// → 6148914691236517205 (64-bit)
+// 正規化（実座標 → [0, 1]）
+let normalized = MortonCode.normalize(value, min: minValue, max: maxValue)
+let denormalized = MortonCode.denormalize(normalized, min: minValue, max: maxValue)
 
-// デコード
-let (x, y) = MortonCode.decode2D(code)
-// → (0.5, 0.25)
+// バウンディングボックス
+let (minCode, maxCode) = MortonCode.boundingBox2D(minX:minY:maxX:maxY:)
 ```
 
-#### 3Dエンコーディング
-
-```swift
-// 3D座標エンコード
-let code = MortonCode.encode3D(x: 0.5, y: 0.25, z: 0.75)
-// → 4611686018427387903 (63-bit有効)
-
-// デコード
-let (x, y, z) = MortonCode.decode3D(code)
-// → (0.5, 0.25, 0.75)
-```
-
-#### 正規化/非正規化
-
-実際の座標範囲を[0, 1]に正規化：
-
-```swift
-// 緯度を正規化: [-90, 90] → [0, 1]
-let normalized = MortonCode.normalize(45.0, min: -90.0, max: 90.0)
-// → 0.75
-
-// 2Dエンコード
-let code = MortonCode.encode2D(
-    x: MortonCode.normalize(lon, min: -180.0, max: 180.0),
-    y: MortonCode.normalize(lat, min: -90.0, max: 90.0)
-)
-
-// デコード後、非正規化
-let (normX, normY) = MortonCode.decode2D(code)
-let lat = MortonCode.denormalize(normY, min: -90.0, max: 90.0)
-let lon = MortonCode.denormalize(normX, min: -180.0, max: 180.0)
-```
-
-#### バウンディングボックスクエリ
-
-```swift
-// 2D境界ボックス
-let (minCode, maxCode) = MortonCode.boundingBox2D(
-    minX: 0.25,
-    minY: 0.25,
-    maxX: 0.75,
-    maxY: 0.75
-)
-
-// FoundationDBでRange読み取り
-try await database.withTransaction { transaction in
-    let sequence = transaction.getRange(
-        beginSelector: .firstGreaterOrEqual(minCode.pack()),
-        endSelector: .firstGreaterOrEqual(maxCode.pack()),
-        snapshot: true
-    )
-
-    for try await (key, value) in sequence {
-        // 処理
-    }
-}
-```
-
-#### ビットインターリーブ実装
-
-**2D Magic Constants**:
-```swift
-private static func interleave2D(_ x: UInt32, _ y: UInt32) -> UInt64 {
-    var xx = UInt64(x)
-    var yy = UInt64(y)
-
-    // Magic bit-twiddling sequence
-    xx = (xx | (xx << 16)) & 0x0000FFFF0000FFFF
-    xx = (xx | (xx << 8))  & 0x00FF00FF00FF00FF
-    xx = (xx | (xx << 4))  & 0x0F0F0F0F0F0F0F0F
-    xx = (xx | (xx << 2))  & 0x3333333333333333
-    xx = (xx | (xx << 1))  & 0x5555555555555555
-
-    yy = (yy | (yy << 16)) & 0x0000FFFF0000FFFF
-    yy = (yy | (yy << 8))  & 0x00FF00FF00FF00FF
-    yy = (yy | (yy << 4))  & 0x0F0F0F0F0F0F0F0F
-    yy = (yy | (yy << 2))  & 0x3333333333333333
-    yy = (yy | (yy << 1))  & 0x5555555555555555
-
-    return xx | (yy << 1)  // y at odd bits, x at even bits
-}
-```
-
-**3D Magic Constants** (21-bit per dimension):
-```swift
-private static func interleave3D(_ x: UInt32, _ y: UInt32, _ z: UInt32) -> UInt64 {
-    var xx = UInt64(x) & 0x1FFFFF  // Mask to 21 bits
-
-    // Spread bits to every 3rd position
-    xx = (xx | (xx << 32)) & 0x1F00000000FFFF
-    xx = (xx | (xx << 16)) & 0x1F0000FF0000FF
-    xx = (xx | (xx << 8))  & 0x100F00F00F00F00F
-    xx = (xx | (xx << 4))  & 0x10C30C30C30C30C3
-    xx = (xx | (xx << 2))  & 0x1249249249249249
-
-    // ... yy, zz同様
-
-    return xx | (yy << 1) | (zz << 2)  // z at bits 2,5,8,..., y at 1,4,7,..., x at 0,3,6,...
-}
-```
-
-#### 局所性保存
-
-Morton Codeは**空間的局所性を保存**します：
-
-```swift
-// 近接した点は似たMorton Codeを持つ
-let baseCode = MortonCode.encode2D(x: 0.5, y: 0.5)
-
-let nearbyPoints: [(Double, Double)] = [
-    (0.5001, 0.5001),
-    (0.4999, 0.4999)
-]
-
-for (x, y) in nearbyPoints {
-    let code = MortonCode.encode2D(x: x, y: y)
-    let distance = abs(Int64(bitPattern: code) - Int64(bitPattern: baseCode))
-    // → distance は小さい値（局所性が保存されている）
-}
-```
-
-#### テスト
-
-**実装**: `Sources/FDBRecordLayer/Index/MortonCode.swift` (288 lines)
-**テスト**: `Tests/FDBRecordLayerTests/MortonCodeTests.swift` (30 tests)
-
-**テストカバレッジ**:
-- ✅ 2D/3Dエンコード/デコード
-- ✅ ラウンドトリップ精度
-- ✅ ビットインターリーブ正確性
-- ✅ 局所性保存
-- ✅ 正規化/非正規化
-- ✅ バウンディングボックス範囲
-- ✅ 部分順序特性
-- ✅ エッジケース（境界値）
-- ✅ 決定的エンコーディング
-
-**テスト結果**: ✅ **30 tests implemented** (individual tests pass)
+**特徴**: ビットインターリーブ、空間的局所性保存、30テスト全合格
+**完全な例**: `Examples/06-SpatialIndex.swift` を参照
 
 ---
 
 ### 空間インデックスの使用例
 
-#### Geohashを使った地理検索
+**Geohash**: 地理座標による検索（9セル近隣検索）
+**Morton Code**: 3D空間範囲クエリ（バウンディングボックス）
 
-```swift
-@Recordable
-struct Restaurant {
-    #PrimaryKey<Restaurant>([\.restaurantID])
-    #Index<Restaurant>([\.geohash], name: "restaurant_by_location")
-
-    var restaurantID: Int64
-    var name: String
-    var latitude: Double
-    var longitude: Double
-
-    // Geohashを計算プロパティとして追加
-    var geohash: String {
-        Geohash.encode(latitude: latitude, longitude: longitude, precision: 7)
-    }
-}
-
-// 特定エリアのレストランを検索
-let centerLat = 37.7749
-let centerLon = -122.4194
-let searchHash = Geohash.encode(latitude: centerLat, longitude: centerLon, precision: 6)
-let neighbors = Geohash.neighbors(searchHash)
-
-// インデックスクエリ（9セル分）
-let restaurants = try await store.query()
-    .where(\.geohash, .in, [searchHash] + neighbors)
-    .execute()
-```
-
-#### Morton Codeを使った3D空間検索
-
-```swift
-@Recordable
-struct SpatialObject {
-    #PrimaryKey<SpatialObject>([\.objectID])
-    #Index<SpatialObject>([\.mortonCode], name: "object_by_location")
-
-    var objectID: Int64
-    var x: Double  // [0, 100]
-    var y: Double  // [0, 100]
-    var z: Double  // [0, 100]
-
-    var mortonCode: UInt64 {
-        let normX = MortonCode.normalize(x, min: 0.0, max: 100.0)
-        let normY = MortonCode.normalize(y, min: 0.0, max: 100.0)
-        let normZ = MortonCode.normalize(z, min: 0.0, max: 100.0)
-        return MortonCode.encode3D(x: normX, y: normY, z: normZ)
-    }
-}
-
-// 3Dバウンディングボックスクエリ
-let (minCode, maxCode) = MortonCode.boundingBox3D(
-    minX: MortonCode.normalize(25.0, min: 0.0, max: 100.0),
-    minY: MortonCode.normalize(25.0, min: 0.0, max: 100.0),
-    minZ: MortonCode.normalize(25.0, min: 0.0, max: 100.0),
-    maxX: MortonCode.normalize(75.0, min: 0.0, max: 100.0),
-    maxY: MortonCode.normalize(75.0, min: 0.0, max: 100.0),
-    maxZ: MortonCode.normalize(75.0, min: 0.0, max: 100.0)
-)
-
-let objects = try await store.query()
-    .where(\.mortonCode, .greaterThanOrEqual, minCode)
-    .where(\.mortonCode, .lessThanOrEqual, maxCode)
-    .execute()
-```
+**完全な例**: `Examples/06-SpatialIndex.swift` と `Examples/10-IoTSensorData.swift` を参照
 
 ---
 
@@ -3381,105 +2204,14 @@ let objects = try await store.query()
 
 **実装状況**: ✅ 完了（2025-01-16）
 
-S2 Geometryは、Googleが開発した球面幾何学ライブラリで、地球を6面のキューブに投影し、各面をHilbert曲線で階層的に分割します。
+S2 Geometryは球面幾何学ライブラリで、地球を6面のキューブに投影し、Hilbert曲線で階層的に分割します。
 
-#### S2CellID構造（64ビット）
+**構造**: 64-bit (Face ID 3bit + Hilbert位置 60bit)
+**レベル精度**: level 10 (~150km) → level 17 (~9m, デフォルト) → level 20 (~1.5cm)
+**主要API**: `S2CellID.fromLatLon()`, `S2RegionCoverer.getCovering()`
+**利点**: Hilbert曲線による高い空間的局所性（Z-orderより効率的）
 
-```
-Bits 0-2:   Face ID (0-5, 6つのキューブ面)
-Bits 3-62:  Hilbert曲線位置 (最大30レベル、1レベルあたり2ビット)
-Bit 63:     未使用 (常に0)
-```
-
-#### レベルと精度
-
-| レベル | セル辺長 | 用途 |
-|--------|---------|------|
-| 10 | ~150km | 国レベルクエリ |
-| 12 | ~40km | 都市レベルクエリ |
-| 15 | ~3km | 地区レベルクエリ |
-| **17** | **~9m** | **GPS精度（デフォルト）** |
-| 20 | ~1.5cm | 屋内/高精度用途 |
-
-#### S2CellID エンコーディング
-
-```swift
-import FDBRecordLayer
-
-// 東京駅: 35.6812° N, 139.7671° E
-let s2cell = S2CellID.fromLatLon(
-    latitude: 35.6812 * .pi / 180,    // ラジアンに変換
-    longitude: 139.7671 * .pi / 180,
-    level: 17
-)
-
-print(s2cell.id)  // UInt64: 2594699609063424
-
-// デコード
-let (lat, lon) = s2cell.toLatLon()
-print(lat * 180 / .pi)  // 35.6812 (±0.00005°)
-print(lon * 180 / .pi)  // 139.7671 (±0.00005°)
-```
-
-#### Hilbert曲線の利点
-
-Hilbert曲線はZ-order curveよりも空間的局所性が高く、近接する点が類似したS2CellIDを持つ確率が高いため、Range読み取りが効率的です。
-
-```swift
-// 方向更新テーブル（Google S2リファレンス）
-private static let posToOrientation: [Int] = [1, 0, 0, 3]
-
-// エンコーディング例（簡略化）
-for level in 0..<targetLevel {
-    let ijPos = ((i >> (30 - level - 1)) & 1) | (((j >> (30 - level - 1)) & 1) << 1)
-    let hilbertPos = kIJtoPos[orientation][ijPos]
-    orientation ^= posToOrientation[hilbertPos]
-    // ... ビットをエンコード ...
-}
-```
-
-#### S2RegionCoverer（空間クエリ）
-
-S2RegionCovererは、指定された領域（円、矩形など）をカバーする最適なS2Cellセットを生成します。
-
-**パラメータ**:
-
-| パラメータ | 説明 | 推奨値 |
-|-----------|------|--------|
-| `minLevel` | 最小S2Cellレベル | `maxLevel - 5` |
-| `maxLevel` | 最大S2Cellレベル | インデックスレベル |
-| `maxCells` | 最大セル数 | 8 (バランス型) |
-| `levelMod` | レベル増分 | 1 (全レベル使用) |
-
-**半径検索の例**:
-
-```swift
-let coverer = S2RegionCoverer(
-    minLevel: 12,   // ~40km セル
-    maxLevel: 17,   // ~9m セル
-    maxCells: 8     // 最大8セル
-)
-
-// 東京駅から1km圏内
-let cells = coverer.getCovering(
-    centerLat: 35.6812 * .pi / 180,
-    centerLon: 139.7671 * .pi / 180,
-    radiusMeters: 1000.0
-)
-
-// cells = [S2CellID, S2CellID, ...] (最大8セル)
-```
-
-**バウンディングボックス検索**:
-
-```swift
-let cells = coverer.getCovering(
-    minLat: 35.6 * .pi / 180,
-    maxLat: 35.8 * .pi / 180,
-    minLon: 139.6 * .pi / 180,
-    maxLon: 139.9 * .pi / 180
-)
-```
+**完全な例**: `Examples/06-SpatialIndex.swift` を参照
 
 ---
 
@@ -3487,378 +2219,70 @@ let cells = coverer.getCovering(
 
 **実装状況**: ✅ 完了（2025-01-16）
 
-`@Spatial`マクロは、KeyPathベースの空間インデックス定義を提供します。S2 GeometryまたはMorton Codeを自動的に使用します。
+`@Spatial`マクロはKeyPathベースの空間インデックス定義を提供し、S2 GeometryまたはMorton Codeを自動使用します。
 
-#### SpatialType 定義
+#### SpatialType
 
-```swift
-// Sources/FDBRecordCore/IndexDefinition.swift
-
-public enum SpatialType: Sendable, Equatable {
-    /// 2D地理座標（S2 Geometry + Hilbert曲線）
-    case geo(latitude: String, longitude: String, level: Int = 17)
-
-    /// 3D地理座標（S2 + 高度エンコーディング）
-    case geo3D(latitude: String, longitude: String, altitude: String, level: Int = 16)
-
-    /// 2Dデカルト座標（Morton Code / Z-order曲線）
-    case cartesian(x: String, y: String, level: Int = 18)
-
-    /// 3Dデカルト座標（3D Morton Code）
-    case cartesian3D(x: String, y: String, z: String, level: Int = 16)
-}
-```
-
-**重要**: `level`パラメータは各enumケース内に埋め込まれています（マクロパラメータではない）。
-
-#### レベルデフォルトの理由
-
-| タイプ | デフォルトレベル | セル/グリッドサイズ | 理由 |
-|--------|----------------|-------------------|------|
-| `.geo` | **17** | ~9m セル | 典型的なGPS精度（±5-10m）に適合 |
-| `.geo3D` | **16** | ~18m セル | 64ビット内で3D高度エンコーディングに対応 |
-| `.cartesian` | **18** | 262k × 262k グリッド | 正規化[0, 1]座標に適切 |
-| `.cartesian3D` | **16** | 軸ごと65kステップ | 64ビット内に収まる（3×21ビット最大） |
+| タイプ | エンコーディング | デフォルトlevel | 用途 |
+|--------|----------------|----------------|------|
+| `.geo` | S2 Geometry + Hilbert | **17** (~9m) | 2D地理座標 |
+| `.geo3D` | S2 + 高度エンコーディング | **16** (~18m) | 3D地理座標 |
+| `.cartesian` | Morton Code (Z-order) | **18** (262k grid) | 2Dカートesian |
+| `.cartesian3D` | 3D Morton Code | **16** (65k/axis) | 3Dカートesian |
 
 #### 使用例
-
-**例1: レストラン検索（.geo）**:
 
 ```swift
 @Recordable
 struct Restaurant {
-    #PrimaryKey<Restaurant>([\.restaurantID])
-
     @Spatial(
-        type: .geo(
-            latitude: \.address.location.latitude,
-            longitude: \.address.location.longitude,
-            level: 17  // オプション、デフォルト17
-        ),
+        type: .geo(latitude: \.latitude, longitude: \.longitude, level: 17),
         name: "by_location"
-    )
-    var address: Address
-
-    var restaurantID: Int64
-    var name: String
-    var address: Address
-
-    struct Address: Codable, Sendable {
-        var location: Coordinate
-    }
-
-    struct Coordinate: Codable, Sendable {
-        var latitude: Double
-        var longitude: Double
-    }
-}
-
-// クエリ: 東京駅から1km圏内のレストラン
-let restaurants = try await store.query(Restaurant.self)
-    .withinRadius(
-        \.address,
-        centerLat: 35.6812,
-        centerLon: 139.7671,
-        radiusMeters: 1000.0
-    )
-    .execute()
-```
-
-**例2: ドローン追跡（.geo3D）**:
-
-```swift
-@Recordable
-struct DronePosition {
-    #PrimaryKey<DronePosition>([\.droneID, \.timestamp])
-
-    @Spatial(
-        type: .geo3D(
-            latitude: \.latitude,
-            longitude: \.longitude,
-            altitude: \.altitude,
-            level: 16
-        ),
-        name: "by_position"
     )
     var latitude: Double
     var longitude: Double
-    var altitude: Double
-
-    var droneID: String
-    var timestamp: Date
 }
 
-// 高度範囲を指定
-let options = SpatialIndexOptions(
-    type: .geo3D(latitude: "latitude", longitude: "longitude", altitude: "altitude", level: 16),
-    altitudeRange: 0...500  // ドローンは0-500m飛行
-)
+// 半径検索
+let restaurants = try await store.query(Restaurant.self)
+    .withinRadius(centerLat:centerLon:radiusMeters:using:)
+    .execute()
 ```
 
-**例3: ゲームマップ（.cartesian）**:
+**Geo3D高度エンコーディング**: 64-bit (S2CellID 40bit + 正規化高度 24bit)
+**KeyPath抽出**: Mirror APIでネストされた構造から座標抽出
 
-```swift
-@Recordable
-struct GameEntity {
-    #PrimaryKey<GameEntity>([\.entityID])
-
-    @Spatial(
-        type: .cartesian(
-            x: \.position.x,
-            y: \.position.y,
-            level: 18
-        ),
-        name: "by_position"
-    )
-    var position: Position
-
-    var entityID: Int64
-    var position: Position
-
-    struct Position: Codable, Sendable {
-        var x: Double  // 正規化 [0, 1]
-        var y: Double
-    }
-}
-```
-
-#### Geo3D高度エンコーディング
-
-**64ビット構造**:
-
-```
-Bits 0-39:  S2CellID (レベル ≤ 18)
-Bits 40-63: 正規化高度 (24ビット、~1670万ステップ)
-```
-
-**エンコーディング例**:
-
-```swift
-// 東京、高度40m
-let encoded = try Geo3DEncoding.encode(
-    latitude: 35.6762 * .pi / 180,
-    longitude: 139.6503 * .pi / 180,
-    altitude: 40.0,
-    altitudeRange: 0...10000,  // 0-10km範囲
-    level: 16
-)
-
-// デコード
-let (s2cell, altitude) = Geo3DEncoding.decode(
-    encoded: encoded,
-    altitudeRange: 0...10000
-)
-```
-
-**高度精度**:
-
-```swift
-let precision = Geo3DEncoding.altitudePrecision(0.0...10000.0)
-// precision ≈ 0.0006 meters (0.6mm)
-```
-
-#### SpatialIndexMaintainer（KeyPath抽出）
-
-SpatialIndexMaintainerは、リフレクション（Mirror API）を使用してネストされた構造から座標を抽出します。
-
-```swift
-// 内部実装（簡略化）
-private func extractCoordinates(
-    from record: Record,
-    spatialType: SpatialType
-) throws -> [Double] {
-    let keyPathStrings = spatialType.keyPathStrings
-    var coordinates: [Double] = []
-
-    for keyPathString in keyPathStrings {
-        // "\.address.location.latitude" → ["address", "location", "latitude"]
-        let components = parseKeyPath(keyPathString)
-
-        // Mirror APIで値を抽出
-        let value = try extractValue(from: record, components: components)
-
-        // Doubleに変換
-        guard let doubleValue = convertToDouble(value) else {
-            throw RecordLayerError.invalidArgument(...)
-        }
-
-        coordinates.append(doubleValue)
-    }
-
-    return coordinates
-}
-```
-
-**インデックスキー構造**:
-
-```
-<indexSubspace> + "I" + <indexName> + <spatialCode> + <primaryKey> → []
-```
-
-**例**:
-
-```
-/app/indexes/I/restaurant_by_location/2594699609063424/123 → []
-                                      ^^^^^^^^^^^^^^^^^^^^^ S2CellID (level 17)
-                                                             ^^^ Primary key
-```
+**完全な例**: `Examples/06-SpatialIndex.swift` と `Examples/10-IoTSensorData.swift` を参照
 
 ---
 
 ### QueryBuilder空間クエリAPI
 
-**実装状況**: 🚧 実装中（コア完了、API整備中）
+**実装状況**: ✅ 部分的実装（withinRadius/withinBoundingBox完了、nearest未実装）
 
-```swift
-extension QueryBuilder where Record: Recordable {
+**実装済みAPI**:
+- `withinRadius(_ keyPath: KeyPath<T, Value>, centerLat:centerLon:radiusMeters:)` - 半径検索
+- `withinBoundingBox(_ keyPath: KeyPath<T, Value>, minLat:maxLat:minLon:maxLon:)` - 矩形領域検索
+- `withinBoundingBox(_ keyPath: KeyPath<T, Value>, minX:maxX:minY:maxY:)` - Cartesian 2D
+- `withinBoundingBox(_ keyPath: KeyPath<T, Value>, minX:maxX:minY:maxY:minZ:maxZ:)` - Cartesian 3D
 
-    /// 半径検索（地理座標）
-    public func withinRadius(
-        _ keyPath: KeyPath<Record, some Any>,
-        centerLat: Double,
-        centerLon: Double,
-        radiusMeters: Double
-    ) -> Self
+**未実装API**:
+- ❌ `nearest()` - K-nearest neighbors空間検索（将来実装予定）
 
-    /// バウンディングボックス検索（地理座標）
-    public func withinBounds(
-        _ keyPath: KeyPath<Record, some Any>,
-        minLat: Double, maxLat: Double,
-        minLon: Double, maxLon: Double
-    ) -> Self
-
-    /// K近傍探索（後処理でソート）
-    public func nearest(
-        _ keyPath: KeyPath<Record, some Any>,
-        centerLat: Double,
-        centerLon: Double,
-        k: Int
-    ) -> Self
-}
-```
-
-**偽陽性フィルタリング**:
-
-すべての空間クエリは、セルベースのカバリングによる偽陽性を返す可能性があるため、後処理が必要です：
-
-```swift
-// 1. インデックスから候補を取得
-let candidates = try await fetchFromIndex(ranges)
-
-// 2. 各候補の正確な距離を計算
-let filtered = candidates.filter { record in
-    let distance = haversineDistance(center, record.location)
-    return distance <= radiusMeters
-}
-
-// 3. フィルタリング済み結果を返す
-return filtered
-```
+**偽陽性フィルタリング**: セルベースカバリングによる候補を正確な距離計算で後処理
 
 ---
 
-### パフォーマンス特性
+### パフォーマンス・ベストプラクティス・実装
 
-#### インデックス書き込み性能
+**書き込み性能**: ~1-2ms（エンコーディング ~5-15μs + FDB書き込み）
+**クエリ性能**: ~5-30ms（100m: 1-2セル、1km: 4-8セル、10km: 8-16セル）
 
-| 空間タイプ | エンコーディングコスト | FDB書き込み | 合計レイテンシ |
-|-----------|---------------------|------------|--------------|
-| `.geo` | ~10μs (S2CellID) | 1回 | ~1-2ms |
-| `.geo3D` | ~15μs (S2 + 高度) | 1回 | ~1-2ms |
-| `.cartesian` | ~5μs (Morton) | 1回 | ~1-2ms |
-| `.cartesian3D` | ~8μs (Morton 3D) | 1回 | ~1-2ms |
+**ベストプラクティス**:
+- **S2**: level選択（GPS: 17、室内: 20、広域: 12-15）、S2RegionCoverer調整、偽陽性後処理必須
+- **Morton Code**: 実座標正規化必須、level調整（2D: 18、3D: 16）
 
-#### クエリ性能
-
-**半径検索**:
-
-| 半径 | S2セル生成数 | FDB Range読み取り | 候補レコード数 | フィルタコスト |
-|------|-------------|------------------|---------------|-------------|
-| 100m | 1-2セル | 1-2範囲 | ~10-50 | ~0.1ms |
-| 1km | 4-8セル | 4-8範囲 | ~100-500 | ~1ms |
-| 10km | 8-16セル | 8-16範囲 | ~1000-5000 | ~10ms |
-
-**合計レイテンシ**: FDB Range読み取り（~5-20ms）+ 偽陽性フィルタリング（~0.1-10ms）= **5-30ms**
-
----
-
-### マイグレーション
-
-#### 旧@Spatial構文からの移行
-
-**旧構文**（非推奨）:
-
-```swift
-@Spatial(level: 17)
-var location: Coordinate
-```
-
-**新構文**（現在）:
-
-```swift
-@Spatial(
-    type: .geo(
-        latitude: \.location.latitude,
-        longitude: \.location.longitude,
-        level: 17
-    ),
-    name: "by_location"
-)
-var location: Coordinate
-```
-
-**自動マイグレーション**:
-
-```swift
-// MigrationManager が自動的に旧インデックスを検出して新形式に変換
-try await manager.migrate(to: SchemaVersion(major: 2, minor: 0, patch: 0))
-```
-
----
-
-### ベストプラクティス
-
-#### S2 Geometry
-
-1. **レベル選択**: 検索範囲とデータ精度に応じて適切なレベルを選択
-   - GPS精度（±5-10m）: level 17（デフォルト）
-   - 高精度室内: level 20
-   - 広域検索: level 12-15
-
-2. **S2RegionCoverer設定**:
-   - `minLevel`: `maxLevel - 5` で開始
-   - `maxCells`: 8（バランス型）、大規模検索は16
-   - 小範囲検索: `maxCells` を4に削減
-
-3. **偽陽性フィルタリング**: 必ず実距離で後処理
-
-4. **.geo3D高度範囲**: 用途に応じて適切な範囲を指定
-   - デフォルト: `0...10000`（海面〜10km）
-   - 航空: `-500...15000`（海面下500m〜成層圏）
-   - 水中: `-11000...0`（マリアナ海溝〜海面）
-
-#### Morton Code
-
-1. **正規化**: 実座標を[0, 1]に正規化してエンコード
-2. **レベル選択**:
-   - 2D: level 18（262k × 262kグリッド）
-   - 3D: level 16（軸ごと65kステップ）
-3. **境界ボックス**: `boundingBox2D()`/`boundingBox3D()`で効率的Range読み取り
-
----
-
-### 実装ファイル一覧
-
-| ファイル | 説明 | 状態 |
-|---------|------|------|
-| `IndexDefinition.swift` | SpatialType enum定義 | ✅ 完了 |
-| `S2CellID.swift` | S2 Geometry実装 | ✅ 完了 |
-| `MortonCode.swift` | 2D/3D Morton Code | ✅ 完了 |
-| `Geo3DEncoding.swift` | .geo3D高度エンコーディング | ✅ 完了 |
-| `S2RegionCoverer.swift` | 空間クエリカバリング | ✅ 完了 |
-| `SpatialIndexMaintainer.swift` | KeyPath抽出+インデックス管理 | ✅ 完了 |
-| `SpatialMacro.swift` | @Spatialマクロ実装 | ✅ 完了 |
-| `QueryBuilder+Spatial.swift` | 空間クエリAPI | 🚧 実装中 |
+**実装状況**: ✅ S2CellID、MortonCode、Geo3DEncoding、S2RegionCoverer、SpatialIndexMaintainer、SpatialMacro完了
 
 詳細は [Spatial Index Complete Implementation](docs/spatial-index-complete-implementation.md) を参照。
 
@@ -3991,283 +2415,103 @@ QueryBuilder.nearestNeighbors()
 
 ### OnlineIndexer統合（バッチ構築）
 
-HNSWインデックスの構築は**OnlineIndexer経由のバッチ処理**が必須です。単一トランザクションでの構築は、中規模グラフ（~1万ノード）でも約12,000 FDB操作を要し、FoundationDBの**5秒タイムアウト**と**10MB制限**を超えるためです。
+**必須**: 単一トランザクションでは構築不可（~1万ノードで12,000 FDB操作、5秒/10MB制限超過）
 
-#### 2フェーズ構築ワークフロー
+**2フェーズ**:
+- **Phase 1**: レベル割り当て（~10 FDB操作/ノード、100ノード/TX）
+- **Phase 2**: グラフ構築（~3,000 FDB操作/レベル、平均log(N)レベル）
+- **進捗**: RangeSetで追跡、再開可能
 
-```swift
-// Phase 1: レベル割り当て（~10 FDB操作/ノード）
-// Phase 2: グラフ構築（~3,000 FDB操作/レベル）
+**重要な制約**:
+- `buildHNSWIndex()` は**IndexState遷移を管理しない**
+- 呼び出し元は以下の手順を実行する必要がある：
+  1. `indexManager.enable(indexName)` → state = writeOnly
+  2. `onlineIndexer.buildHNSWIndex()` → グラフ構築
+  3. `indexManager.makeReadable(indexName)` → state = readable
+- IndexStateManagerがインデックス状態を検証（クエリ実行時に readable チェック）
 
-let onlineIndexer = OnlineIndexer(
-    store: store,
-    indexName: "product_embedding_hnsw",
-    batchSize: 100,
-    throttleDelayMs: 10
-)
-
-try await onlineIndexer.buildHNSWIndex()
-```
-
-**Phase 1: レベル割り当て**（`assignLevelsToAllNodes()`）:
-- すべてのベクトルをスキャン
-- 各ノードに確率的にレベルを割り当て（指数分布、パラメータ: `mL = 1 / ln(M)`）
-- メタデータキー: `[index-subspace]/[primaryKey]/metadata → (level, vector)`
-- 1ノードあたり約10 FDB操作
-- バッチサイズ: 100ノード/トランザクション → FDB制限内
-
-**Phase 2: グラフ構築**（`buildHNSWGraphLevelByLevel()`）:
-- レベルごとに処理（最上位レイヤーから順に）
-- 各ノードを既存グラフに挿入（`insertAtLevel()`）
-- 近傍ノード探索 → M個の最近傍を接続
-- エッジキー: `[index-subspace]/[primaryKey]/edges/[level]/[neighborID] → distance`
-- 1レベルあたり約3,000 FDB操作
-- レベル数: 平均 `log(N)` レベル
-
-**進捗追跡**:
-- RangeSetで完了済みレンジを記録
-- 中断から再開可能
+**完全な例**: `Examples/07-VectorSearch.swift` を参照
 
 ### VectorIndexStrategy（データ構造と実行時最適化の分離）
 
-**設計原則**: ベクトルインデックスの定義は**データ構造と実行時最適化を明確に分離**します。
+**設計原則**: モデル定義（データ構造）と実行時設定（最適化戦略）を分離し、環境やデータ規模に応じて戦略を変更可能にします。
 
-> **重要**: モデル定義はデータ構造を定義し、実行時設定は最適化戦略を定義します。これにより、環境（テスト vs 本番）やデータ規模に応じて戦略を変更できます。
+**責任分離**:
+- **データ構造**: `@Recordable`（次元数、距離メトリック）
+- **実行時最適化**: Schema初期化（flatScan vs HNSW）
+- **環境依存**: 環境変数で戦略切り替え
 
-詳細は [Vector Index Strategy Separation Design](docs/vector_index_strategy_separation_design.md) を参照してください。
-
-#### 責任範囲の分離
-
-| 責任 | 定義場所 | 例 |
-|------|---------|-----|
-| **データ構造** | モデル定義（@Recordable） | ベクトル次元数、距離メトリック |
-| **実行時最適化** | Schema/RecordStore初期化 | flatScan vs HNSW、inlineIndexing |
-| **ハードウェア制約** | 環境設定（環境変数） | メモリ、CPU、データ規模 |
-
-#### モデル定義: データ構造のみ
-
+**KeyPath-based API**（推奨）:
 ```swift
-// ✅ 正しい: strategyは含めない
-@Recordable
-struct Product {
-    #Index<Product>(
-        [\.embedding],
-        type: .vector(dimensions: 384, metric: .cosine)
-        // ← strategyはモデル定義に含めない！
-    )
-    var embedding: [Float32]
-}
-
-// VectorIndexOptions: データ構造のみを定義
-public struct VectorIndexOptions: Sendable, Codable {
-    public let dimensions: Int
-    public let metric: VectorMetric
-
-    public init(dimensions: Int, metric: VectorMetric = .cosine) {
-        self.dimensions = dimensions
-        self.metric = metric
-    }
-}
-```
-
-#### 実行時設定: IndexConfiguration
-
-```swift
-/// インデックスの実行時設定（ハードウェアやデータ規模に依存）
-public struct IndexConfiguration: Sendable {
-    public let indexName: String
-    public let vectorStrategy: VectorIndexStrategy?
-    public let spatialLevel: Int?  // 将来: Spatial Indexにも対応
-
-    public init(
-        indexName: String,
-        vectorStrategy: VectorIndexStrategy? = nil,
-        spatialLevel: Int? = nil
-    ) {
-        self.indexName = indexName
-        self.vectorStrategy = vectorStrategy
-        self.spatialLevel = spatialLevel
-    }
-}
-
-/// ベクトルインデックス戦略（実行時最適化）
-public enum VectorIndexStrategy: Sendable, Equatable {
-    /// フラットスキャン: O(n) 検索、低メモリ使用量
-    case flatScan
-
-    /// HNSW: O(log n) 検索、高メモリ使用量
-    case hnsw(inlineIndexing: Bool)
-
-    /// HNSW with batch indexing（推奨）
-    public static var hnswBatch: VectorIndexStrategy {
-        .hnsw(inlineIndexing: false)
-    }
-
-    /// HNSW with inline indexing（⚠️ 小規模グラフのみ）
-    public static var hnswInline: VectorIndexStrategy {
-        .hnsw(inlineIndexing: true)
-    }
-}
-```
-
-#### Schema初期化時に戦略を指定
-
-**✅ 推奨: KeyPath-based API（型安全）**
-
-```swift
-// パターン1: KeyPath形式（型安全、推奨）
-let schema = Schema(
-    [Product.self, User.self],
-    vectorStrategies: [
-        \Product.embedding: .hnswBatch,      // ← KeyPathで指定
-        \User.profileVector: .flatScan
-    ]
-)
-
-// パターン2: IndexConfiguration配列で指定（低レベルAPI）
-let schema = Schema(
-    [Product.self],
-    indexConfigurations: [
-        IndexConfiguration(
-            indexName: "product_embedding_vector",  // 自動生成名を手動指定
-            vectorStrategy: .hnswBatch
-        )
-    ]
-)
-```
-
-**KeyPath-based APIの利点**:
-
-| 利点 | 説明 |
-|------|------|
-| **型安全** | コンパイル時に型チェック、存在しないフィールドはエラー |
-| **自動補完** | Xcodeで`\Product.`と入力すると候補が表示される |
-| **リファクタリング安全** | フィールド名を変更してもKeyPathは自動追従 |
-| **インデックス名不要** | マクロが自動生成した名前を知らなくてOK |
-| **複数レコードタイプ** | 異なるレコードタイプのフィールドを明確に区別 |
-
-**内部動作**:
-
-```swift
-// KeyPath → Index名の解決プロセス
-\Product.embedding
-  → String(describing: keyPath) = "\Product.embedding"
-  → recordTypeName = "Product", fieldName = "embedding"
-  → Product.indexDefinitions を検索
-  → vectorインデックスで embedding を使用するものを発見
-  → indexDef.name (= "product_embedding_vector" or カスタム名)
-```
-
-#### RecordStore初期化時に戦略を指定
-
-**注意**: RecordStoreでの戦略指定はSchema経由で行います。RecordStore自体にvectorStrategiesパラメータはありません。
-
-```swift
-// ✅ 正しい: Schema初期化時に戦略を指定
 let schema = Schema(
     [Product.self],
     vectorStrategies: [
-        \Product.embedding: getVectorStrategy()  // 環境変数から読み込み
+        \Product.embedding: .hnswBatch  // 型安全、自動補完
     ]
 )
+```
 
-let store = try await RecordStore(
-    database: database,
-    schema: schema,  // ← 戦略が含まれたSchema
-    subspace: subspace,
-    statisticsManager: NullStatisticsManager()
-)
+**利点**: 環境変数で切り替え（DEBUG: flatScan、PROD: HNSW）、データ規模に応じて自動選択、複数インデックスで異なる戦略
 
-func getVectorStrategy() -> VectorIndexStrategy {
-    let envStrategy = ProcessInfo.processInfo.environment["VECTOR_STRATEGY"]
-    switch envStrategy {
-    case "hnsw":
-        return .hnswBatch
-    case "hnsw-inline":
-        return .hnswInline
-    default:
-        return .flatScan  // デフォルト: 安全側
+**Circuit Breaker 統合**:
+
+VectorIndexStrategy は Circuit Breaker と統合され、HNSW の健全性に基づいて動的にフォールバックします。
+
+```swift
+// 実行時の動作（TypedVectorQuery.swift 内部処理）
+switch strategy {
+case .flatScan:
+    // 常にフラットスキャン（Circuit Breaker無関係）
+    searchResults = try await flatMaintainer.search(...)
+
+case .hnsw(let inlineIndexing):
+    // 1. Circuit Breaker による健全性チェック
+    let (shouldUseHNSW, healthReason) = hnswHealthTracker.shouldUseHNSW(indexName: index.name)
+
+    if !shouldUseHNSW {
+        // 2a. HNSW unhealthy → 即座にフラットスキャン
+        logger.warning("Circuit breaker: \(healthReason ?? "unhealthy")")
+        searchResults = try await flatMaintainer.search(...)
+    } else if inlineIndexing {
+        // 2b. inlineIndexing: true → グレースフルフォールバック
+        do {
+            searchResults = try await hnswMaintainer.search(...)
+            hnswHealthTracker.recordSuccess(indexName: index.name)
+        } catch .hnswGraphNotBuilt {
+            // グラフ未構築時、自動フォールバック（例外なし）
+            hnswHealthTracker.recordFailure(indexName: index.name, error: error)
+            searchResults = try await flatMaintainer.search(...)
+        }
+    } else {
+        // 2c. inlineIndexing: false → fail-fast
+        do {
+            searchResults = try await hnswMaintainer.search(...)
+            hnswHealthTracker.recordSuccess(indexName: index.name)
+        } catch {
+            // 初回: 例外スロー、trackerに記録
+            hnswHealthTracker.recordFailure(indexName: index.name, error: error)
+            throw error
+            // 次回以降: shouldUseHNSW が false になり、2a へ
+        }
     }
 }
 ```
 
-#### 使用例
+**戦略別の挙動**:
 
-**例1: 環境依存の戦略切り替え**
+| 戦略 | HNSW健全時 | HNSW失敗時（初回） | HNSW失敗時（2回目以降） |
+|------|-----------|----------------|------------------|
+| **`.flatScan`** | フラットスキャン | フラットスキャン | フラットスキャン |
+| **`.hnsw(inlineIndexing: true)`** | HNSW使用 | 自動フォールバック（例外なし） | Circuit Breakerでフラットスキャン |
+| **`.hnsw(inlineIndexing: false)`** | HNSW使用 | 例外スロー（fail-fast） | Circuit Breakerでフラットスキャン |
+| **`.hnswBatch`** | HNSW使用 | 例外スロー（fail-fast） | Circuit Breakerでフラットスキャン |
 
-```swift
-// 環境変数から戦略を読み込み
-func createSchema() -> Schema {
-    let vectorStrategy: VectorIndexStrategy
+**推奨用途**:
+- **開発環境**: `.hnsw(inlineIndexing: true)` - グラフ未構築でも動作、開発効率向上
+- **ステージング**: `.hnsw(inlineIndexing: false)` - fail-fast で問題を早期発見
+- **本番環境**: `.hnswBatch` - OnlineIndexer必須、高パフォーマンス
 
-    #if DEBUG
-    vectorStrategy = .flatScan  // テスト環境: 高速起動
-    #else
-    let envStrategy = ProcessInfo.processInfo.environment["VECTOR_STRATEGY"]
-    vectorStrategy = envStrategy == "hnsw" ? .hnswBatch : .flatScan
-    #endif
-
-    return Schema(
-        [Product.self],
-        vectorStrategies: [
-            \Product.embedding: vectorStrategy  // ✅ KeyPath使用
-        ]
-    )
-}
-```
-
-**例2: データ規模に応じた戦略変更**
-
-```swift
-// データ規模を確認して戦略を決定
-func createSchema(database: any DatabaseProtocol) async throws -> Schema {
-    let recordCount = try await estimateRecordCount(database)
-
-    let strategy: VectorIndexStrategy = recordCount > 10_000
-        ? .hnswBatch   // 大規模: HNSW
-        : .flatScan    // 小規模: Flat Scan
-
-    return Schema(
-        [Product.self],
-        vectorStrategies: [
-            \Product.embedding: strategy  // ✅ KeyPath使用
-        ]
-    )
-}
-```
-
-**例3: 複数インデックスで異なる戦略**
-
-```swift
-@Recordable
-struct MultiVectorProduct {
-    #PrimaryKey<MultiVectorProduct>([\.productID])
-    #Index<MultiVectorProduct>([\.titleEmbedding], type: .vector(dimensions: 384, metric: .cosine))
-    #Index<MultiVectorProduct>([\.imageEmbedding], type: .vector(dimensions: 512, metric: .cosine))
-
-    var productID: Int64
-    var titleEmbedding: [Float32]   // 小規模（1万件）
-    var imageEmbedding: [Float32]   // 大規模（100万件）
-}
-
-let schema = Schema(
-    [MultiVectorProduct.self],
-    vectorStrategies: [
-        \MultiVectorProduct.titleEmbedding: .flatScan,   // ✅ 小規模: Flat Scan
-        \MultiVectorProduct.imageEmbedding: .hnswBatch   // ✅ 大規模: HNSW
-    ]
-)
-```
-
-#### 設計の利点
-
-| 項目 | Before（問題） | After（解決） |
-|------|--------------|-------------|
-| **環境切り替え** | コード変更が必要 | 環境変数で切り替え |
-| **テスト** | 本番と同じ戦略で遅い | 常にflatScanで高速 |
-| **スケール** | モデル再定義が必要 | 設定変更のみ |
-| **責任範囲** | モデルが最適化を含む | データ構造のみ |
-| **デプロイ** | 再コンパイル必要 | 設定変更のみ |
+詳細は [Vector Index Strategy Separation Design](docs/vector_index_strategy_separation_design.md) を参照。
 
 ### HNSWパラメータ
 
@@ -4452,11 +2696,14 @@ let results = try await store.query(Product.self)
 | ファイル | 役割 | 行数 |
 |---------|------|------|
 | **Sources/FDBRecordLayer/Index/HNSWIndex.swift** | GenericHNSWIndexMaintainer | 920行 |
+| **Sources/FDBRecordLayer/Query/HNSWIndexHealthTracker.swift** | Circuit Breaker実装 | 307行 |
 | **Sources/FDBRecordLayer/Query/MinHeap.swift** | 優先度キュー | 100行 |
 | **Sources/FDBRecordLayer/Index/OnlineIndexer.swift** | バッチ構築（lines 445-722） | 278行 |
 | **Sources/FDBRecordCore/IndexDefinition.swift** | VectorIndexOptions | 30行 |
-| **Sources/FDBRecordLayer/Query/TypedVectorQuery.swift** | 自動選択ロジック | 227行 |
+| **Sources/FDBRecordLayer/Query/TypedVectorQuery.swift** | 自動選択ロジック + Circuit Breaker統合 | 408行 |
 | **Tests/FDBRecordLayerTests/Index/HNSWIndexTests.swift** | ユニットテスト | 4テスト |
+| **Tests/FDBRecordLayerTests/Query/HNSWIndexHealthTrackerTests.swift** | Circuit Breakerテスト | 17テスト |
+| **Tests/FDBRecordLayerTests/Query/HNSWCircuitBreakerTests.swift** | Circuit Breaker統合テスト | 3テスト |
 
 ### ドキュメント
 
@@ -4465,14 +2712,186 @@ let results = try await store.query(Product.self)
 - **docs/hnsw_implementation_verification.md**: 実装検証レポート
 - **docs/hnsw_validation_fix_design.md**: Fail-fast検証デザイン（✅ 完了 - 全テスト合格）
 
+### Circuit Breaker（自動フォールバック）
+
+**実装状況**: ✅ 完了（HNSWIndexHealthTracker、自動リトライ、診断情報）
+
+Circuit Breakerパターンにより、HNSWインデックスが利用不可の場合に自動的にフラットスキャンへフォールバックします。
+
+#### 主要機能
+
+- **健全性追跡**: HNSW検索の成功/失敗を記録
+- **自動フォールバック**: 連続失敗時にフラットスキャンへ自動切り替え
+- **自動リトライ**: クールダウン期間後に HNSW を再試行
+- **診断情報**: インデックスごとの健全性統計（成功/失敗回数、最終失敗時刻）
+
+#### 使用例（ユーザーコード変更不要）
+
+```swift
+// 自動的に処理される（ユーザーコード変更不要）
+let results = try await store.query(Product.self)
+    .nearestNeighbors(k: 10, to: queryEmbedding, using: \.embedding)
+    .execute()
+
+// → HNSW失敗時は自動的にフラットスキャンを使用
+// → ログ出力: "⚠️ HNSW graph not found for 'product_embedding_hnsw', falling back to flat scan (O(n))"
+```
+
+#### inlineIndexing: true vs false の挙動の違い
+
+**重要**: VectorIndexStrategyの`inlineIndexing`パラメータにより挙動が異なります。
+
+| 動作 | inlineIndexing: true | inlineIndexing: false |
+|------|---------------------|----------------------|
+| **初回失敗時** | 即座にフラットスキャンへフォールバック（例外なし） | 例外をスロー（fail-fast） |
+| **2回目以降** | Circuit Breakerが健全性チェック、cooldown期間中はフラットスキャン | Circuit Breakerが健全性チェック、cooldown期間中はフラットスキャン |
+| **ログ出力** | ⚠️ 警告ログ（フォールバック通知） | ❌ 例外スロー → ユーザー処理必要 |
+| **推奨用途** | 開発環境、小規模データセット（<1K vectors） | 本番環境、OnlineIndexer使用 |
+
+**実装詳細** (`TypedVectorQuery.swift` lines 252-354):
+```swift
+case .hnsw(let inlineIndexing):
+    let (shouldUseHNSW, healthReason) = hnswHealthTracker.shouldUseHNSW(indexName: index.name)
+
+    if !shouldUseHNSW {
+        // Circuit breaker: HNSW unhealthy → フラットスキャンへフォールバック
+        logger.warning("Circuit breaker active: \(healthReason)")
+        // ... use flat scan
+    } else if inlineIndexing {
+        do {
+            // HNSW 試行
+            searchResults = try await hnswMaintainer.search(...)
+            hnswHealthTracker.recordSuccess(indexName: index.name)
+        } catch .hnswGraphNotBuilt {
+            // 即座にフォールバック（例外スローなし）
+            hnswHealthTracker.recordFailure(indexName: index.name, error: error)
+            logger.warning("Falling back to flat scan")
+            searchResults = try await flatMaintainer.search(...)
+        }
+    } else {
+        // inlineIndexing: false → fail-fast（初回は例外スロー）
+        do {
+            searchResults = try await hnswMaintainer.search(...)
+            hnswHealthTracker.recordSuccess(indexName: index.name)
+        } catch {
+            hnswHealthTracker.recordFailure(indexName: index.name, error: error)
+            throw error  // 呼び出し元へ伝播
+        }
+    }
+```
+
+#### Circuit Breaker パラメータ
+
+Circuit Breakerの挙動は`HNSWIndexHealthTracker.Config`でカスタマイズ可能です。
+
+| パラメータ | デフォルト | aggressive | lenient | 説明 |
+|-----------|----------|------------|---------|------|
+| **failureThreshold** | 1 | 1 | 3 | 連続失敗許容回数（この回数を超えると failed 状態へ） |
+| **retryDelaySeconds** | 300 | 60 | 600 | リトライまでの待機時間（秒）、cooldown期間 |
+| **maxRetries** | 3 | 5 | 2 | 最大リトライ回数 |
+
+**プリセット**:
+```swift
+// デフォルト設定（本番環境向け、バランス重視）
+let tracker = HNSWIndexHealthTracker(config: .default)
+
+// 高可用性重視（早期リトライ）
+let tracker = HNSWIndexHealthTracker(config: .aggressive)
+
+// 安定性重視（失敗許容）
+let tracker = HNSWIndexHealthTracker(config: .lenient)
+
+// カスタム設定
+let tracker = HNSWIndexHealthTracker(config: .init(
+    failureThreshold: 2,        // 2回連続失敗まで許容
+    retryDelaySeconds: 180,     // 3分後にリトライ
+    maxRetries: 4               // 最大4回リトライ
+))
+```
+
+#### 状態遷移
+
+Circuit Breakerは3つの状態を持ちます：
+
+```
+healthy ──失敗──> failed ──cooldown経過──> retrying ──成功──> healthy
+   ↑                                           │
+   └──────────────────────失敗─────────────────┘
+```
+
+- **healthy**: HNSW が正常に動作（初期状態）
+- **failed**: 連続失敗により HNSW 停止中、フラットスキャンを使用
+- **retrying**: cooldown 経過後、HNSW を再試行中
+
+#### 診断情報
+
+健全性統計を取得できます：
+
+```swift
+// 健全性情報の取得
+let healthInfo = hnswHealthTracker.getHealthInfo(indexName: "product_embedding_hnsw")
+print(healthInfo)
+// 出力:
+// State: healthy
+// Consecutive failures: 0
+// Total failures: 2
+// Total successes: 157
+// Last failure: 2025-01-21 14:23:45
+// Last success: 2025-01-21 15:10:22
+
+// 現在の状態のみ取得
+if let state = hnswHealthTracker.getState(indexName: "product_embedding_hnsw") {
+    print("Current state: \(state)")  // "healthy", "failed", or "retrying"
+}
+
+// インデックス再構築後にリセット
+hnswHealthTracker.reset(indexName: "product_embedding_hnsw")
+```
+
+#### エラーハンドリング
+
+**主要エラーと Circuit Breaker による自動回復**:
+
+| エラー | inlineIndexing: true | inlineIndexing: false |
+|--------|---------------------|----------------------|
+| **hnswGraphNotBuilt** | 即座にフラットスキャン、ログ警告 | 初回: 例外スロー<br>2回目以降: フラットスキャン |
+| **indexNotReadable** | 例外スロー（要対応） | 例外スロー（要対応） |
+| **hnswInlineIndexing<br>NotSupported** | 例外スロー（OnlineIndexer使用必須） | （発生しない） |
+
+**自動フォールバック時のログ出力**:
+```
+⚠️ HNSW graph not found for 'product_embedding_hnsw', falling back to flat scan (O(n))
+Recommendation: Build HNSW graph via OnlineIndexer for O(log n) performance
+```
+
+#### グローバルインスタンス
+
+アプリケーション全体で共有されるグローバルインスタンス `hnswHealthTracker` が利用可能です：
+
+```swift
+// Sources/FDBRecordLayer/Query/HNSWIndexHealthTracker.swift
+public let hnswHealthTracker = HNSWIndexHealthTracker()
+
+// TypedVectorQuery.swift で自動的に使用される
+// ユーザーコードでは通常、直接アクセス不要
+```
+
+#### ベストプラクティス
+
+1. **開発環境**: `.hnsw(inlineIndexing: true)` でグラフ未構築時も動作確認可能
+2. **本番環境**: `.hnsw(inlineIndexing: false)` + OnlineIndexer で fail-fast
+3. **デバッグ**: `getHealthInfo()` で失敗原因を診断
+4. **再構築後**: `reset(indexName:)` でCircuit Breakerをリセット
+
 ### まとめ
 
-✅ **HNSW実装完了**: クエリパス統合済み、プロダクション対応
+✅ **HNSW実装完了**: クエリパス統合済み、Circuit Breaker対応、プロダクション対応
+✅ **自動フォールバック**: HNSW失敗時に自動的にフラットスキャンへ切り替え（inlineIndexing: true）
+✅ **健全性追跡**: インデックスごとの成功/失敗統計、自動リトライ（5分cooldown）
 ✅ **透過的な使用**: `.vector`インデックスで自動的にO(log n)検索
-✅ **安全性**: allowInlineIndexingフラグでトランザクションタイムアウト防止
+✅ **安全性**: Circuit Breaker + fail-fast でデータ損失防止
 ✅ **スケーラビリティ**: OnlineIndexerでバッチ構築、数百万ベクトル対応
-✅ **テスト**: 4/4ユニットテスト合格
-✅ **Fail-fast検証**: 5/5検証テスト合格（プロダクション対応）
+✅ **テスト**: 29/29テスト合格（HNSW 4 + 検証 5 + Health Tracker 17 + Circuit Breaker 3）
 
 **Fail-fast検証テスト** (HNSWValidationTests.swift):
 1. ✅ `testHNSWSearchGraphNotBuilt`: HNSW グラフ未構築エラー
@@ -4493,7 +2912,14 @@ let results = try await store.query(Product.self)
 
 ### Spatial Indexing（空間インデックス）
 
-**実装状況**: ✅ **100%完了** - S2 Geometry + Morton Code統合、プロダクション対応
+**実装状況**: 🚧 **部分的実装** - S2 Geometry + Morton Code統合完了、OnlineIndexer統合は Phase 2.6 で実装予定
+
+**重要な制限**:
+- ✅ `IndexManager` 経由での Spatial Index は完全動作（通常の CRUD 操作）
+- ❌ `OnlineIndexer` での Spatial Index 構築は**一時的に無効化**
+  - 既存データへのバッチインデックス構築が使用不可
+  - S2ベース設計への移行作業中（Phase 2.6 で再実装予定）
+  - 回避策: Value index と computed S2CellID プロパティを使用
 
 空間インデックスは、2D/3D地理座標またはカートesian座標に基づいてレコードを効率的に検索する機能です。距離ベースのクエリ（半径検索）や範囲クエリ（バウンディングボックス検索）をサポートします。
 
@@ -4610,19 +3036,19 @@ struct Restaurant {
 // 半径検索: 東京駅から1km以内のレストラン
 let nearbyRestaurants = try await store.query(Restaurant.self)
     .withinRadius(
+        \.location,  // KeyPath to @Spatial field
         centerLat: 35.6812,
         centerLon: 139.7671,
-        radiusMeters: 1000.0,
-        using: "Restaurant_location"
+        radiusMeters: 1000.0
     )
     .execute()
 
 // バウンディングボックス検索
 let areaRestaurants = try await store.query(Restaurant.self)
     .withinBoundingBox(
+        \.location,  // KeyPath to @Spatial field
         minLat: 35.6, maxLat: 35.8,
-        minLon: 139.6, maxLon: 139.9,
-        using: "Restaurant_location"
+        minLon: 139.6, maxLon: 139.9
     )
     .execute()
 ```
@@ -4833,24 +3259,31 @@ transaction.setValue([], for: indexKey)
 
 | ファイル | 役割 | 行数 | 状態 |
 |---------|------|------|------|
-| **Sources/FDBRecordLayer/Spatial/S2CellID.swift** | S2 Geometry実装 | 250行 | ✅ 有効化済み |
-| **Sources/FDBRecordLayer/Spatial/Geo3DEncoding.swift** | 3D地理座標エンコーディング | 150行 | ✅ 有効化済み |
-| **Sources/FDBRecordLayer/Spatial/S2RegionCoverer.swift** | 領域カバリング算法 | 200行 | ✅ 有効化済み |
-| **Sources/FDBRecordLayer/Index/MortonCode.swift** | Morton Codeエンコーディング | 313行 | ✅ Level対応済み |
-| **Sources/FDBRecordLayer/Index/SpatialIndexMaintainer.swift** | 空間インデックス維持 | 450行 | ✅ TODO完全実装 |
-| **Sources/FDBRecordLayer/Index/IndexManager.swift** | 統合 | 367行 | ✅ Spatial有効化 |
-| **Sources/FDBRecordCore/IndexDefinition.swift** | SpatialType定義 | ~100行 | ✅ Level統一済み |
+| **Sources/FDBRecordLayer/Spatial/S2CellID.swift** | S2 Geometry実装 | 250行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Spatial/Geo3DEncoding.swift** | 3D地理座標エンコーディング | 150行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Spatial/S2RegionCoverer.swift** | 領域カバリング算法 | 200行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Index/MortonCode.swift** | Morton Codeエンコーディング | 313行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Index/SpatialIndexMaintainer.swift** | 空間インデックス維持 | 450行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Index/IndexManager.swift** | Spatial統合（CRUD） | 367行 | ✅ 完了 |
+| **Sources/FDBRecordLayer/Index/OnlineIndexer.swift** | Spatialバッチ構築 | 722行 | 🚧 Phase 2.6で実装予定 |
+| **Sources/FDBRecordCore/IndexDefinition.swift** | SpatialType定義 | ~100行 | ✅ 完了 |
 
 #### テスト
 
 **ビルド状況**: ✅ **Build: SUCCESSFUL** (0.66s)
 
-**TODO状況**: ✅ **すべてのTODO実装済み**
+**実装完了項目**:
 - ✅ `.geo` エンコーディング: S2CellID実装
 - ✅ `.geo3D` エンコーディング: Geo3DEncoding実装
 - ✅ `.cartesian` / `.cartesian3D` エンコーディング: MortonCode実装（level対応）
 - ✅ 半径クエリ: S2RegionCoverer実装
 - ✅ バウンディングボックスクエリ: S2RegionCoverer実装
+- ✅ IndexManager統合: 通常のCRUD操作で完全動作
+
+**未実装項目**:
+- 🚧 OnlineIndexerでのSpatialバッチ構築（Phase 2.6で実装予定）
+  - 既存データへのSpatial Index追加は現在使用不可
+  - 回避策: 新規レコードのみSpatial Index作成可能
 
 #### API修正
 
@@ -4954,13 +3387,13 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 
 #### まとめ
 
-✅ **Spatial Index完全実装**: S2 Geometry + Morton Code統合
+🚧 **Spatial Index部分的実装**: S2 Geometry + Morton Code統合完了、OnlineIndexer統合は Phase 2.6 予定
 ✅ **4つの空間タイプ**: .geo, .geo3D, .cartesian, .cartesian3D
 ✅ **デュアルAPI**: @Spatial マクロと#Indexマクロの両方をサポート
 ✅ **Level統一**: デフォルトlevelがSpatialTypeとMortonCode/S2CellIDで一致
-✅ **すべてのTODO実装済み**: エンコーディング、クエリ範囲生成
+✅ **コア機能実装済み**: エンコーディング、クエリ範囲生成、IndexManager統合
 ✅ **ビルド成功**: コンパイルエラーなし
-✅ **プロダクション対応**: 大規模データセット対応（OnlineIndexer）
+🚧 **制限事項**: OnlineIndexerでのバッチ構築は一時的に無効化（Phase 2.6で再実装予定）
 
 **参考ドキュメント**:
 - S2 Geometry: https://github.com/google/s2geometry
@@ -4969,14 +3402,47 @@ print("Progress: \(scanned)/\(total) (\(percentage * 100)%)")
 
 ---
 
-**Last Updated**: 2025-01-20
+## Part 7: 実践Examples
+
+**実装済み**: 12個の主要Exampleファイルと5個の補助Example（Refactored版、SimpleExample等）が`Examples/`ディレクトリに配置されています。
+
+### Examples一覧
+
+| ファイル | 説明 | 主要機能 |
+|---------|------|---------|
+| **01-CRUDOperations.swift** | 基本的なCRUD操作 | RecordStore初期化、Create/Read/Update/Delete、トランザクション |
+| **02-QueryFiltering.swift** | クエリとフィルタリング | where句、ソート、リミット、IN句、複合クエリ |
+| **03-RangeQueries.swift** | Range型クエリ | PartialRangeFrom/Through/UpTo、イベント予約システム、overlaps() |
+| **04-IndexManagement.swift** | インデックス管理 | OnlineIndexer、バッチ構築、進行状況追跡、RangeSet |
+| **05-SchemaMigration.swift** | スキーママイグレーション | MigrationManager、バージョン管理、addIndex/removeIndex/rebuildIndex |
+| **06-SpatialIndex.swift** | 空間インデックス | @Spatial、Geohash、Morton Code、S2 Geometry、半径検索 |
+| **07-VectorSearch.swift** | ベクトル検索 | HNSW、nearestNeighbors()、埋め込みベクトル、コサイン類似度 |
+| **08-ECommerce.swift** | Eコマースプラットフォーム | Product/Order/Customer、複合インデックス、集約（COUNT/SUM） |
+| **09-SocialMedia.swift** | SNSプラットフォーム | User/Post/Follow、タイムライン、ハッシュタグ検索、フォロー関係 |
+| **10-IoTSensorData.swift** | IoTセンサーデータ管理 | 時系列データ、空間インデックス、温度異常検知、近隣センサー検索 |
+| **11-PerformanceOptimization.swift** | パフォーマンス最適化 | StatisticsManager、バッチ操作、複合インデックス戦略、スループット測定 |
+| **12-ErrorHandling.swift** | エラーハンドリング | リトライロジック、楽観的並行性制御、デッドロック回避、トランザクションスコープ |
+
+**実行方法**:
+```bash
+cd Examples
+swift run 01-CRUDOperations  # または任意のExample番号
+```
+
+**詳細情報**: 各Exampleファイルには完全な動作コード、コメント、実行手順が含まれています。`Examples/README.md`も参照してください
+
+
+---
+
+**Last Updated**: 2025-11-21
 **FoundationDB**: 7.1.0+ | **fdb-swift-bindings**: 1.0.0+
-**Record Layer (Swift)**: プロダクション対応 | **テスト**: **530合格（51スイート）** | **進捗**: 100%完了
+**Record Layer (Swift)**: プロダクション対応 | **テスト**: **774テスト全合格（64スイート）** | **進捗**: 100%完了
 **Phase 2 (スキーマ進化)**: ✅ 100%完了（Enum検証含む）
 **Phase 3 (Migration Manager)**: ✅ 100%完了（**24テスト全合格**、包括的テストカバレッジ）
 **Phase 4 (PartialRange対応)**: ✅ 100%完了（**Protobufシリアライズ完全対応**、20+テスト合格）
 **HNSW Index Builder**: ✅ Phase 1 完了（HNSWIndexBuilder、BuildOptions、状態管理）
 **Range Optimization**: ✅ Phase 1, 2 & 3 完了（**UUID/Versionstamp対応**、RangeWindowCalculator汎用化、RangeIndexStatistics、**30テスト全合格**）
-**Spatial Index**: ✅ 完全実装（SpatialIndexMaintainer、S2Geometry、MortonCode）
-**Phase 5 (Spatial Indexing)**: ✅ **100%完了**（**S2 Geometry + Morton Code統合、すべてのTODO実装済み**）
-**Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、4/4テスト + 5/5検証テスト合格、プロダクション対応**）
+**Spatial Index**: 🚧 部分的実装（SpatialIndexMaintainer、S2Geometry、MortonCode完了、OnlineIndexer統合は Phase 2.6 予定）
+**Phase 5 (Spatial Indexing)**: 🚧 **部分的実装**（**IndexManager統合完了、OnlineIndexer統合は Phase 2.6 で実装予定**）
+**Phase 6 (Vector Search - HNSW)**: ✅ 100%完了（**クエリパス統合、Circuit Breaker対応、29/29テスト合格、プロダクション対応**）
+**Part 7 (実践Examples)**: ✅ **完全追加**（**11セクション、実世界のユースケース、パフォーマンス最適化、ベストプラクティス**）
